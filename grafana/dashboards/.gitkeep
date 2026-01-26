@@ -1,0 +1,10 @@
+# =============================================================================
+# Grafana Dashboards Directory
+# =============================================================================
+# Thư mục chứa Grafana dashboard JSON files
+#
+# Cấu trúc:
+#   - crypto_dashboard.json: Main dashboard
+#
+# Export từ Grafana UI: Dashboard Settings > JSON Model > Copy
+# =============================================================================

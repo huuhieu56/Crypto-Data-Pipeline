@@ -1,0 +1,16 @@
+# =============================================================================
+# Grafana Datasources Configuration
+# =============================================================================
+# Cấu hình tự động kết nối Grafana với PostgreSQL
+# File này sẽ được mount vào container Grafana
+# =============================================================================
+
+# TODO: Configure PostgreSQL datasource
+# apiVersion: 1
+# datasources:
+#   - name: PostgreSQL
+#     type: postgres
+#     url: postgres:5432
+#     database: crypto_dw
+#     user: crypto_user
+#     ...

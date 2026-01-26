@@ -1,0 +1,12 @@
+# =============================================================================
+# Raw Data Directory - Data Lake
+# =============================================================================
+# Thư mục chứa dữ liệu thô từ Binance API
+#
+# Cấu trúc:
+#   - symbols.json: Thông tin 50 coins
+#   - {SYMBOL}.csv: Dữ liệu nến (BTCUSDT.csv, ETHUSDT.csv, ...)
+#   - ticker_24h.csv: Thống kê 24h
+#
+# Các file .csv sẽ được ignore bởi .gitignore (quá lớn)
+# =============================================================================

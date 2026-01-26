@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.env
+
+# Data files (quá lớn để commit)
+data/raw/*.csv
+data/processed/*.parquet
+
+# Model files
+models/*.pth
+models/*.pt
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+airflow/logs/
+
+# Docker
+*.pid
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.secret
+config/secrets.yaml

@@ -1,0 +1,14 @@
+# =============================================================================
+# Grafana Dashboards Provisioning
+# =============================================================================
+# Cấu hình tự động load dashboard từ JSON files
+# =============================================================================
+
+# TODO: Configure dashboard provisioning
+# apiVersion: 1
+# providers:
+#   - name: 'default'
+#     folder: ''
+#     type: file
+#     options:
+#       path: /var/lib/grafana/dashboards

@@ -1,0 +1,43 @@
+# =============================================================================
+# Docker Compose - Crypto Data Pipeline Services
+# =============================================================================
+# Services:
+#   - PostgreSQL: Data Warehouse (port 5432)
+#   - Airflow Webserver: DAG UI (port 8080)
+#   - Airflow Scheduler: Chạy DAGs
+#   - Grafana: Dashboard visualization (port 3000)
+# =============================================================================
+# Khởi chạy: docker-compose up -d
+# Dừng: docker-compose down
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # TODO: Cấu hình PostgreSQL
+  postgres:
+    image: postgres:15
+    # ... config
+
+  # TODO: Cấu hình Airflow Webserver
+  airflow-webserver:
+    image: apache/airflow:2.8.0
+    # ... config
+
+  # TODO: Cấu hình Airflow Scheduler
+  airflow-scheduler:
+    image: apache/airflow:2.8.0
+    # ... config
+
+  # TODO: Cấu hình Grafana
+  grafana:
+    image: grafana/grafana:latest
+    # ... config
+
+volumes:
+  postgres_data:
+  grafana_data:
+
+networks:
+  crypto_network:
+    driver: bridge
