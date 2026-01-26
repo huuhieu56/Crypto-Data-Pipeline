@@ -1,5 +1,0 @@
-# Docker configuration placeholder
-# This directory will contain:
-# - docker-compose.yml
-# - hadoop/ (custom configs)
-# - spark/ (custom configs)
