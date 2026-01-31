@@ -18,5 +18,11 @@
 # TODO: Implement get_ticker_24h()
 # - Wrapper cho /api/v3/ticker/24hr
 
+# TODO: Implement get_book_ticker()
+# - Wrapper cho /api/v3/ticker/bookTicker
+
+# TODO: Implement get_order_book_depth()
+# - Wrapper cho /api/v3/depth
+
 # TODO: Implement download_historical_data()
 # - Download từ Binance Data Vision (bulk)

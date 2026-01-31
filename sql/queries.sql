@@ -12,8 +12,12 @@
 
 -- TODO: Query 4 - Top gainers/losers 24h
 
--- TODO: Query 5 - RSI heatmap cho 50 coins
+-- TODO: Query 5 - Liquidity metric (spread_pct) theo symbol
 
--- TODO: Query 6 - Actual vs Predicted comparison
+-- TODO: Query 6 - RSI heatmap cho 50 coins
 
--- TODO: Query 7 - Model performance metrics (MAE, RMSE, MAPE)
+-- TODO: Query 7 - Actual vs Predicted comparison
+
+-- TODO: Query 8 - Order book imbalance theo symbol/time
+
+-- TODO: Query 9 - Model performance metrics (MAE, RMSE, MAPE)

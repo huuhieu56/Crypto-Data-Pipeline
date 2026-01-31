@@ -1,10 +1,11 @@
 -- =============================================================================
 -- Database Schema - Crypto Data Warehouse
 -- =============================================================================
--- Star Schema với 1 Dimension table và 3 Fact tables:
+-- Star Schema với 1 Dimension table và 4 Fact tables:
 --   - symbols (Dimension): Thông tin 50 coins
 --   - klines (Fact): Dữ liệu nến 1 phút + technical indicators
---   - ticker_24h (Fact): Thống kê 24h hàng ngày
+--   - ticker_24h (Fact): Thống kê 24h hàng ngày + best bid/ask + spread
+--   - order_book_snapshot (Fact): Snapshot order book
 --   - predictions (Fact): Kết quả dự báo từ LSTM model
 --
 -- Chạy: psql -U postgres -d crypto_dw -f sql/schema.sql
@@ -22,7 +23,13 @@
 -- TODO: CREATE TABLE ticker_24h
 -- PK: (symbol, snapshot_time)
 -- FK: symbol -> symbols.symbol
--- Columns: symbol, snapshot_time, price_change, price_change_pct, high_24h, low_24h, volume_24h, quote_volume_24h, trade_count
+-- Columns: symbol, snapshot_time, price_change, price_change_pct, high_24h, low_24h, volume_24h, quote_volume_24h, trade_count,
+--          bid_price, ask_price, spread_pct
+
+-- TODO: CREATE TABLE order_book_snapshot
+-- PK: (symbol, timestamp)
+-- FK: symbol -> symbols.symbol
+-- Columns: symbol, timestamp, total_bid_volume, total_ask_volume, imbalance
 
 -- TODO: CREATE TABLE predictions
 -- PK: (symbol, predicted_at, step_index)
@@ -33,3 +40,4 @@
 -- idx_klines_symbol_time
 -- idx_predictions_target_time
 -- idx_ticker_snapshot_time
+-- idx_order_book_snapshot_time

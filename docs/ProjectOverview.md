@@ -176,7 +176,7 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 
 ## 5. Database Schema
 
-### 5.1. Tổng quan - Star Schema (4 bảng)
+### 5.1. Tổng quan - Star Schema (5 bảng)
 
 ```
                          ┌─────────────────────┐
@@ -201,18 +201,29 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 │  open, high, low...  │ │  price_change_24h    │ │  target_time         │
 │  rsi, macd...        │ │  volume_24h...       │ │  predicted_close     │
 └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
+                         ┌──────────────────────────┐
+                         │   order_book_snapshot    │
+                         │       (Fact Table)       │
+                         │                          │
+                         │  symbol (FK)             │
+                         │  timestamp (PK)          │
+                         │  total_bid_volume        │
+                         │  total_ask_volume        │
+                         │  imbalance               │
+                         └──────────────────────────┘
 ```
 
-> **Thiết kế Star Schema:** 1 Dimension table (`symbols`) + 3 Fact tables (`klines`, `ticker_24h`, `predictions`)
+> **Thiết kế Star Schema:** 1 Dimension table (`symbols`) + 4 Fact tables (`klines`, `ticker_24h`, `order_book_snapshot`, `predictions`)
 
 ### 5.2. Nguồn dữ liệu từ Binance API
 
-| Bảng          | Binance API Endpoint   | Mô tả                               | Tần suất thu thập |
-| ------------- | ---------------------- | ----------------------------------- | ----------------- |
-| `symbols`     | `/api/v3/exchangeInfo` | Thông tin trading pair              | 1 lần (setup)     |
-| `klines`      | `/api/v3/klines`       | Dữ liệu nến (OHLCV)                 | Daily             |
-| `ticker_24h`  | `/api/v3/ticker/24hr`  | Thống kê 24h (volume, price change) | Daily             |
-| `predictions` | (Internal)             | Kết quả từ LSTM model               | Hourly            |
+| Bảng          | Binance API Endpoint                          | Mô tả                                              | Tần suất thu thập |
+| ------------- | --------------------------------------------- | -------------------------------------------------- | ----------------- |
+| `symbols`     | `/api/v3/exchangeInfo`                             | Thông tin trading pair                             | 1 lần (setup)     |
+| `klines`      | `/api/v3/klines`                                   | Dữ liệu nến (OHLCV)                                | Daily             |
+| `ticker_24h`  | `/api/v3/ticker/24hr`, `/api/v3/ticker/bookTicker` | Thống kê 24h + best bid/ask + spread              | Daily             |
+| `order_book_snapshot` | `/api/v3/depth`                          | Snapshot order book để đo áp lực mua/bán          | 5–15 phút         |
+| `predictions` | (Internal)                                         | Kết quả từ LSTM model                              | Hourly            |
 
 ### 5.3. Bảng `symbols` (Dimension Table)
 
@@ -277,6 +288,9 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 | `volume_24h`       | DOUBLE      | Volume giao dịch 24h (base asset) | Binance ticker/24hr |
 | `quote_volume_24h` | DOUBLE      | Volume 24h (quote asset - USDT)   | Binance ticker/24hr |
 | `trade_count`      | BIGINT      | Số lượng trades trong 24h         | Binance ticker/24hr |
+| `bid_price`        | DOUBLE      | Best bid                          | Binance bookTicker  |
+| `ask_price`        | DOUBLE      | Best ask                          | Binance bookTicker  |
+| `spread_pct`       | DOUBLE      | (ask - bid) / bid * 100           | Calculated          |
 
 **Primary Key:** `(symbol, snapshot_time)`
 
@@ -329,7 +343,23 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 > - So sánh giữa các model versions
 > - Không làm "ô nhiễm" dữ liệu gốc trong bảng klines
 
-### 5.7. Relationships Diagram
+### 5.7. Bảng `order_book_snapshot` (Fact Table)
+
+> **Mục đích:** Theo dõi áp lực mua/bán theo snapshot order book.
+
+| Column             | Type        | Description                                      | Nguồn         |
+| ------------------ | ----------- | ------------------------------------------------ | ------------ |
+| `symbol`           | VARCHAR(20) | FK → symbols.symbol                               | Binance depth |
+| `timestamp`        | TIMESTAMPTZ | Thời điểm snapshot                                | System       |
+| `total_bid_volume` | DOUBLE      | Tổng khối lượng bid (top N levels)               | Calculated   |
+| `total_ask_volume` | DOUBLE      | Tổng khối lượng ask (top N levels)               | Calculated   |
+| `imbalance`        | DOUBLE      | total_bid / (total_bid + total_ask)              | Calculated   |
+
+**Primary Key:** `(symbol, timestamp)`
+
+> **Ý nghĩa:** `imbalance` > 0.5 → lực mua mạnh, < 0.5 → lực bán mạnh.
+
+### 5.8. Relationships Diagram
 
 ```sql
 -- Foreign Key Constraints
@@ -341,9 +371,12 @@ ALTER TABLE ticker_24h ADD CONSTRAINT fk_ticker_symbol
 
 ALTER TABLE predictions ADD CONSTRAINT fk_predictions_symbol
     FOREIGN KEY (symbol) REFERENCES symbols(symbol);
+
+ALTER TABLE order_book_snapshot ADD CONSTRAINT fk_orderbook_symbol
+    FOREIGN KEY (symbol) REFERENCES symbols(symbol);
 ```
 
-### 5.8. Ví dụ SQL Queries (JOIN các bảng)
+### 5.9. Ví dụ SQL Queries (JOIN các bảng)
 
 **Query 1:** Lấy thông tin coin kèm giá hiện tại và dự báo
 
@@ -379,7 +412,7 @@ GROUP BY s.base_asset
 ORDER BY avg_error ASC;
 ```
 
-### 5.9. Giải thích các chỉ số kỹ thuật
+### 5.10. Giải thích các chỉ số kỹ thuật
 
 | Chỉ số          | Công thức          | Ý nghĩa                                         |
 | --------------- | ------------------ | ----------------------------------------------- |
@@ -391,20 +424,20 @@ ORDER BY avg_error ASC;
 
 ## 6. ETL Pipeline
 
-### 6.1. Tổng quan luồng dữ liệu (4 bảng)
+### 6.1. Tổng quan luồng dữ liệu (5 bảng)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
 │                                    EXTRACT                                               │
 │                                                                                          │
-│   ┌─────────────────┐   ┌─────────────────────┐   ┌─────────────────────────┐           │
-│   │ /exchangeInfo   │   │    /klines          │   │    /ticker/24hr         │           │
-│   │ (1 lần setup)   │   │ (Daily: 50 coins)   │   │ (Daily: 50 coins)       │           │
-│   └────────┬────────┘   └──────────┬──────────┘   └────────────┬────────────┘           │
-│            │                       │                           │                         │
-│            ▼                       ▼                           ▼                         │
-│      symbols.json            raw/{SYMBOL}.csv            ticker_24h.csv                 │
-└────────────┬───────────────────────┬───────────────────────────┬────────────────────────┘
+│   ┌─────────────────┐   ┌─────────────────────┐   ┌─────────────────────────┐   ┌───────────────────┐ │
+│   │ /exchangeInfo   │   │    /klines          │   │    /ticker/24hr         │   │    /depth         │ │
+│   │ (1 lần setup)   │   │ (Daily: 50 coins)   │   │ (Daily: 50 coins)       │   │ (5–15 phút)       │ │
+│   └────────┬────────┘   └──────────┬──────────┘   └────────────┬────────────┘   └─────────┬─────────┘ │
+│            │                       │                           │                           │           │
+│            ▼                       ▼                           ▼                           ▼           │
+│      symbols.json            raw/{SYMBOL}.csv            ticker_24h.csv           order_book_snapshot.csv │
+└────────────┬───────────────────────┬───────────────────────────┬───────────────────────────┬───────────┘
              │                       │                           │
              │              ┌────────┴────────┐                  │
              │              │    TRANSFORM    │                  │
@@ -418,10 +451,10 @@ ORDER BY avg_error ASC;
 ┌────────────┴───────────────────────┴───────────────────────────┴────────────────────────┐
 │                                      LOAD                                                │
 │                                                                                          │
-│    ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐   ┌───────────────┐  │
-│    │    symbols      │   │     klines      │   │   ticker_24h    │   │  predictions  │  │
-│    │  (dim table)    │   │  (fact table)   │   │  (fact table)   │   │ (fact table)  │  │
-│    └─────────────────┘   └─────────────────┘   └─────────────────┘   └───────────────┘  │
+│    ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐   ┌──────────────────────┐   ┌───────────────┐ │
+│    │    symbols      │   │     klines      │   │   ticker_24h    │   │ order_book_snapshot │   │  predictions  │ │
+│    │  (dim table)    │   │  (fact table)   │   │  (fact table)   │   │   (fact table)      │   │ (fact table)  │ │
+│    └─────────────────┘   └─────────────────┘   └─────────────────┘   └──────────────────────┘   └───────────────┘ │
 │                                                                                          │
 │                              PostgreSQL Database                                         │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
@@ -448,17 +481,29 @@ ORDER BY avg_error ASC;
 | Output     | `data/raw/{SYMBOL}.csv`                                                |
 | Ghi vào    | Bảng `klines` (sau Transform)                                          |
 
-#### 6.2.3. Extract Ticker 24h (Daily)
+#### 6.2.3. Extract Ticker 24h + Best Bid/Ask (Daily)
 
 | Thuộc tính | Giá trị                            |
 | ---------- | ---------------------------------- |
-| API        | `/api/v3/ticker/24hr`              |
-| Tần suất   | Daily (2:30 AM)                    |
-| Đặc điểm   | 1 request lấy được tất cả 50 coins |
-| Output     | `data/raw/ticker_24h.csv`          |
-| Ghi vào    | Bảng `ticker_24h`                  |
+| API        | `/api/v3/ticker/24hr`, `/api/v3/ticker/bookTicker` |
+| Tần suất   | Daily (2:30 AM)                                  |
+| Đặc điểm   | 1 request lấy được tất cả 50 coins               |
+| Output     | `data/raw/ticker_24h.csv`                        |
+| Ghi vào    | Bảng `ticker_24h`                                |
 
-> **Lưu ý:** API ticker/24hr trả về snapshot tại thời điểm gọi, không phải dữ liệu lịch sử. Mỗi ngày lưu 1 record/coin.
+> **Lưu ý:** API ticker/24hr và bookTicker trả về snapshot tại thời điểm gọi, không phải dữ liệu lịch sử. Mỗi ngày lưu 1 record/coin.
+
+#### 6.2.4. Extract Order Book Snapshot (5–15 phút)
+
+| Thuộc tính | Giá trị                            |
+| ---------- | ---------------------------------- |
+| API        | `/api/v3/depth`                    |
+| Tần suất   | 5–15 phút                          |
+| Đặc điểm   | Snapshot top N levels              |
+| Output     | `data/raw/order_book_snapshot.csv` |
+| Ghi vào    | Bảng `order_book_snapshot`         |
+
+> **Lưu ý:** Tần suất thấp để tránh rate limit; chỉ lưu các chỉ số tổng hợp.
 
 ### 6.3. Transform - Xử lý với Spark
 
@@ -923,6 +968,10 @@ ORDER BY k.rsi_14 DESC;
 | Rủi ro                  | Xác suất   | Tác động        | Giải pháp                                    |
 | ----------------------- | ---------- | --------------- | -------------------------------------------- |
 | Binance rate limit      | Cao        | ETL fail        | Dùng Binance Data Vision cho historical data |
+| API lỗi tạm thời         | Trung bình | Mất data ngắn   | Retry sau 2s (có thể dùng python-binance)     |
+| Thiếu dữ liệu theo phút | Trung bình | Model lỗi       | Resample + forward fill hoặc linear interpolation |
+| Downtime ngắn           | Thấp       | Gap dữ liệu     | Backfill bằng REST API theo khoảng thời gian |
+| Downtime dài            | Thấp       | Gap dữ liệu lớn | Backfill bằng Binance Data Vision (file zip) |
 | Spark out of memory     | Trung bình | Transform fail  | Tăng partition, xử lý theo batch nhỏ         |
 | Model không hội tụ      | Trung bình | Prediction tệ   | Tune hyperparameters, thử architecture khác  |
 | PostgreSQL slow query   | Thấp       | Dashboard lag   | Thêm index, partition table                  |
