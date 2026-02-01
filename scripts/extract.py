@@ -19,11 +19,6 @@
 
 # TODO: Import libraries
 
-# TODO: Implement extract_symbols()
-# - Gọi Binance /exchangeInfo API
-# - Lọc 50 coins theo danh sách
-# - Lưu vào data/raw/symbols.json
-
 # TODO: Implement extract_klines()
 # - Gọi Binance /klines API hoặc Binance Data Vision
 # - Download dữ liệu 3 năm cho mỗi coin

@@ -1,0 +1,62 @@
+[
+  {
+    "symbol": "BTCUSDT",
+    "base_asset": "BTC",
+    "quote_asset": "USDT",
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ETHUSDT",
+    "base_asset": "ETH",
+    "quote_asset": "USDT",
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BNBUSDT",
+    "base_asset": "BNB",
+    "quote_asset": "USDT",
+    "status": "TRADING"
+  },
+  {
+    "symbol": "NEOUSDT",
+    "base_asset": "NEO",
+    "quote_asset": "USDT",
+    "status": "TRADING"
+  },
+  {
+    "symbol": "LTCUSDT",
+    "base_asset": "LTC",
+    "quote_asset": "USDT",
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ADAUSDT",
+    "base_asset": "ADA",
+    "quote_asset": "USDT",
+    "status": "TRADING"
+  },
+  {
+    "symbol": "XRPUSDT",
+    "base_asset": "XRP",
+    "quote_asset": "USDT",
+    "status": "TRADING"
+  },
+  {
+    "symbol": "EOSUSDT",
+    "base_asset": "EOS",
+    "quote_asset": "USDT",
+    "status": "BREAK"
+  },
+  {
+    "symbol": "XLMUSDT",
+    "base_asset": "XLM",
+    "quote_asset": "USDT",
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TRXUSDT",
+    "base_asset": "TRX",
+    "quote_asset": "USDT",
+    "status": "TRADING"
+  }
+]
