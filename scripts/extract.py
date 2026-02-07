@@ -16,7 +16,13 @@ from dateutil.relativedelta import relativedelta
 # Configuration
 # =============================================================================
 BINANCE_DATA_VISION_URL = "https://data.binance.vision/data/spot/monthly/klines/{symbol}/1m/{symbol}-1m-{year}-{month:02d}.zip"
+BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
+TICKER_24H_URL = "https://api.binance.com/api/v3/ticker/24hr"
+BOOK_TICKER_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
+ORDER_BOOK_URL = "https://api.binance.com/api/v3/depth"
 MONTHS_BACK = 36
+API_LIMIT = 1000
+ORDER_BOOK_LIMIT = 100
 
 def find_project_root(start: Path) -> Path:
     current = start.resolve()
@@ -53,89 +59,6 @@ def get_target_months(months_back: int) -> list[tuple[int, int]]:
         for i in range(months_back)
     ]
 
-
-# =============================================================================
-# Extract Klines from Binance Data Vision
-# =============================================================================
-def download_klines(symbol: str, year: int, month: int) -> pd.DataFrame | None:
-    url = BINANCE_DATA_VISION_URL.format(symbol=symbol, year=year, month=month)
-    print(f"DOWNLOADING: {url}")
-    
-    try:
-        response = requests.get(url, timeout=60)
-        response.raise_for_status()
-        
-        with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-            csv_filename = z.namelist()[0]
-            with z.open(csv_filename) as csv_file:
-                df = pd.read_csv(
-                    csv_file,
-                    header=None,
-                    usecols=range(11),
-                    names=[
-                        "open_time", "open", "high", "low", "close", "volume",
-                        "close_time", "quote_volume", "trades", 
-                        "taker_buy_base", "taker_buy_quote"
-                    ]
-                )
-                
-                # Binance Data Vision dùng microseconds (2025+) hoặc milliseconds (2024-)
-                open_time_raw = df["open_time"].astype("int64")
-                close_time_raw = df["close_time"].astype("int64")
-            
-                if open_time_raw.iloc[0] > 1e15:
-                    df["open_time"] = pd.to_datetime(open_time_raw // 1000, unit="ms")
-                    df["close_time"] = pd.to_datetime(close_time_raw // 1000, unit="ms")
-                else:
-                    df["open_time"] = pd.to_datetime(open_time_raw, unit="ms")
-                    df["close_time"] = pd.to_datetime(close_time_raw, unit="ms")
-                
-                df["symbol"] = symbol
-
-                return df
-                
-    except requests.HTTPError as e:
-        print(f"WARNING: HTTP Error for {symbol} ({year}-{month:02d}): {e}")
-        return None
-    except Exception as e:
-        print(f"ERROR: {symbol}: {e}")
-        return None
-
-
-def extract_klines(symbols: list, months_back: int = MONTHS_BACK) -> dict:
-    results = {}
-    target_months = get_target_months(months_back)
-    
-    for idx, symbol in enumerate(symbols, 1):
-        print(f"\n[{idx}/{len(symbols)}] Processing {symbol}...")
-        all_data = []
-        
-        for year, month in target_months:
-            df = download_klines(symbol, year, month)
-            if df is not None:
-                all_data.append(df)
-                print(f"SUCCESS: {symbol}: {year}-{month:02d} - {len(df):,} records")
-        
-        if all_data:
-            combined_df = pd.concat(all_data, ignore_index=True)
-            combined_df = combined_df.sort_values("open_time").reset_index(drop=True)
-            
-            output_path = RAW_DATA_DIR / f"{symbol}.csv"
-            combined_df.to_csv(output_path, index=False)
-            print(f"SAVED: {symbol} -> {output_path} ({len(combined_df):,} records)")
-            
-            results[symbol] = combined_df
-        else:
-            print(f"ERROR: No data for {symbol}")
-    
-    return results
-
-
-# =============================================================================
-# Extract Recent Klines (từ API REST) để lấy klines mới nhất 
-# =============================================================================
-BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
-API_LIMIT = 1000 
 
 # Lấy open_time cuối cùng của file csv 
 def get_last_timestamp(symbol: str) -> int | None:
@@ -232,6 +155,87 @@ def fetch_klines_from_api(symbol: str, start_time: int, end_time: int | None = N
     
     return all_data
 
+
+# =============================================================================
+# Extract Klines from Binance Data Vision
+# =============================================================================
+def download_klines(symbol: str, year: int, month: int) -> pd.DataFrame | None:
+    url = BINANCE_DATA_VISION_URL.format(symbol=symbol, year=year, month=month)
+    print(f"DOWNLOADING: {url}")
+    
+    try:
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
+        
+        with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+            csv_filename = z.namelist()[0]
+            with z.open(csv_filename) as csv_file:
+                df = pd.read_csv(
+                    csv_file,
+                    header=None,
+                    usecols=range(11),
+                    names=[
+                        "open_time", "open", "high", "low", "close", "volume",
+                        "close_time", "quote_volume", "trades", 
+                        "taker_buy_base", "taker_buy_quote"
+                    ]
+                )
+                
+                # Binance Data Vision dùng microseconds (2025+) hoặc milliseconds (2024-)
+                open_time_raw = df["open_time"].astype("int64")
+                close_time_raw = df["close_time"].astype("int64")
+            
+                if open_time_raw.iloc[0] > 1e15:
+                    df["open_time"] = pd.to_datetime(open_time_raw // 1000, unit="ms")
+                    df["close_time"] = pd.to_datetime(close_time_raw // 1000, unit="ms")
+                else:
+                    df["open_time"] = pd.to_datetime(open_time_raw, unit="ms")
+                    df["close_time"] = pd.to_datetime(close_time_raw, unit="ms")
+                
+                df["symbol"] = symbol
+
+                return df
+                
+    except requests.HTTPError as e:
+        print(f"WARNING: HTTP Error for {symbol} ({year}-{month:02d}): {e}")
+        return None
+    except Exception as e:
+        print(f"ERROR: {symbol}: {e}")
+        return None
+
+
+def extract_klines(symbols: list, months_back: int = MONTHS_BACK) -> dict:
+    results = {}
+    target_months = get_target_months(months_back)
+    
+    for idx, symbol in enumerate(symbols, 1):
+        print(f"\n[{idx}/{len(symbols)}] Processing {symbol}...")
+        all_data = []
+        
+        for year, month in target_months:
+            df = download_klines(symbol, year, month)
+            if df is not None:
+                all_data.append(df)
+                print(f"SUCCESS: {symbol}: {year}-{month:02d} - {len(df):,} records")
+        
+        if all_data:
+            combined_df = pd.concat(all_data, ignore_index=True)
+            combined_df = combined_df.sort_values("open_time").reset_index(drop=True)
+            
+            output_path = RAW_DATA_DIR / f"{symbol}.csv"
+            combined_df.to_csv(output_path, index=False)
+            print(f"SAVED: {symbol} -> {output_path} ({len(combined_df):,} records)")
+            
+            results[symbol] = combined_df
+        else:
+            print(f"ERROR: No data for {symbol}")
+    
+    return results
+
+
+# =============================================================================
+# Extract Recent Klines (từ API REST) để lấy klines mới nhất 
+# =============================================================================
 # Gọi get_last_timestamp và fetch_klines_from_api để cập nhật dữ liệu mới nhất, gộp vào file CSV.
 def extract_recent_klines(symbols: list | None = None) -> dict:
     if symbols is None:
@@ -290,10 +294,6 @@ def extract_recent_klines(symbols: list | None = None) -> dict:
 # =============================================================================
 # Extract Ticker 24h (từ 2 endpoints: /ticker/24hr + /ticker/bookTicker)
 # =============================================================================
-TICKER_24H_URL = "https://api.binance.com/api/v3/ticker/24hr"
-BOOK_TICKER_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
-
-
 def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
     if symbols is None:
         symbols = get_symbols()
@@ -396,10 +396,6 @@ def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
 # =============================================================================
 # Extract Order Book Snapshot (từ /api/v3/depth)
 # =============================================================================
-ORDER_BOOK_URL = "https://api.binance.com/api/v3/depth"
-ORDER_BOOK_LIMIT = 100
-
-
 def extract_order_book_snapshot(symbols: list | None = None) -> pd.DataFrame | None:
     if symbols is None:
         symbols = get_symbols()
