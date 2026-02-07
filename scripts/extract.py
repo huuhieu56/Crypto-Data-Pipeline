@@ -291,10 +291,120 @@ def extract_recent_klines(symbols: list | None = None) -> dict:
     return results
 
 
-# TODO: Implement extract_ticker_24h()
-# - Gọi Binance /ticker/24hr và /ticker/bookTicker
-# - Merge theo symbol và tính spread_pct
-# - Lưu vào data/raw/ticker_24h.csv
+# =============================================================================
+# Extract Ticker 24h (từ 2 endpoints: /ticker/24hr + /ticker/bookTicker)
+# =============================================================================
+TICKER_24H_URL = "https://api.binance.com/api/v3/ticker/24hr"
+BOOK_TICKER_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
+
+
+def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
+    """Thu thập dữ liệu ticker 24h từ Binance API.
+    
+    Kết hợp 2 endpoints:
+    - /api/v3/ticker/24hr: thống kê biến động giá, volume, trades trong 24h
+    - /api/v3/ticker/bookTicker: giá bid/ask tốt nhất hiện tại
+    
+    Merge theo symbol, tính spread_pct, lưu vào data/raw/ticker_24h.csv
+    """
+    if symbols is None:
+        symbols = get_symbols()
+    
+    if not symbols:
+        print("ERROR: No symbols to process")
+        return None
+    
+    symbols_set = set(symbols)
+    snapshot_time = datetime.utcnow()
+    
+    # --- 1. Gọi /api/v3/ticker/24hr (không truyền symbol → lấy tất cả, sau đó lọc) ---
+    print("Fetching /api/v3/ticker/24hr ...")
+    try:
+        resp_ticker = requests.get(TICKER_24H_URL, timeout=30)
+        resp_ticker.raise_for_status()
+        ticker_data = resp_ticker.json()
+    except Exception as e:
+        print(f"ERROR: Failed to fetch ticker/24hr: {e}")
+        return None
+    
+    ticker_df = pd.DataFrame(ticker_data)
+    ticker_df = ticker_df[ticker_df["symbol"].isin(symbols_set)].copy()
+    
+    # Chọn và đổi tên các cột cần thiết
+    ticker_df = ticker_df.rename(columns={
+        "priceChange": "price_change",
+        "priceChangePercent": "price_change_pct",
+        "highPrice": "high_24h",
+        "lowPrice": "low_24h",
+        "volume": "volume_24h",
+        "quoteVolume": "quote_volume_24h",
+        "count": "trade_count",
+    })
+    ticker_cols = ["symbol", "price_change", "price_change_pct", "high_24h",
+                   "low_24h", "volume_24h", "quote_volume_24h", "trade_count"]
+    ticker_df = ticker_df[ticker_cols]
+    
+    print(f"  Received {len(ticker_df)} symbols from ticker/24hr")
+    
+    # --- 2. Gọi /api/v3/ticker/bookTicker (weight nhẹ, lấy tất cả) ---
+    print("Fetching /api/v3/ticker/bookTicker ...")
+    try:
+        resp_book = requests.get(BOOK_TICKER_URL, timeout=30)
+        resp_book.raise_for_status()
+        book_data = resp_book.json()
+    except Exception as e:
+        print(f"ERROR: Failed to fetch ticker/bookTicker: {e}")
+        return None
+    
+    book_df = pd.DataFrame(book_data)
+    book_df = book_df[book_df["symbol"].isin(symbols_set)].copy()
+    
+    book_df = book_df.rename(columns={
+        "bidPrice": "bid_price",
+        "askPrice": "ask_price",
+    })
+    book_df = book_df[["symbol", "bid_price", "ask_price"]]
+    
+    print(f"  Received {len(book_df)} symbols from bookTicker")
+    
+    # --- 3. Merge 2 DataFrame theo symbol ---
+    merged_df = ticker_df.merge(book_df, on="symbol", how="left")
+    
+    # --- 4. Chuyển đổi kiểu dữ liệu ---
+    float_cols = ["price_change", "price_change_pct", "high_24h", "low_24h",
+                  "volume_24h", "quote_volume_24h", "bid_price", "ask_price"]
+    for col in float_cols:
+        merged_df[col] = pd.to_numeric(merged_df[col], errors="coerce")
+    
+    merged_df["trade_count"] = pd.to_numeric(merged_df["trade_count"], errors="coerce").astype("Int64")
+    
+    # --- 5. Tính spread_pct = (ask - bid) / ask * 100 ---
+    merged_df["spread_pct"] = (
+        (merged_df["ask_price"] - merged_df["bid_price"]) / merged_df["ask_price"] * 100
+    )
+    
+    # --- 6. Thêm snapshot_time ---
+    merged_df.insert(1, "snapshot_time", snapshot_time)
+    
+    # --- 7. Sắp xếp cột theo đúng thứ tự ---
+    final_cols = [
+        "symbol", "snapshot_time", "price_change", "price_change_pct",
+        "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
+        "trade_count", "bid_price", "ask_price", "spread_pct"
+    ]
+    merged_df = merged_df[final_cols]
+    
+    # --- 8. Lưu vào CSV (append nếu đã tồn tại) ---
+    output_path = RAW_DATA_DIR / "ticker_24h.csv"
+    
+    if output_path.exists():
+        old_df = pd.read_csv(output_path)
+        merged_df = pd.concat([old_df, merged_df], ignore_index=True)
+    
+    merged_df.to_csv(output_path, index=False)
+    print(f"  SAVED: {output_path} ({len(merged_df):,} total records)")
+    
+    return merged_df
 
 # TODO: Implement extract_order_book_snapshot()
 # - Gọi Binance /depth API (top N levels)
@@ -319,13 +429,18 @@ def main():
     # print(f"\nSUCCESS: {len(klines_data)}/{len(symbols)} symbols, {total_records:,} records")
     
     # Extract recent klines từ REST API (cập nhật dữ liệu mới nhất)
-    print(f"\nUpdating recent klines for {len(symbols)} symbols...")
-    recent_data = extract_recent_klines(symbols)
-    if recent_data:
-        total_new = sum(len(df) for df in recent_data.values())
-        print(f"\nSUCCESS: Updated {len(recent_data)}/{len(symbols)} symbols")
+    #-------------------------------------------------------------------
+    # print(f"\nUpdating recent klines for {len(symbols)} symbols...")
+    # recent_data = extract_recent_klines(symbols)
+    # if recent_data:
+    #     total_new = sum(len(df) for df in recent_data.values())
+    #     print(f"\nSUCCESS: Updated {len(recent_data)}/{len(symbols)} symbols")
     
-    # TODO: Extract ticker 24h
+    # Extract ticker 24h
+    print(f"\nExtracting ticker 24h for {len(symbols)} symbols...")
+    ticker_df = extract_ticker_24h(symbols)
+    if ticker_df is not None:
+        print(f"SUCCESS: Ticker 24h - {len(ticker_df):,} records")
     
     # TODO: Extract order book snapshots
      
