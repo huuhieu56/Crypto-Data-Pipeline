@@ -37,7 +37,6 @@ RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Helper Functions
 # =============================================================================
 def get_symbols() -> list:
-    """Đọc danh sách symbols từ file CSV, chỉ lấy các symbol đang TRADING."""
     symbols_file = RAW_DATA_DIR / "symbols.csv"
     if not symbols_file.exists():
         print(f"ERROR: File not found: {symbols_file}")
@@ -48,7 +47,6 @@ def get_symbols() -> list:
 
 
 def get_target_months(months_back: int) -> list[tuple[int, int]]:
-    """Trả về danh sách (year, month) cần tải, tính từ tháng trước."""
     end_date = datetime.now() - relativedelta(months=1)
     return [
         ((end_date - relativedelta(months=i)).year, (end_date - relativedelta(months=i)).month)
@@ -60,7 +58,6 @@ def get_target_months(months_back: int) -> list[tuple[int, int]]:
 # Extract Klines from Binance Data Vision
 # =============================================================================
 def download_klines(symbol: str, year: int, month: int) -> pd.DataFrame | None:
-    """Download dữ liệu klines 1 tháng từ Binance Data Vision."""
     url = BINANCE_DATA_VISION_URL.format(symbol=symbol, year=year, month=month)
     print(f"DOWNLOADING: {url}")
     
@@ -106,7 +103,6 @@ def download_klines(symbol: str, year: int, month: int) -> pd.DataFrame | None:
 
 
 def extract_klines(symbols: list, months_back: int = MONTHS_BACK) -> dict:
-    """Tải dữ liệu klines cho danh sách symbols."""
     results = {}
     target_months = get_target_months(months_back)
     
@@ -299,14 +295,6 @@ BOOK_TICKER_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
 
 
 def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
-    """Thu thập dữ liệu ticker 24h từ Binance API.
-    
-    Kết hợp 2 endpoints:
-    - /api/v3/ticker/24hr: thống kê biến động giá, volume, trades trong 24h
-    - /api/v3/ticker/bookTicker: giá bid/ask tốt nhất hiện tại
-    
-    Merge theo symbol, tính spread_pct, lưu vào data/raw/ticker_24h.csv
-    """
     if symbols is None:
         symbols = get_symbols()
     
@@ -317,7 +305,7 @@ def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
     symbols_set = set(symbols)
     snapshot_time = datetime.utcnow()
     
-    # --- 1. Gọi /api/v3/ticker/24hr (không truyền symbol → lấy tất cả, sau đó lọc) ---
+    # /api/v3/ticker/24hr (không truyền symbol → lấy tất cả, sau đó lọc)
     print("Fetching /api/v3/ticker/24hr ...")
     try:
         resp_ticker = requests.get(TICKER_24H_URL, timeout=30)
@@ -330,7 +318,7 @@ def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
     ticker_df = pd.DataFrame(ticker_data)
     ticker_df = ticker_df[ticker_df["symbol"].isin(symbols_set)].copy()
     
-    # Chọn và đổi tên các cột cần thiết
+    # Chọn và đổi tên các cột
     ticker_df = ticker_df.rename(columns={
         "priceChange": "price_change",
         "priceChangePercent": "price_change_pct",
@@ -346,7 +334,7 @@ def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
     
     print(f"  Received {len(ticker_df)} symbols from ticker/24hr")
     
-    # --- 2. Gọi /api/v3/ticker/bookTicker (weight nhẹ, lấy tất cả) ---
+    # /api/v3/ticker/bookTicker
     print("Fetching /api/v3/ticker/bookTicker ...")
     try:
         resp_book = requests.get(BOOK_TICKER_URL, timeout=30)
@@ -367,10 +355,10 @@ def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
     
     print(f"  Received {len(book_df)} symbols from bookTicker")
     
-    # --- 3. Merge 2 DataFrame theo symbol ---
+    # Merge 2 DataFrame theo symbol
     merged_df = ticker_df.merge(book_df, on="symbol", how="left")
     
-    # --- 4. Chuyển đổi kiểu dữ liệu ---
+    # Chuyển đổi kiểu dữ liệu
     float_cols = ["price_change", "price_change_pct", "high_24h", "low_24h",
                   "volume_24h", "quote_volume_24h", "bid_price", "ask_price"]
     for col in float_cols:
@@ -378,15 +366,14 @@ def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
     
     merged_df["trade_count"] = pd.to_numeric(merged_df["trade_count"], errors="coerce").astype("Int64")
     
-    # --- 5. Tính spread_pct = (ask - bid) / ask * 100 ---
+    # spread_pct = (ask - bid) / ask * 100
     merged_df["spread_pct"] = (
         (merged_df["ask_price"] - merged_df["bid_price"]) / merged_df["ask_price"] * 100
     )
     
-    # --- 6. Thêm snapshot_time ---
+    # Thêm snapshot_time
     merged_df.insert(1, "snapshot_time", snapshot_time)
     
-    # --- 7. Sắp xếp cột theo đúng thứ tự ---
     final_cols = [
         "symbol", "snapshot_time", "price_change", "price_change_pct",
         "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
@@ -394,7 +381,7 @@ def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
     ]
     merged_df = merged_df[final_cols]
     
-    # --- 8. Lưu vào CSV (append nếu đã tồn tại) ---
+    # Lưu vào CSV (append nếu đã tồn tại)
     output_path = RAW_DATA_DIR / "ticker_24h.csv"
     
     if output_path.exists():
@@ -406,10 +393,70 @@ def extract_ticker_24h(symbols: list | None = None) -> pd.DataFrame | None:
     
     return merged_df
 
-# TODO: Implement extract_order_book_snapshot()
-# - Gọi Binance /depth API (top N levels)
-# - Tính total_bid_volume, total_ask_volume, imbalance
-# - Lưu vào data/raw/order_book_snapshot.csv
+# =============================================================================
+# Extract Order Book Snapshot (từ /api/v3/depth)
+# =============================================================================
+ORDER_BOOK_URL = "https://api.binance.com/api/v3/depth"
+ORDER_BOOK_LIMIT = 100
+
+
+def extract_order_book_snapshot(symbols: list | None = None) -> pd.DataFrame | None:
+    if symbols is None:
+        symbols = get_symbols()
+    
+    if not symbols:
+        print("ERROR: No symbols to process")
+        return None
+    
+    timestamp = datetime.utcnow()
+    records = []
+    
+    for idx, symbol in enumerate(symbols, 1):
+        try:
+            resp = requests.get(
+                ORDER_BOOK_URL,
+                params={"symbol": symbol, "limit": ORDER_BOOK_LIMIT},
+                timeout=30
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+            # API trả về mảng string ["price", "qty"], phải ép float trước khi cộng
+            total_bid_volume = sum(float(bid[1]) for bid in data.get("bids", []))
+            total_ask_volume = sum(float(ask[1]) for ask in data.get("asks", []))
+            
+            total_vol = total_bid_volume + total_ask_volume
+            imbalance = total_bid_volume / total_vol if total_vol > 0 else 0.0
+            
+            records.append({
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "total_bid_volume": total_bid_volume,
+                "total_ask_volume": total_ask_volume,
+                "imbalance": imbalance,
+            })
+            
+            print(f"  [{idx}/{len(symbols)}] {symbol}: bid={total_bid_volume:,.2f}  ask={total_ask_volume:,.2f}  imbalance={imbalance:.4f}")
+            
+        except requests.HTTPError as e:
+            print(f"  ERROR: HTTP Error for {symbol}: {e}")
+        except Exception as e:
+            print(f"  ERROR: {symbol}: {e}")
+    
+    if not records:
+        print("ERROR: No order book data collected")
+        return None
+    
+    df = pd.DataFrame(records)
+    
+    # Lưu append vào CSV
+    output_path = RAW_DATA_DIR / "order_book_snapshot.csv"
+    write_header = not output_path.exists()
+    
+    df.to_csv(output_path, mode="a", header=write_header, index=False)
+    print(f"  SAVED: {output_path} (+{len(df)} records appended)")
+    
+    return df
 
 
 # =============================================================================
@@ -422,28 +469,33 @@ def main():
         return
     
     # Extract klines 3 years từ Binance Data Vision (monthly files) 
-    #---------------------- CHẠY 1 LẦN ĐẦU TIÊN ----------------------
-    # print(f"Starting extraction: {len(symbols)} symbols, {MONTHS_BACK} months")
-    # klines_data = extract_klines(symbols, months_back=MONTHS_BACK)
-    # total_records = sum(len(df) for df in klines_data.values())
-    # print(f"\nSUCCESS: {len(klines_data)}/{len(symbols)} symbols, {total_records:,} records")
+    # ! CHỈ CHẠY 1 LẦN ĐẦU TIÊN
+    print(f"Starting extraction: {len(symbols)} symbols, {MONTHS_BACK} months")
+    klines_data = extract_klines(symbols, months_back=MONTHS_BACK)
+    total_records = sum(len(df) for df in klines_data.values())
+    print(f"\nSUCCESS: {len(klines_data)}/{len(symbols)} symbols, {total_records:,} records")
     
-    # Extract recent klines từ REST API (cập nhật dữ liệu mới nhất)
+    #Extract recent klines từ REST API (cập nhật dữ liệu mới nhất)
     #-------------------------------------------------------------------
-    # print(f"\nUpdating recent klines for {len(symbols)} symbols...")
-    # recent_data = extract_recent_klines(symbols)
-    # if recent_data:
-    #     total_new = sum(len(df) for df in recent_data.values())
-    #     print(f"\nSUCCESS: Updated {len(recent_data)}/{len(symbols)} symbols")
+    print(f"\nUpdating recent klines for {len(symbols)} symbols...")
+    recent_data = extract_recent_klines(symbols)
+    if recent_data:
+        total_new = sum(len(df) for df in recent_data.values())
+        print(f"\nSUCCESS: Updated {len(recent_data)}/{len(symbols)} symbols")
     
     # Extract ticker 24h
+    # -------------------------------------------------------------------
     print(f"\nExtracting ticker 24h for {len(symbols)} symbols...")
     ticker_df = extract_ticker_24h(symbols)
     if ticker_df is not None:
         print(f"SUCCESS: Ticker 24h - {len(ticker_df):,} records")
     
-    # TODO: Extract order book snapshots
-     
+    # Extract order book snapshots
+    # -------------------------------------------------------------------
+    print(f"\nExtracting order book snapshots for {len(symbols)} symbols...")
+    ob_df = extract_order_book_snapshot(symbols)
+    if ob_df is not None:
+        print(f"SUCCESS: Order book snapshot - {len(ob_df)} records")
 
 if __name__ == "__main__":
     main()
