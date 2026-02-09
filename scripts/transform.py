@@ -64,7 +64,7 @@ PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
 # 2. Schema Definitions
 # =============================================================================
 
-# Schema đầu vào (Khớp với file CSV từ Binance & extract script)
+# tao schema dau vao giong voi raw data
 INPUT_SCHEMA = StructType([
     StructField("open_time", TimestampType(), True),
     StructField("open", DoubleType(), True),
@@ -74,7 +74,7 @@ INPUT_SCHEMA = StructType([
     StructField("volume", DoubleType(), True),
     StructField("close_time", TimestampType(), True),
     StructField("quote_volume", DoubleType(), True),
-    StructField("trades", LongType(), True),           # <-- Đã thêm cột trades
+    StructField("trades", LongType(), True),         
     StructField("taker_buy_base", DoubleType(), True),
     StructField("taker_buy_quote", DoubleType(), True),
     StructField("symbol", StringType(), True)
@@ -86,19 +86,17 @@ OUTPUT_SCHEMA = INPUT_SCHEMA \
     .add("MACD", DoubleType(), True) \
     .add("MACD_signal", DoubleType(), True)
 
-# =============================================================================
-# 3. Core Logic
-# =============================================================================
+# Khoi tao spark seasion la diem entry point tao data frame
 
 def init_spark(app_name="CryptoTransform"):
     """Khởi tạo SparkSession tối ưu cho xử lý cục bộ với Arrow."""
     return SparkSession.builder \
         .appName(app_name) \
         .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
-        .config("spark.driver.memory", "4g") \
+        .config("spark.driver.memory", "6g") \
         .getOrCreate()
 
-# Hàm tính toán chỉ báo bằng Pandas (Chạy song song trên các node/cores)
+# Hàm tính toán chỉ báo bằng Pandas 
 def calculate_indicators_pandas(pdf: pd.DataFrame) -> pd.DataFrame:
     # 1. Sort để đảm bảo tính toán đúng thứ tự thời gian
     pdf = pdf.sort_values("open_time")
@@ -110,7 +108,6 @@ def calculate_indicators_pandas(pdf: pd.DataFrame) -> pd.DataFrame:
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     
-    # Tránh chia cho 0
     loss = loss.replace(0, np.nan)
     rs = gain / loss
     
@@ -125,8 +122,7 @@ def calculate_indicators_pandas(pdf: pd.DataFrame) -> pd.DataFrame:
     pdf["MACD"] = ema12 - ema26
     pdf["MACD_signal"] = pdf["MACD"].ewm(span=9, adjust=False).mean()
     
-    # --- Fill NA (Những dòng đầu tiên sẽ bị NaN do tính toán window) ---
-    # Forward fill trước, sau đó Backward fill cho các dòng đầu
+    # ---Fill dư liệu cho những dòng bị NaN
     pdf = pdf.ffill().bfill()
     
     # Fill 0 cho trường hợp dữ liệu quá ngắn không tính được indicator
@@ -146,19 +142,18 @@ def transform_data(spark: SparkSession):
         print(f"ERROR: Không tìm thấy file csv nào tại {raw_path}")
         return None
     
-    # Lọc bỏ dữ liệu rác (dòng không có open_time)
+    # Lọc bỏ dữ liệu Null
     df = df.filter(F.col("open_time").isNotNull())
     
     print("Calculating RSI & MACD using Pandas UDF...")
     
     # Apply Pandas UDF theo từng Symbol
-    # Đây là bước quan trọng nhất: Chia dữ liệu theo symbol -> Đẩy vào Pandas -> Gộp lại
     processed_df = df.groupBy("symbol").applyInPandas(
         calculate_indicators_pandas, 
         schema=OUTPUT_SCHEMA
     )
     
-    # Lưu Parquet (Partition theo Symbol để truy vấn nhanh sau này)
+    # Lưu Parquet 
     output_path = str(PROCESSED_DATA_DIR / "features.parquet")
     print(f"Saving to: {output_path}")
     
@@ -169,9 +164,7 @@ def transform_data(spark: SparkSession):
         
     return output_path
 
-# =============================================================================
-# Main Execution
-# =============================================================================
+
 if __name__ == "__main__":
     spark = init_spark()
     try:
