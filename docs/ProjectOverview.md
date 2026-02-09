@@ -89,13 +89,13 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 
 ### 3.4. Tổng hợp theo bảng
 
-| Bảng          | Số records     | Kích thước   | Tần suất ghi      |
-| ------------- | -------------- | ------------ | ----------------- |
-| `symbols`     | 50             | < 1 KB       | 1 lần (setup)     |
-| `klines`      | 78,840,000     | ~7.5 GB      | 72,000 recs/ngày  |
-| `ticker_24h`  | 54,750         | ~8 MB        | 50 recs/ngày      |
-| `predictions` | 78,840,000     | ~6 GB        | 72,000 recs/ngày  |
-| **Total**     | **~158 triệu** | **~13.5 GB** | -                 |
+| Bảng          | Số records     | Kích thước   | Tần suất ghi     |
+| ------------- | -------------- | ------------ | ---------------- |
+| `symbols`     | 50             | < 1 KB       | 1 lần (setup)    |
+| `klines`      | 78,840,000     | ~7.5 GB      | 72,000 recs/ngày |
+| `ticker_24h`  | 54,750         | ~8 MB        | 50 recs/ngày     |
+| `predictions` | 78,840,000     | ~6 GB        | 72,000 recs/ngày |
+| **Total**     | **~158 triệu** | **~13.5 GB** | -                |
 
 ### 3.5. Breakdown theo layer
 
@@ -165,7 +165,7 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
     ┌─────────┐                  ┌─────────────┐              ┌─────────────┐
     │  OHLCV  │      Spark       │  + RSI      │    JDBC      │   klines    │
     │  data   │  ──────────────▶ │  + MACD     │  ─────────▶  │   table     │
-    │  (CSV)  │   Window Func    │  (Parquet)  │              │             │
+    │  (CSV)  │   Pandas UDF     │  (Parquet)  │              │             │
     └─────────┘                  └─────────────┘              └─────────────┘
 
     data/raw/                    data/processed/               crypto_dw
@@ -217,13 +217,13 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 
 ### 5.2. Nguồn dữ liệu từ Binance API
 
-| Bảng          | Binance API Endpoint                          | Mô tả                                              | Tần suất thu thập |
-| ------------- | --------------------------------------------- | -------------------------------------------------- | ----------------- |
-| `symbols`     | `/api/v3/exchangeInfo`                             | Thông tin trading pair                             | 1 lần (setup)     |
-| `klines`      | `/api/v3/klines`                                   | Dữ liệu nến (OHLCV)                                | Daily             |
-| `ticker_24h`  | `/api/v3/ticker/24hr`, `/api/v3/ticker/bookTicker` | Thống kê 24h + best bid/ask + spread              | Daily             |
-| `order_book_snapshot` | `/api/v3/depth`                          | Snapshot order book để đo áp lực mua/bán          | 5–15 phút         |
-| `predictions` | (Internal)                                         | Kết quả từ LSTM model                              | Hourly            |
+| Bảng                  | Binance API Endpoint                               | Mô tả                                    | Tần suất thu thập |
+| --------------------- | -------------------------------------------------- | ---------------------------------------- | ----------------- |
+| `symbols`             | `/api/v3/exchangeInfo`                             | Thông tin trading pair                   | 1 lần (setup)     |
+| `klines`              | `/api/v3/klines`                                   | Dữ liệu nến (OHLCV)                      | Daily             |
+| `ticker_24h`          | `/api/v3/ticker/24hr`, `/api/v3/ticker/bookTicker` | Thống kê 24h + best bid/ask + spread     | Daily             |
+| `order_book_snapshot` | `/api/v3/depth`                                    | Snapshot order book để đo áp lực mua/bán | 5–15 phút         |
+| `predictions`         | (Internal)                                         | Kết quả từ LSTM model                    | Hourly            |
 
 ### 5.3. Bảng `symbols` (Dimension Table)
 
@@ -290,7 +290,7 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 | `trade_count`      | BIGINT      | Số lượng trades trong 24h         | Binance ticker/24hr |
 | `bid_price`        | DOUBLE      | Best bid                          | Binance bookTicker  |
 | `ask_price`        | DOUBLE      | Best ask                          | Binance bookTicker  |
-| `spread_pct`       | DOUBLE      | (ask - bid) / bid * 100           | Calculated          |
+| `spread_pct`       | DOUBLE      | (ask - bid) / bid \* 100          | Calculated          |
 
 **Primary Key:** `(symbol, snapshot_time)`
 
@@ -347,13 +347,13 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 
 > **Mục đích:** Theo dõi áp lực mua/bán theo snapshot order book.
 
-| Column             | Type        | Description                                      | Nguồn         |
-| ------------------ | ----------- | ------------------------------------------------ | ------------ |
-| `symbol`           | VARCHAR(20) | FK → symbols.symbol                               | Binance depth |
-| `timestamp`        | TIMESTAMPTZ | Thời điểm snapshot                                | System       |
-| `total_bid_volume` | DOUBLE      | Tổng khối lượng bid (top N levels)               | Calculated   |
-| `total_ask_volume` | DOUBLE      | Tổng khối lượng ask (top N levels)               | Calculated   |
-| `imbalance`        | DOUBLE      | total_bid / (total_bid + total_ask)              | Calculated   |
+| Column             | Type        | Description                         | Nguồn         |
+| ------------------ | ----------- | ----------------------------------- | ------------- |
+| `symbol`           | VARCHAR(20) | FK → symbols.symbol                 | Binance depth |
+| `timestamp`        | TIMESTAMPTZ | Thời điểm snapshot                  | System        |
+| `total_bid_volume` | DOUBLE      | Tổng khối lượng bid (top N levels)  | Calculated    |
+| `total_ask_volume` | DOUBLE      | Tổng khối lượng ask (top N levels)  | Calculated    |
+| `imbalance`        | DOUBLE      | total_bid / (total_bid + total_ask) | Calculated    |
 
 **Primary Key:** `(symbol, timestamp)`
 
@@ -483,13 +483,13 @@ ORDER BY avg_error ASC;
 
 #### 6.2.3. Extract Ticker 24h + Best Bid/Ask (Daily)
 
-| Thuộc tính | Giá trị                            |
-| ---------- | ---------------------------------- |
+| Thuộc tính | Giá trị                                            |
+| ---------- | -------------------------------------------------- |
 | API        | `/api/v3/ticker/24hr`, `/api/v3/ticker/bookTicker` |
-| Tần suất   | Daily (2:30 AM)                                  |
-| Đặc điểm   | 1 request lấy được tất cả 50 coins               |
-| Output     | `data/raw/ticker_24h.csv`                        |
-| Ghi vào    | Bảng `ticker_24h`                                |
+| Tần suất   | Daily (2:30 AM)                                    |
+| Đặc điểm   | 1 request lấy được tất cả 50 coins                 |
+| Output     | `data/raw/ticker_24h.csv`                          |
+| Ghi vào    | Bảng `ticker_24h`                                  |
 
 > **Lưu ý:** API ticker/24hr và bookTicker trả về snapshot tại thời điểm gọi, không phải dữ liệu lịch sử. Mỗi ngày lưu 1 record/coin.
 
@@ -512,9 +512,8 @@ ORDER BY avg_error ASC;
 **Xử lý:**
 
 1. Đọc tất cả CSV vào Spark DataFrame
-2. Tính RSI(14) sử dụng Window Function
-3. Tính MACD và MACD Signal
-4. Xử lý missing values (forward fill)
+2. Tính RSI(14) và MACD sử dụng Pandas UDF (`groupBy("symbol").applyInPandas`)
+3. Xử lý missing values (forward fill, back fill, fillna)
 
 **Output:** `data/processed/features.parquet`
 
@@ -522,12 +521,13 @@ ORDER BY avg_error ASC;
 
 ### 6.4. Load - Ghi vào PostgreSQL
 
-| Bảng          | Input              | Mode   | Ghi chú                           |
-| ------------- | ------------------ | ------ | --------------------------------- |
-| `symbols`     | symbols.json       | Upsert | 1 lần setup, update nếu cần       |
-| `klines`      | features.parquet   | Append | Dữ liệu mới mỗi ngày              |
-| `ticker_24h`  | ticker_24h.csv     | Append | 50 records/ngày                   |
-| `predictions` | (từ inference DAG) | Append | 50 records/giờ (hourly inference) |
+| Bảng                  | Input                   | Mode   | Ghi chú                           |
+| --------------------- | ----------------------- | ------ | --------------------------------- |
+| `symbols`             | symbols.json            | Upsert | 1 lần setup, update nếu cần       |
+| `klines`              | features.parquet        | Append | Dữ liệu mới mỗi ngày              |
+| `ticker_24h`          | ticker_24h.csv          | Append | 50 records/ngày                   |
+| `order_book_snapshot` | order_book_snapshot.csv | Append | Snapshot mỗi 5–15 phút            |
+| `predictions`         | (từ inference DAG)      | Append | 50 records/giờ (hourly inference) |
 
 ---
 
@@ -965,14 +965,14 @@ ORDER BY k.rsi_14 DESC;
 
 ## 13. Các Rủi ro & Giải pháp
 
-| Rủi ro                  | Xác suất   | Tác động        | Giải pháp                                    |
-| ----------------------- | ---------- | --------------- | -------------------------------------------- |
-| Binance rate limit      | Cao        | ETL fail        | Dùng Binance Data Vision cho historical data |
-| API lỗi tạm thời         | Trung bình | Mất data ngắn   | Retry sau 2s (có thể dùng python-binance)     |
+| Rủi ro                  | Xác suất   | Tác động        | Giải pháp                                         |
+| ----------------------- | ---------- | --------------- | ------------------------------------------------- |
+| Binance rate limit      | Cao        | ETL fail        | Dùng Binance Data Vision cho historical data      |
+| API lỗi tạm thời        | Trung bình | Mất data ngắn   | Retry sau 2s (có thể dùng python-binance)         |
 | Thiếu dữ liệu theo phút | Trung bình | Model lỗi       | Resample + forward fill hoặc linear interpolation |
-| Downtime ngắn           | Thấp       | Gap dữ liệu     | Backfill bằng REST API theo khoảng thời gian |
-| Downtime dài            | Thấp       | Gap dữ liệu lớn | Backfill bằng Binance Data Vision (file zip) |
-| Spark out of memory     | Trung bình | Transform fail  | Tăng partition, xử lý theo batch nhỏ         |
-| Model không hội tụ      | Trung bình | Prediction tệ   | Tune hyperparameters, thử architecture khác  |
-| PostgreSQL slow query   | Thấp       | Dashboard lag   | Thêm index, partition table                  |
-| Airflow scheduler crash | Thấp       | Jobs không chạy | Auto-restart với Docker, monitoring          |
+| Downtime ngắn           | Thấp       | Gap dữ liệu     | Backfill bằng REST API theo khoảng thời gian      |
+| Downtime dài            | Thấp       | Gap dữ liệu lớn | Backfill bằng Binance Data Vision (file zip)      |
+| Spark out of memory     | Trung bình | Transform fail  | Tăng partition, xử lý theo batch nhỏ              |
+| Model không hội tụ      | Trung bình | Prediction tệ   | Tune hyperparameters, thử architecture khác       |
+| PostgreSQL slow query   | Thấp       | Dashboard lag   | Thêm index, partition table                       |
+| Airflow scheduler crash | Thấp       | Jobs không chạy | Auto-restart với Docker, monitoring               |
