@@ -17,7 +17,22 @@ services:
   # TODO: Cấu hình PostgreSQL
   postgres:
     image: postgres:15
-    # ... config
+    container_name: crypto_postgres_container
+    ports:
+      - "5432:5432"  # Mở cổng 5432 ra máy thật để Python kết nối
+    environment:
+      - POSTGRES_USER= crypto123az
+      - POSTGRES_PASSWORD=crypto123
+      - POSTGRES_DB=crypto_db      # Tên Database mặc định
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # Lưu dữ liệu để không bị mất khi tắt Docker
+    networks:
+      - crypto_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d crypto_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   # TODO: Cấu hình Airflow Webserver
   airflow-webserver:
