@@ -1,43 +1,3 @@
-# =============================================================================
-# Transform Script - Xử lý dữ liệu với Apache Spark
-# =============================================================================
-# Chức năng:
-#   1. Đọc dữ liệu raw CSV từ Data Lake
-#   2. Tính toán chỉ số kỹ thuật: RSI(14), MACD, MACD Signal
-#   3. Xử lý missing values (forward fill)
-#   4. Lưu kết quả dạng Parquet
-#
-# Input: data/raw/*.csv
-# Output: data/processed/features.parquet
-#
-# Sử dụng:
-#   python scripts/transform.py
-# =============================================================================
-
-# TODO: Import PySpark libraries
-
-# TODO: Implement init_spark()
-# - Tạo SparkSession với cấu hình phù hợp
-
-# TODO: Implement calculate_rsi()
-# - Tính RSI(14) sử dụng Window Function
-# - RSI = 100 - 100/(1 + RS)
-
-# TODO: Implement calculate_macd()
-# - Tính MACD = EMA(12) - EMA(26)
-# - Tính MACD Signal = EMA(9) của MACD
-
-# TODO: Implement transform_data()
-# - Đọc tất cả CSV files
-# - Gọi calculate_rsi(), calculate_macd()
-# - Xử lý missing values
-# - Lưu Parquet
-
-# TODO: Implement main()
-
-# =============================================================================
-# Transform Script - Fix lỗi __file__ & Update Schema chuẩn (Có cột trades)
-# =============================================================================
 import os
 import sys
 from pathlib import Path
@@ -48,21 +8,12 @@ from pyspark.sql.types import *
 import pandas as pd
 import numpy as np
 
-# =============================================================================
-# 1. Configuration & Path
-# =============================================================================
-# Sử dụng __file__ (2 dấu gạch dưới) để lấy đường dẫn script hiện tại
-# Giả định cấu trúc folder: /project_root/scripts/transform.py
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent 
 
 RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
 PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
 PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-# =============================================================================
-# 2. Schema Definitions
-# =============================================================================
 
 # tao schema dau vao giong voi raw data
 INPUT_SCHEMA = StructType([
