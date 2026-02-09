@@ -19,17 +19,17 @@ services:
     image: postgres:15
     container_name: crypto_postgres_container
     ports:
-      - "5432:5432"  # Mở cổng 5432 ra máy thật để Python kết nối
+      - "${POSTGRES_PORT:-5432}:5432"
     environment:
-      - POSTGRES_USER=crypto123az
-      - POSTGRES_PASSWORD=crypto123
-      - POSTGRES_DB=crypto_db      # Tên Database mặc định
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
     volumes:
-      - postgres_data:/var/lib/postgresql/data # Lưu dữ liệu để không bị mất khi tắt Docker
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - crypto_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d crypto_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5

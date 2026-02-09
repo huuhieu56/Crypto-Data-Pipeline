@@ -1,212 +1,220 @@
-import os
+# =============================================================================
+# Load Script - Ghi du lieu vao PostgreSQL
+# =============================================================================
+
 import sys
-import json
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import json
 import pandas as pd
-from sqlalchemy import create_engine, text
-from sqlalchemy.dialects.postgresql import insert
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit
-from pyspark.sql.types import *
 
-# 1. CẤU HÌNH (CONFIGURATION)
+from config.config import (
+    RAW_DATA_DIR,
+    PROCESSED_DATA_DIR,
+    KLINES_COLUMNS,
+    KLINES_RENAME_MAP,
+)
+from utils.logger import get_logger
+from utils.exceptions import LoadError
+from utils.db_utils import (
+    get_engine,
+    init_schema,
+    upsert_on_conflict_nothing,
+    get_spark_session,
+    spark_write_jdbc,
+)
 
-CURRENT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CURRENT_DIR.parent
-RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
-PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
-SQL_DIR = PROJECT_ROOT / "sql"
-
-# Cấu hình Database
-DB_CONFIG = {
-    "user": "crypto123az",
-    "password": "crypto123",
-    "host": "localhost",
-    "port": "5432",
-    "dbname": "crypto_db"
-}
-# URL cho SQLAlchemy 
-DB_URL = f"postgresql+psycopg2://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
-
-# URL cho Spark JDBC 
-JDBC_URL = f"jdbc:postgresql://{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
+logger = get_logger(__name__)
 
 
+# =============================================================================
+# Load functions
+# =============================================================================
 
-def init_spark(app_name="CryptoLoad"):
-    """
-    Khởi tạo SparkSession có kèm JDBC Driver để ghi vào Postgres.
-    Lưu ý: Bạn cần tải file jar 'postgresql-42.x.x.jar' nếu chưa có, 
-    nhưng để đơn giản ta sẽ dùng gói maven có sẵn.
-    """
-    return SparkSession.builder \
-        .appName(app_name) \
-        .config("spark.jars.packages", "org.postgresql:postgresql:42.6.0") \
-        .config("spark.driver.memory", "4g") \
-        .getOrCreate()
-
-def get_engine():
-    try:
-        return create_engine(DB_URL)
-    except Exception as e:
-        print(f"Lỗi kết nối Database: {e}")
-        sys.exit(1)
-
-def init_db(engine):
-    """Chạy file sql/schema.sql"""
-    schema_path = SQL_DIR / "schema.sql"
-    if not schema_path.exists(): return
-    
-    print("--- Init Database Schema ---")
-    with open(schema_path, "r") as f:
-        sql = f.read()
-    with engine.connect() as conn:
-        conn.execute(text(sql))
-        conn.commit()
-    print("✅ Schema initialized.")
-
-def upsert_method(table, conn, keys, data_iter):
-    from sqlalchemy.dialects.postgresql import insert
-    
-    data = [dict(zip(keys, row)) for row in data_iter]
-    if not data:
+def load_symbols(engine) -> None:
+    """Load symbols tu JSON vao bang symbols (Pandas, file nho)."""
+    json_path = RAW_DATA_DIR / "symbols.json"
+    if not json_path.exists():
+        logger.warning("Symbols file not found: %s — skipping", json_path)
         return
 
-    table_name = table.table.name
-    
-    if table_name == 'symbols':
-        index_elements = ['symbol']
-    elif table_name == 'ticker_24h':
-        index_elements = ['symbol', 'snapshot_time']
-    elif table_name == 'order_book_snapshot':
-        index_elements = ['symbol', 'timestamp'] 
-    else:
-        index_elements = [c.name for c in table.table.primary_key.columns]
-
-    if not index_elements:
-        raise ValueError(f"Table {table_name} has no primary key defined for upsert!")
-
-    stmt = insert(table.table).values(data)
-    stmt = stmt.on_conflict_do_nothing(index_elements=index_elements)
-    conn.execute(stmt)
-
-def load_symbols_pandas(engine):
-    """File nhỏ (JSON) -> Dùng Pandas cho tiện"""
-    json_path = RAW_DATA_DIR / "symbols.json"
-    if not json_path.exists(): return
-
-    print(f"Loading Symbols from {json_path.name}...")
+    logger.info("Loading symbols from %s", json_path.name)
     try:
-        with open(json_path, 'r') as f:
+        with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        
+
         if isinstance(data, dict) and "symbols" in data:
             df = pd.DataFrame(data["symbols"])
         else:
             df = pd.DataFrame(data)
 
-       
-        rename_map = {
-            'base asset': 'base_asset', 'quote asset': 'quote_asset',
-            'baseAsset': 'base_asset', 'quoteAsset': 'quote_asset'
-        }
-        df = df.rename(columns=rename_map)
-        valid_cols = ['symbol', 'base_asset', 'quote_asset', 'status']
-        df = df[[c for c in valid_cols if c in df.columns]]
-        
-        df.to_sql('symbols', engine, if_exists='append', index=False, method=upsert_method)
-        print(f"✅ Loaded {len(df)} symbols.")
-    except Exception as e:
-        print(f"⚠️ Error loading symbols: {e}")
+        # Giu dung 4 cot khop voi schema bang symbols
+        target_cols = ["symbol", "base_asset", "quote_asset", "status"]
+        df = df[[c for c in target_cols if c in df.columns]]
 
-def load_klines_spark(spark):
-    """
-    File LỚN (Parquet) -> Dùng SPARK để đọc và ghi vào DB
-    """
-    parquet_path = str(PROCESSED_DATA_DIR / "features.parquet")
-    print(f"Loading Klines from {parquet_path} using Spark...")
-    
-    try:
-        # 1. Đọc Parquet bằng Spark
-        df = spark.read.parquet(parquet_path)
-        
-        # 2. Định dạng tên giống với column bên postgre
-        df = df.withColumnRenamed("open_time", "timestamp") \
-               .withColumnRenamed("RSI", "rsi_14") \
-               .withColumnRenamed("MACD", "macd") \
-               .withColumnRenamed("MACD_signal", "macd_signal")
-        
-        # 3. Chọn đúng các cột cần thiết
-        target_cols = [
-            'symbol', 'timestamp', 'open', 'high', 'low', 'close', 
-            'volume', 'quote_volume', 'trades', 'rsi_14', 'macd', 'macd_signal'
-        ]
-        # Lọc cột (chỉ lấy những cột có trong df)
-        existing_cols = [c for c in target_cols if c in df.columns]
-        df_final = df.select(*existing_cols)
-        
-        print(f"Start writing {df_final.count():,} records to PostgreSQL via JDBC...")
-        db_properties = {
-            "user": DB_CONFIG['user'],
-            "password": DB_CONFIG['password'],
-            "driver": "org.postgresql.Driver",
-            "batchsize": "10000" # Tăng tốc độ ghi
-        }
-        
-        # Ghi vào bảng klines
-        
-        df_final.write.jdbc(
-            url=JDBC_URL,
-            table="klines",
-            mode="append", 
-            properties=db_properties
+        df.to_sql(
+            "symbols",
+            engine,
+            if_exists="append",
+            index=False,
+            method=upsert_on_conflict_nothing,
         )
-        print(" Klines loaded successfully via Spark!")
-        
-    except Exception as e:
-        if "duplicate key value" in str(e).lower():
-            print("Warning: Một số dữ liệu đã tồn tại (Duplicate Key). Spark đã dừng ghi.")
-        else:
-            print(f"Error loading klines with Spark: {e}")
+        logger.info("Loaded %d symbols", len(df))
+    except Exception as exc:
+        raise LoadError(f"Failed to load symbols: {exc}") from exc
 
-def load_ticker_pandas(engine):
-    csv_path = RAW_DATA_DIR / "ticker_24h.csv"
-    if csv_path.exists():
-        print(f"Loading Ticker form {csv_path.name}...")
-        df = pd.read_csv(csv_path)
-        for col in ['price_change', 'high_24h', 'low_24h', 'bid_price', 'ask_price']:
-            if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-        df.to_sql('ticker_24h', engine, if_exists='append', index=False, method=upsert_method)
-        print(f"Loaded {len(df)} tickers.")
 
-def load_orderbook_pandas(engine):
-    csv_path = RAW_DATA_DIR / "order_book_snapshot.csv"
-    if csv_path.exists():
-        print(f"Loading Orderbook form {csv_path.name}...")
-        df = pd.read_csv(csv_path)
-        if 'timestamp' in df.columns: df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df.to_sql('order_book_snapshot', engine, if_exists='append', index=False, method=upsert_method)
-        print(f"✅ Loaded {len(df)} orderbooks.")
+def load_klines(spark) -> None:
+    """Load klines tu Parquet vao bang klines (Spark, file lon)."""
+    parquet_path = str(PROCESSED_DATA_DIR / "features.parquet")
+    logger.info("Loading klines from %s via Spark", parquet_path)
 
-def main():
-    # 1. Init DB Structure (Dùng SQLAlchemy engine)
-    engine = get_engine()
-    init_db(engine)
-    
-    # 2. Load các bảng nhỏ bằng Pandas 
-    load_symbols_pandas(engine)
-    load_ticker_pandas(engine)
-    load_orderbook_pandas(engine)
-    
-    # 3. Load bảng lớn bằng Spark
-    spark = init_spark()
     try:
-        load_klines_spark(spark)
-    finally:
-        spark.stop()
-    
-    print("\n All processes finished!")
+        df = spark.read.parquet(parquet_path)
+
+        # Rename columns theo mapping tu config
+        for old_name, new_name in KLINES_RENAME_MAP.items():
+            if old_name in df.columns:
+                df = df.withColumnRenamed(old_name, new_name)
+
+        # Chon dung cac cot can thiet
+        existing_cols = [c for c in KLINES_COLUMNS if c in df.columns]
+        df_final = df.select(*existing_cols)
+
+        record_count = df_final.count()
+        logger.info("Writing %s records to table 'klines'", f"{record_count:,}")
+
+        spark_write_jdbc(df_final, table="klines", mode="append")
+        logger.info("Klines loaded successfully")
+
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "duplicate key value" in msg:
+            logger.warning("Some records already exist (duplicate key) — skipped by DB")
+        else:
+            raise LoadError(f"Failed to load klines: {exc}") from exc
+
+
+def load_ticker(engine) -> None:
+    """Load ticker_24h tu CSV vao bang ticker_24h (Pandas)."""
+    csv_path = RAW_DATA_DIR / "ticker_24h.csv"
+    if not csv_path.exists():
+        logger.warning("Ticker file not found: %s — skipping", csv_path)
+        return
+
+    logger.info("Loading ticker from %s", csv_path.name)
+    try:
+        df = pd.read_csv(csv_path)
+        numeric_cols = ["price_change", "high_24h", "low_24h", "bid_price", "ask_price"]
+        for col_name in numeric_cols:
+            if col_name in df.columns:
+                df[col_name] = pd.to_numeric(df[col_name], errors="coerce")
+
+        df.to_sql(
+            "ticker_24h",
+            engine,
+            if_exists="append",
+            index=False,
+            method=upsert_on_conflict_nothing,
+        )
+        logger.info("Loaded %d ticker records", len(df))
+    except Exception as exc:
+        raise LoadError(f"Failed to load ticker: {exc}") from exc
+
+
+def load_orderbook(engine) -> None:
+    """Load order_book_snapshot tu CSV vao bang order_book_snapshot (Pandas)."""
+    csv_path = RAW_DATA_DIR / "order_book_snapshot.csv"
+    if not csv_path.exists():
+        logger.warning("Order book file not found: %s — skipping", csv_path)
+        return
+
+    logger.info("Loading order book from %s", csv_path.name)
+    try:
+        df = pd.read_csv(csv_path)
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+        df.to_sql(
+            "order_book_snapshot",
+            engine,
+            if_exists="append",
+            index=False,
+            method=upsert_on_conflict_nothing,
+        )
+        logger.info("Loaded %d order book records", len(df))
+    except Exception as exc:
+        raise LoadError(f"Failed to load order book: {exc}") from exc
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+# =============================================================================
+# CLI
+# =============================================================================
+def _build_parser() -> "argparse.ArgumentParser":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Load data into PostgreSQL",
+    )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        choices=["symbols", "klines", "ticker", "orderbook"],
+        default=None,
+        help="load only specific tables (default: all)",
+    )
+    parser.add_argument(
+        "--skip",
+        nargs="+",
+        choices=["symbols", "klines", "ticker", "orderbook"],
+        default=[],
+        help="skip specific tables",
+    )
+    return parser
+
+
+def main(only: set[str] | None = None, skip: set[str] | None = None) -> None:
+    skip = skip or set()
+    logger.info("=== Load pipeline started ===")
+
+    def _should_load(table: str) -> bool:
+        if only is not None:
+            return table in only
+        return table not in skip
+
+    # 1. Init DB schema
+    engine = get_engine()
+    init_schema(engine)
+
+    # 2. Load bang nho bang Pandas
+    if _should_load("symbols"):
+        load_symbols(engine)
+    if _should_load("ticker"):
+        load_ticker(engine)
+    if _should_load("orderbook"):
+        load_orderbook(engine)
+
+    # 3. Load bang lon bang Spark
+    if _should_load("klines"):
+        spark = get_spark_session("CryptoLoad")
+        try:
+            load_klines(spark)
+        finally:
+            spark.stop()
+            logger.info("SparkSession stopped")
+
+    logger.info("=== Load pipeline finished ===")
+
 
 if __name__ == "__main__":
-    main()
+    args = _build_parser().parse_args()
+    main(
+        only=set(args.only) if args.only else None,
+        skip=set(args.skip),
+    )

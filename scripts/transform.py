@@ -1,21 +1,33 @@
-import os
+# =============================================================================
+# Transform Script - Xu ly du lieu voi Apache Spark
+# =============================================================================
+
 import sys
 from pathlib import Path
 
-import pyspark.sql.functions as F
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from pyspark.sql import SparkSession
-from pyspark.sql.types import *
+from pyspark.sql.functions import col
+from pyspark.sql.types import (
+    DoubleType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 import pandas as pd
 import numpy as np
 
-CURRENT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CURRENT_DIR.parent 
+from config.config import RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config.symbols import SYMBOLS
+from utils.logger import get_logger
+from utils.exceptions import TransformError
+from utils.db_utils import get_spark_session
 
-RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
-PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
-PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+logger = get_logger(__name__)
 
-# tao schema dau vao giong voi raw data
 INPUT_SCHEMA = StructType([
     StructField("open_time", TimestampType(), True),
     StructField("open", DoubleType(), True),
@@ -28,113 +40,130 @@ INPUT_SCHEMA = StructType([
     StructField("trades", LongType(), True),         
     StructField("taker_buy_base", DoubleType(), True),
     StructField("taker_buy_quote", DoubleType(), True),
-    StructField("symbol", StringType(), True)
+    StructField("symbol", StringType(), True),
 ])
 
-# Schema đầu ra (Input cũ + Các chỉ báo mới bạn yêu cầu)
-OUTPUT_SCHEMA = INPUT_SCHEMA \
-    .add("RSI", DoubleType(), True) \
-    .add("MACD", DoubleType(), True) \
-    .add("MACD_signal", DoubleType(), True)
+# StructType.add() mutate in-place, phai tao ban copy rieng
+OUTPUT_SCHEMA = StructType(list(INPUT_SCHEMA.fields) + [
+    StructField("RSI", DoubleType(), True),
+    StructField("MACD", DoubleType(), True),
+    StructField("MACD_signal", DoubleType(), True),
+])
 
-# Khoi tao spark seasion la diem entry point tao data frame
 
-def init_spark(app_name="CryptoTransform"):
-    """Khởi tạo SparkSession tối ưu cho xử lý cục bộ với Arrow."""
-    return SparkSession.builder \
-        .appName(app_name) \
-        .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
-        .config("spark.driver.memory", "6g") \
-        .getOrCreate()
-
-# Hàm tính toán chỉ báo bằng Pandas 
 def calculate_indicators_pandas(pdf: pd.DataFrame) -> pd.DataFrame:
-    # 1. Sort để đảm bảo tính toán đúng thứ tự thời gian
+    """Tinh RSI(14) va MACD(12,26,9) cho mot group symbol."""
     pdf = pdf.sort_values("open_time")
-    
     close = pdf["close"]
-    
-    # --- Tính RSI (14) ---
+
+    # RSI (14)
     delta = close.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    
     loss = loss.replace(0, np.nan)
     rs = gain / loss
-    
-    # Công thức RSI
     pdf["RSI"] = 100 - (100 / (1 + rs))
-    
-    # --- Tính MACD (12, 26, 9) ---
-    # adjust=False là tiêu chuẩn cho phân tích kỹ thuật crypto
+
+    # MACD (12, 26, 9)
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
-    
     pdf["MACD"] = ema12 - ema26
     pdf["MACD_signal"] = pdf["MACD"].ewm(span=9, adjust=False).mean()
-    
-    # ---Fill dư liệu cho những dòng bị NaN
-    pdf = pdf.ffill().bfill()
-    
-    # Fill 0 cho trường hợp dữ liệu quá ngắn không tính được indicator
-    pdf = pdf.fillna(0)
-    
+
+    # Fill NaN
+    pdf = pdf.ffill().bfill().fillna(0)
     return pdf
 
-def transform_data(spark: SparkSession):
-    print(f"--- Processing data from: {RAW_DATA_DIR} ---")
-    
-    # Đọc tất cả file CSV trong thư mục raw (*.csv)
-    raw_path = str(RAW_DATA_DIR / "*.csv")
-    
+
+def transform_data(spark: SparkSession, symbols: list[str] | None = None) -> str | None:
+    """Doc CSV tu raw, tinh indicators, luu Parquet."""
+    symbols = symbols or SYMBOLS
+    logger.info("Processing data from: %s", RAW_DATA_DIR)
+
+    csv_paths = [(RAW_DATA_DIR / f"{s}.csv") for s in symbols]
+    existing = [str(p) for p in csv_paths if p.exists()]
+
+    if not existing:
+        raise TransformError(f"No klines CSV files found in {RAW_DATA_DIR}")
+
+    logger.info("Found %d/%d klines CSV files", len(existing), len(symbols))
+
     try:
-        df = spark.read.csv(raw_path, header=True, schema=INPUT_SCHEMA)
-    except Exception:
-        print(f"ERROR: Không tìm thấy file csv nào tại {raw_path}")
-        return None
-    
-    # Lọc bỏ dữ liệu Null
-    df = df.filter(F.col("open_time").isNotNull())
-    
-    print("Calculating RSI & MACD using Pandas UDF...")
-    
-    # Apply Pandas UDF theo từng Symbol
+        df = spark.read.csv(
+            existing,
+            header=True,
+            schema=INPUT_SCHEMA,
+            timestampFormat="yyyy-MM-dd HH:mm:ss",
+        )
+    except Exception as exc:
+        raise TransformError(f"Cannot read klines CSV: {exc}") from exc
+
+    df = df.filter(col("open_time").isNotNull())
+
+    logger.info("Calculating RSI and MACD using Pandas UDF")
+
     processed_df = df.groupBy("symbol").applyInPandas(
-        calculate_indicators_pandas, 
-        schema=OUTPUT_SCHEMA
+        calculate_indicators_pandas,
+        schema=OUTPUT_SCHEMA,
     )
-    
-    # Lưu Parquet 
+
     output_path = str(PROCESSED_DATA_DIR / "features.parquet")
-    print(f"Saving to: {output_path}")
-    
+    logger.info("Saving processed data to: %s", output_path)
+
     processed_df.write \
         .mode("overwrite") \
         .partitionBy("symbol") \
         .parquet(output_path)
-        
+
+    logger.info("Transform complete")
     return output_path
 
 
+# =============================================================================
+# CLI
+# =============================================================================
+def _build_parser() -> "argparse.ArgumentParser":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Transform raw klines CSV → features Parquet",
+    )
+    parser.add_argument(
+        "--symbols",
+        nargs="+",
+        metavar="SYM",
+        default=None,
+        help="process only these symbols (default: all in SYMBOLS list)",
+    )
+    parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="skip verification step after transform",
+    )
+    return parser
+
+
 if __name__ == "__main__":
-    spark = init_spark()
+    args = _build_parser().parse_args()
+    active_symbols = args.symbols or SYMBOLS
+
+    logger.info("Transform started — symbols=%d", len(active_symbols))
+
+    spark = get_spark_session("CryptoTransform")
     try:
-        out_file = transform_data(spark)
-        
-        if out_file:
-            # Verify kết quả
-            print("\n--- Preview Result ---")
+        out_file = transform_data(spark, symbols=active_symbols)
+
+        if out_file and not args.no_verify:
+            logger.info("--- Verifying result ---")
             res = spark.read.parquet(out_file)
-            
-            # Chọn các cột quan trọng để hiển thị kiểm tra
             display_cols = ["open_time", "symbol", "close", "trades", "RSI", "MACD", "MACD_signal"]
             res.select(display_cols).show(5)
-            
-            print(f"Total records: {res.count():,}")
-        
-    except Exception as e:
-        print(f"ERROR: {e}")
-        import traceback
-        traceback.print_exc()
+            logger.info("Total records: %s", f"{res.count():,}")
+
+    except TransformError as exc:
+        logger.error("Transform failed: %s", exc)
+    except Exception as exc:
+        logger.error("Unexpected error: %s", exc, exc_info=True)
     finally:
         spark.stop()
+        logger.info("SparkSession stopped")
