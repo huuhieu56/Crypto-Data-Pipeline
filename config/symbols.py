@@ -62,3 +62,66 @@ SYMBOLS: list[str] = [
     "EOSUSDT",
     "AAVEUSDT",
 ]
+
+# ---------------------------------------------------------------------------
+# Trang thai giao dich cua tung symbol (dong bo tu symbols.csv / exchangeInfo)
+# TRADING = dang hoat dong binh thuong
+# BREAK   = tam ngung hoac bi huy niem yet
+# ---------------------------------------------------------------------------
+SYMBOLS_STATUS: dict[str, str] = {
+    "BTCUSDT": "TRADING",
+    "ETHUSDT": "TRADING",
+    "BNBUSDT": "TRADING",
+    "SOLUSDT": "TRADING",
+    "XRPUSDT": "TRADING",
+    "DOGEUSDT": "TRADING",
+    "ADAUSDT": "TRADING",
+    "TRXUSDT": "TRADING",
+    "LINKUSDT": "TRADING",
+    "MATICUSDT": "BREAK",
+    "AVAXUSDT": "TRADING",
+    "TONUSDT": "TRADING",
+    "SHIBUSDT": "TRADING",
+    "XLMUSDT": "TRADING",
+    "BCHUSDT": "TRADING",
+    "DOTUSDT": "TRADING",
+    "UNIUSDT": "TRADING",
+    "LTCUSDT": "TRADING",
+    "HBARUSDT": "TRADING",
+    "PEPEUSDT": "TRADING",
+    "NEARUSDT": "TRADING",
+    "APTUSDT": "TRADING",
+    "ICPUSDT": "TRADING",
+    "ETCUSDT": "TRADING",
+    "STXUSDT": "TRADING",
+    "RENDERUSDT": "TRADING",
+    "CROUSDT": "TRADING",
+    "ATOMUSDT": "TRADING",
+    "VETUSDT": "TRADING",
+    "ARBUSDT": "TRADING",
+    "INJUSDT": "TRADING",
+    "IMXUSDT": "TRADING",
+    "OPUSDT": "TRADING",
+    "GRTUSDT": "TRADING",
+    "THETAUSDT": "TRADING",
+    "FILUSDT": "TRADING",
+    "ARUSDT": "TRADING",
+    "MKRUSDT": "BREAK",
+    "WIFUSDT": "TRADING",
+    "RUNEUSDT": "TRADING",
+    "FTMUSDT": "BREAK",
+    "ALGOUSDT": "TRADING",
+    "FLOWUSDT": "TRADING",
+    "XTZUSDT": "TRADING",
+    "AXSUSDT": "TRADING",
+    "SANDUSDT": "TRADING",
+    "MANAUSDT": "TRADING",
+    "NEOUSDT": "TRADING",
+    "EOSUSDT": "BREAK",
+    "AAVEUSDT": "TRADING",
+}
+
+# Danh sach chi gom symbols dang TRADING (dung cho extract/pipeline)
+ACTIVE_SYMBOLS: list[str] = [
+    s for s in SYMBOLS if SYMBOLS_STATUS.get(s) == "TRADING"
+]
