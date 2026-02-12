@@ -121,7 +121,6 @@ SYMBOLS_STATUS: dict[str, str] = {
     "AAVEUSDT": "TRADING",
 }
 
-# Danh sach chi gom symbols dang TRADING (dung cho extract/pipeline)
 ACTIVE_SYMBOLS: list[str] = [
     s for s in SYMBOLS if SYMBOLS_STATUS.get(s) == "TRADING"
 ]

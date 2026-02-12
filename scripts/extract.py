@@ -21,7 +21,7 @@ from config.config import (
     API_LIMIT,
     ORDER_BOOK_LIMIT,
 )
-from config.symbols import SYMBOLS
+from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
 from utils.exceptions import ExtractError
 from utils.binance_utils import (
@@ -46,6 +46,9 @@ _NUMERIC_COLUMNS = [
     "open", "high", "low", "close", "volume",
     "quote_volume", "taker_buy_base", "taker_buy_quote",
 ]
+
+# Nguong gap (ngay).  < threshold → REST API,  >= threshold → Data Vision + REST API
+_GAP_THRESHOLD_DAYS = 30
 
 
 # =============================================================================
@@ -91,6 +94,82 @@ def _parse_klines_df(raw_data: list[list], symbol: str) -> pd.DataFrame:
     return df
 
 
+def _get_months_between(
+    start_dt: datetime,
+    end_dt: datetime,
+) -> list[tuple[int, int]]:
+    """Tra ve cac thang DA KET THUC TRON VEN nam giua start_dt va end_dt.
+
+    - Bo qua thang chua start_dt (dang do → REST API lap phan con lai).
+    - Bo qua thang chua end_dt   (chua ket thuc → Data Vision chua co).
+    - Chi gom nhung thang ma ngay dau + ngay cuoi deu nam trong gap.
+
+    Vi du: start_dt = 15/01, end_dt = 15/03
+      → Thang 1: bo (do dang)  → REST API se fill 15/01 → 31/01
+      → Thang 2: tron ven      → tai tu Data Vision
+      → Thang 3: chua het      → REST API
+      ⇒ Ket qua: [(year, 2)]
+    """
+    months: list[tuple[int, int]] = []
+
+    # Bat dau tu ngay 1 cua thang TIEP THEO sau start_dt
+    cursor = start_dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0) + relativedelta(months=1)
+
+    while True:
+        next_month_start = cursor + relativedelta(months=1)
+        # Thang nay ket thuc tron ven chi khi ngay 1 thang sau <= end_dt
+        if next_month_start > end_dt:
+            break
+        months.append((cursor.year, cursor.month))
+        cursor = next_month_start
+
+    return months
+
+
+def _backfill_months(
+    symbol: str,
+    months: list[tuple[int, int]],
+) -> int:
+    """Download cac thang tu Data Vision va merge vao file CSV hien tai.
+
+    Returns:
+        So thang tai thanh cong.
+    """
+    frames: list[pd.DataFrame] = []
+    for year, month in months:
+        df = _download_month(symbol, year, month)
+        if df is not None:
+            frames.append(df)
+            logger.info("  %s %d-%02d: %s records fetched", symbol, year, month, f"{len(df):,}")
+        else:
+            logger.warning("  %s %d-%02d: Data Vision file unavailable, will rely on REST API", symbol, year, month)
+
+    if not frames:
+        return 0
+
+    new_data = pd.concat(frames, ignore_index=True)
+    csv_path = RAW_DATA_DIR / f"{symbol}.csv"
+
+    if csv_path.exists():
+        old_df = pd.read_csv(csv_path, parse_dates=["open_time", "close_time"])
+        combined = pd.concat([old_df, new_data], ignore_index=True)
+    else:
+        combined = new_data
+
+    combined = (
+        combined
+        .drop_duplicates(subset=["open_time"], keep="last")
+        .sort_values("open_time")
+        .reset_index(drop=True)
+    )
+    combined.to_csv(csv_path, index=False)
+    logger.info(
+        "Backfill complete for %s: %d/%d months succeeded, %s total records",
+        symbol, len(frames), len(months), f"{len(combined):,}",
+    )
+    return len(frames)
+
+
 # =============================================================================
 # Extract Klines - Binance Data Vision (bulk, one-time)
 # =============================================================================
@@ -101,7 +180,7 @@ def _download_month(symbol: str, year: int, month: int) -> pd.DataFrame | None:
     try:
         content = make_request_raw(url, timeout=60)
     except Exception as exc:
-        logger.warning("Download failed %s %d-%02d: %s", symbol, year, month, exc)
+        logger.warning("Data Vision download failed for %s %d-%02d: %s", symbol, year, month, exc)
         return None
 
     with zipfile.ZipFile(io.BytesIO(content)) as z:
@@ -129,7 +208,7 @@ def extract_klines(
     results: dict[str, pd.DataFrame] = {}
 
     for idx, symbol in enumerate(symbols, 1):
-        logger.info("[%d/%d] Downloading %s", idx, len(symbols), symbol)
+        logger.info("[%d/%d] Bulk downloading %s from Data Vision", idx, len(symbols), symbol)
         frames = []
 
         for year, month in target_months:
@@ -138,7 +217,7 @@ def extract_klines(
                 frames.append(df)
 
         if not frames:
-            logger.error("No data for %s", symbol)
+            logger.error("No Data Vision data available for %s", symbol)
             continue
 
         combined = (
@@ -345,34 +424,170 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
 
 
 # =============================================================================
+# Pre-Extract Orchestrator — Tu dong phuc hoi du lieu sau downtime
+# =============================================================================
+def _pre_extract(
+    symbols: list[str],
+    months_back: int = MONTHS_BACK,
+) -> dict[str, str]:
+    """Smart orchestrator: inspect CSV gap per symbol and decide recovery strategy.
+
+    Strategy per symbol:
+      - No CSV file       → Data Vision bulk + REST API (if TRADING)
+      - gap < 30 days     → REST API only (if TRADING)
+      - gap >= 30 days    → Data Vision for complete months + REST API remainder (if TRADING)
+
+    Status handling:
+      - Data Vision (historical zips): ALWAYS allowed regardless of status.
+        Binance keeps historical files even after delisting.
+      - REST API (realtime):           ONLY for TRADING symbols.
+        BREAK symbols have no new candles, calling API would return 404.
+
+    Returns:
+        dict  symbol → action taken
+    """
+    now = datetime.utcnow()
+    now_ms = int(now.timestamp() * 1000)
+
+    break_set = {s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") != "TRADING"}
+
+    bulk_symbols: list[str] = []                       # No CSV file
+    api_symbols: list[str] = []                        # Short gap, TRADING only
+    backfill_info: list[tuple[str, datetime]] = []     # Long gap
+
+    # ── Step 1: Classify every symbol ────────────────────────────────
+    for symbol in symbols:
+        last_ts = _get_last_timestamp(symbol)
+        is_trading = symbol not in break_set
+
+        if last_ts is None:
+            bulk_symbols.append(symbol)
+            continue
+
+        gap_days = (now_ms - last_ts) / 1000 / 86_400
+
+        if gap_days < _GAP_THRESHOLD_DAYS:
+            if is_trading:
+                api_symbols.append(symbol)
+            # BREAK + short gap → data is already up to date (coin is frozen)
+        else:
+            last_dt = datetime.utcfromtimestamp(last_ts / 1000)
+            backfill_info.append((symbol, last_dt))
+
+    results: dict[str, str] = {}
+
+    # ── Step 2a: No existing file → bulk via Data Vision ─────────────
+    if bulk_symbols:
+        logger.info(
+            "[Pre-Extract] %d symbol(s) have no CSV file — bulk downloading %d months from Data Vision",
+            len(bulk_symbols), months_back,
+        )
+        extract_klines(bulk_symbols, months_back=months_back)
+        for s in bulk_symbols:
+            if s in break_set:
+                results[s] = "bulk (Data Vision only, status=BREAK)"
+                logger.info("[Pre-Extract] %s — bulk done (BREAK: skipping REST API)", s)
+            else:
+                api_symbols.append(s)
+                results[s] = "bulk + api"
+
+    # ── Step 2b: Long gap → Data Vision backfill + REST API ──────────
+    for symbol, last_dt in backfill_info:
+        gap_days = (now - last_dt).days
+        is_trading = symbol not in break_set
+
+        months_to_fill = _get_months_between(last_dt, now)
+        filled = 0
+        if months_to_fill:
+            logger.info(
+                "[Pre-Extract] %s — gap %d days, backfilling %d month(s) from Data Vision: %s",
+                symbol, gap_days, len(months_to_fill),
+                ", ".join(f"{y}-{m:02d}" for y, m in months_to_fill),
+            )
+            filled = _backfill_months(symbol, months_to_fill)
+        else:
+            logger.info(
+                "[Pre-Extract] %s — gap %d days, no complete months to backfill",
+                symbol, gap_days,
+            )
+
+        if is_trading:
+            api_symbols.append(symbol)
+            results[symbol] = f"backfill({filled}/{len(months_to_fill)} months) + api"
+        else:
+            results[symbol] = f"backfill({filled}/{len(months_to_fill)} months), status=BREAK"
+            logger.info("[Pre-Extract] %s — BREAK: skipping REST API, historical data only", symbol)
+
+    # ── Step 2c: REST API update (TRADING symbols only) ──────────────
+    if api_symbols:
+        logger.info(
+            "[Pre-Extract] Updating %d TRADING symbol(s) via REST API",
+            len(api_symbols),
+        )
+        recent = extract_recent_klines(api_symbols)
+        if recent:
+            total = sum(len(df) for df in recent.values())
+            logger.info(
+                "[Pre-Extract] REST API complete — %d symbols updated, %s new records",
+                len(recent), f"{total:,}",
+            )
+        for s in api_symbols:
+            if s not in results:
+                results[s] = "api"
+
+    # Mark remaining BREAK symbols with short/no gap
+    for s in break_set:
+        if s not in results:
+            results[s] = "up-to-date (status=BREAK, no action needed)"
+
+    return results
+
+
+# =============================================================================
 # Entry Points
 # =============================================================================
 def extract_bulk(
     symbols: list[str] | None = None,
     months_back: int = MONTHS_BACK,
 ) -> None:
-    """One-time bulk download tu Binance Data Vision."""
+    """Force re-download all historical data from Binance Data Vision."""
     symbols = symbols or SYMBOLS
-    logger.info("=== Bulk extraction: %d symbols, %d months ===", len(symbols), months_back)
+    logger.info("=== Bulk Extract: %d symbols, %d months ===", len(symbols), months_back)
 
     results = extract_klines(symbols, months_back=months_back)
     total = sum(len(df) for df in results.values())
-    logger.info("Bulk complete: %d/%d symbols, %s records", len(results), len(symbols), f"{total:,}")
+    logger.info("=== Bulk Extract complete: %d/%d symbols, %s records ===", len(results), len(symbols), f"{total:,}")
 
 
 def extract_daily(symbols: list[str] | None = None) -> None:
-    """Daily extraction: recent klines + ticker 24h + order book."""
+    """Self-healing daily extraction: pre-extract recovery + ticker + order book.
+
+    Pre-Extract analyzes each symbol's CSV to determine the optimal recovery:
+      - No CSV file   → Data Vision bulk + REST API (TRADING) / Data Vision only (BREAK)
+      - Gap < 30 days  → REST API (TRADING only)
+      - Gap >= 30 days → Data Vision backfill + REST API (TRADING) / Data Vision only (BREAK)
+    Then fetches ticker_24h and order_book_snapshot for TRADING symbols.
+    """
     symbols = symbols or SYMBOLS
-    logger.info("=== Daily extraction: %d symbols ===", len(symbols))
+    trading = [s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"]
+    non_trading = [s for s in symbols if s not in set(trading)]
 
-    recent = extract_recent_klines(symbols)
-    if recent:
-        total = sum(len(df) for df in recent.values())
-        logger.info("Recent klines: %d symbols, %s new records", len(recent), f"{total:,}")
+    logger.info(
+        "=== Daily Extract (self-healing): %d symbols (%d TRADING, %d BREAK) ===",
+        len(symbols), len(trading), len(non_trading),
+    )
 
-    extract_ticker_24h(symbols)
-    extract_order_book_snapshot(symbols)
-    logger.info("=== Daily extraction finished ===")
+    actions = _pre_extract(symbols)
+
+    logger.info("--- Pre-Extract summary ---")
+    for sym, action in actions.items():
+        logger.info("  %-14s → %s", sym, action)
+    logger.info("---------------------------")
+
+    # Ticker & order book only for TRADING symbols (BREAK has no live data)
+    extract_ticker_24h(trading)
+    extract_order_book_snapshot(trading)
+    logger.info("=== Daily Extract finished ===")
 
 
 # =============================================================================
@@ -385,8 +600,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         choices=["bulk", "daily", "full"],
-        default="full",
-        help="bulk = Data Vision only, daily = REST API only, full = both (default: full)",
+        default="daily",
+        help=(
+            "daily = self-healing (auto bulk/backfill/API based on gap), "
+            "bulk = force re-download all from Data Vision, "
+            "full = bulk + daily (default: daily)"
+        ),
     )
     parser.add_argument(
         "--symbols",
@@ -409,7 +628,7 @@ def main() -> None:
     symbols = args.symbols or SYMBOLS
 
     logger.info(
-        "Extract started — mode=%s, symbols=%d, months=%d",
+        "Extract started | mode=%s | symbols=%d | months=%d",
         args.mode, len(symbols), args.months,
     )
 
