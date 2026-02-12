@@ -95,7 +95,7 @@ SYMBOLS_STATUS: dict[str, str] = {
     "ETCUSDT": "TRADING",
     "STXUSDT": "TRADING",
     "RENDERUSDT": "TRADING",
-    "CROUSDT": "TRADING",
+    "CROUSDT": "BREAK",
     "ATOMUSDT": "TRADING",
     "VETUSDT": "TRADING",
     "ARBUSDT": "TRADING",
@@ -119,6 +119,20 @@ SYMBOLS_STATUS: dict[str, str] = {
     "NEOUSDT": "TRADING",
     "EOSUSDT": "BREAK",
     "AAVEUSDT": "TRADING",
+}
+
+# ---------------------------------------------------------------------------
+# Break / delist dates for BREAK symbols.
+# Used by extract to fetch data up to the coin's "last breath" without
+# calling REST API after the coin is dead.
+# Format: "YYYY-MM-DD" (UTC date of last trading / delist announcement)
+# ---------------------------------------------------------------------------
+BREAK_DATES: dict[str, str] = {
+    "CROUSDT":   "2023-10-04",   # Delisted
+    "MATICUSDT": "2024-09-10",   # Migrated to POL
+    "MKRUSDT":   "2024-11-21",   # Migrated to SKY
+    "FTMUSDT":   "2025-03-20",   # Migrated to Sonic (S)
+    "EOSUSDT":   "2025-05-27",   # Delisted
 }
 
 ACTIVE_SYMBOLS: list[str] = [
