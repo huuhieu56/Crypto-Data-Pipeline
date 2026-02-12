@@ -111,6 +111,18 @@ def make_request_raw(
             response = requests.get(url, params=params, timeout=timeout)
             response.raise_for_status()
             return response.content
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            logger.warning(
+                "Download error %s (attempt %d/%d): %s",
+                url, attempt, max_retries, exc,
+            )
+            last_exc = exc
+            # 404 Not Found — resource does not exist, retrying is pointless
+            if status == 404:
+                break
+            if attempt < max_retries:
+                time.sleep(_RETRY_BACKOFF * attempt)
         except Exception as exc:
             logger.warning(
                 "Download error %s (attempt %d/%d): %s",

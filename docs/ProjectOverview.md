@@ -968,11 +968,70 @@ ORDER BY k.rsi_14 DESC;
 | Rủi ro                  | Xác suất   | Tác động        | Giải pháp                                         |
 | ----------------------- | ---------- | --------------- | ------------------------------------------------- |
 | Binance rate limit      | Cao        | ETL fail        | Dùng Binance Data Vision cho historical data      |
-| API lỗi tạm thời        | Trung bình | Mất data ngắn   | Retry sau 2s (có thể dùng python-binance)         |
+| API lỗi tạm thời        | Trung bình | Mất data ngắn   | Retry với exponential backoff, skip 404 ngay       |
 | Thiếu dữ liệu theo phút | Trung bình | Model lỗi       | Resample + forward fill hoặc linear interpolation |
-| Downtime ngắn           | Thấp       | Gap dữ liệu     | Backfill bằng REST API theo khoảng thời gian      |
-| Downtime dài            | Thấp       | Gap dữ liệu lớn | Backfill bằng Binance Data Vision (file zip)      |
+| Downtime ngắn (< 30 ngày) | Thấp     | Gap dữ liệu     | Self-healing tự phát hiện và dùng REST API backfill |
+| Downtime dài (≥ 30 ngày)  | Thấp     | Gap dữ liệu lớn | Self-healing dùng Data Vision bulk + REST API phần còn lại |
+| Coin bị delist/migrate  | Thấp       | Dữ liệu bị cắt  | BREAK status + break_date giới hạn fetch tự động  |
 | Spark out of memory     | Trung bình | Transform fail  | Tăng partition, xử lý theo batch nhỏ              |
 | Model không hội tụ      | Trung bình | Prediction tệ   | Tune hyperparameters, thử architecture khác       |
 | PostgreSQL slow query   | Thấp       | Dashboard lag   | Thêm index, partition table                       |
 | Airflow scheduler crash | Thấp       | Jobs không chạy | Auto-restart với Docker, monitoring               |
+
+### 13.1. Self-Healing Extract (`_pre_extract`)
+
+Pipeline tự động phát hiện và phục hồi gap dữ liệu mỗi lần chạy `extract_daily`, không cần can thiệp thủ công.
+
+#### Khái niệm chính — `target_end_time`
+
+| Trạng thái symbol | Target          | Ý nghĩa                                        |
+| ------------------ | --------------- | ----------------------------------------------- |
+| **TRADING**        | `now()`         | Luôn fetch đến hiện tại                          |
+| **BREAK**          | `break_date`    | Chỉ fetch đến ngày delist/migrate, sau đó dừng hẳn |
+
+> Khi `last_timestamp >= target_end_time` → symbol **DONE**, không xử lý thêm.
+
+#### Quy trình phân loại (Step 1)
+
+```
+Với mỗi symbol:
+  ├── Không có CSV?
+  │     ├── TRADING → bulk download từ Data Vision
+  │     └── BREAK   → tạo placeholder (skip bulk vì hay 404)
+  ├── last_ts >= target_end?
+  │     └── DONE (up-to-date hoặc data complete)
+  ├── Gap < 30 ngày?
+  │     └── REST API (end_time = target_end)
+  └── Gap ≥ 30 ngày?
+        └── Data Vision backfill các tháng trọn vẹn + REST API phần còn lại
+```
+
+#### Chiến lược phục hồi (Step 2)
+
+| Tình huống | Hành động | Ví dụ |
+| --- | --- | --- |
+| Không có CSV (TRADING) | Data Vision bulk N tháng → REST API fill phần còn lại | Symbol mới thêm vào hệ thống |
+| Không có CSV (BREAK) | Tạo file CSV rỗng (placeholder) | Coin đã chết trước khi được track |
+| Gap < 30 ngày | REST API paginate từ `last_ts` → `target_end` | Downtime ngắn, bảo trì server |
+| Gap ≥ 30 ngày | Data Vision backfill tháng trọn vẹn + REST API tháng lẻ | Downtime dài, mất dữ liệu nhiều tháng |
+
+#### Xử lý tháng trọn vẹn (`_get_months_between`)
+
+Chỉ download những tháng **đã kết thúc hoàn toàn** từ Data Vision:
+
+```
+Ví dụ: last_ts = 15/01, target_end = 15/04
+  → Tháng 1: bỏ qua (đang dở)  → REST API fill 15/01 → 31/01
+  → Tháng 2: trọn vẹn          → Data Vision ZIP
+  → Tháng 3: trọn vẹn          → Data Vision ZIP
+  → Tháng 4: chưa hết          → REST API fill 01/04 → 15/04
+```
+
+#### Xử lý lỗi & cảnh báo
+
+| Tình huống | Hành vi |
+| --- | --- |
+| Data Vision 404 | Skip ngay (không retry), fallback sang REST API |
+| REST API trả rỗng | Log INFO, không crash |
+| Gap vẫn còn sau cả 2 nguồn | Log WARNING với số ngày còn thiếu |
+| BREAK coin đã đủ data | Đánh dấu DONE vĩnh viễn, không bao giờ gọi API lại |
