@@ -204,7 +204,13 @@ def download_klines_month(symbol: str, year: int, month: int):
         return None
 
     with zipfile.ZipFile(io.BytesIO(content)) as z:
-        with z.open(z.namelist()[0]) as f:
+        names = z.namelist()
+        if not names:
+            logger.warning(
+                "Empty ZIP for %s %d-%02d", symbol, year, month,
+            )
+            return None
+        with z.open(names[0]) as f:
             df = pd.read_csv(
                 f, header=None, usecols=range(11), names=RAW_KLINES_COLUMNS,
             )

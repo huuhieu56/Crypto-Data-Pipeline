@@ -98,7 +98,7 @@ def get_last_timestamp(symbol: str) -> int | None:
             return None
 
         fields = last_line.split(",")
-        last = pd.to_datetime(fields[ot_idx])
+        last = pd.to_datetime(fields[ot_idx], utc=True)
         return int(last.timestamp() * 1000)
     except Exception as exc:
         logger.error("Cannot read last timestamp from %s: %s", csv_path.name, exc)
