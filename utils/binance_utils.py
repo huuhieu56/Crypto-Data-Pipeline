@@ -1,14 +1,14 @@
 # =============================================================================
 # Binance API Utilities - Crypto Data Pipeline
 # =============================================================================
-# Cac function dung chung de goi Binance API voi retry va rate-limiting.
-# Tat ca module can goi API phai dung cac ham o day.
-# =============================================================================
 
 from __future__ import annotations
 
+import io
 import time
+import zipfile
 
+import pandas as pd
 import requests
 
 from config.config import (
@@ -35,20 +35,7 @@ def make_request(
     timeout: int | None = None,
     max_retries: int = _DEFAULT_MAX_RETRIES,
 ) -> dict | list:
-    """Goi GET request voi retry va exponential backoff.
-
-    Args:
-        url: URL endpoint.
-        params: Query parameters.
-        timeout: Timeout tinh bang giay (mac dinh tu config).
-        max_retries: So lan thu lai khi gap loi.
-
-    Returns:
-        Parsed JSON response.
-
-    Raises:
-        APIRequestError: Sau khi het so lan retry.
-    """
+    """GET request with retry and exponential backoff."""
     timeout = timeout or API_TIMEOUT
     last_exc: Exception | None = None
 
@@ -171,12 +158,12 @@ def sleep_between_requests() -> None:
 # ---------------------------------------------------------------------------
 
 # Binance klines: 12 columns, drop "ignore"
-KLINES_RAW_COLUMNS = [
+_KLINES_RAW_COLUMNS = [
     "open_time", "open", "high", "low", "close", "volume",
     "close_time", "quote_volume", "trades",
     "taker_buy_base", "taker_buy_quote", "ignore",
 ]
-KLINES_COLUMNS = [c for c in KLINES_RAW_COLUMNS if c != "ignore"]
+RAW_KLINES_COLUMNS = [c for c in _KLINES_RAW_COLUMNS if c != "ignore"]
 NUMERIC_COLUMNS = [
     "open", "high", "low", "close", "volume",
     "quote_volume", "taker_buy_base", "taker_buy_quote",
@@ -185,9 +172,7 @@ NUMERIC_COLUMNS = [
 
 def parse_klines_df(raw_data: list[list], symbol: str):
     """Parse raw klines list into a clean DataFrame."""
-    import pandas as pd
-
-    df = pd.DataFrame(raw_data, columns=KLINES_RAW_COLUMNS)
+    df = pd.DataFrame(raw_data, columns=_KLINES_RAW_COLUMNS)
     df = df.drop(columns=["ignore"])
 
     for col in NUMERIC_COLUMNS:
@@ -205,9 +190,6 @@ def parse_klines_df(raw_data: list[list], symbol: str):
 
 def download_klines_month(symbol: str, year: int, month: int):
     """Download 1-month klines ZIP from Data Vision. Returns DataFrame or None."""
-    import io
-    import zipfile
-    import pandas as pd
     from config.config import BINANCE_DATA_VISION_URL
 
     url = BINANCE_DATA_VISION_URL.format(symbol=symbol, year=year, month=month)
@@ -224,10 +206,11 @@ def download_klines_month(symbol: str, year: int, month: int):
     with zipfile.ZipFile(io.BytesIO(content)) as z:
         with z.open(z.namelist()[0]) as f:
             df = pd.read_csv(
-                f, header=None, usecols=range(11), names=KLINES_COLUMNS,
+                f, header=None, usecols=range(11), names=RAW_KLINES_COLUMNS,
             )
 
     raw_ts = df["open_time"].astype("int64")
+    # Data Vision may provide microsecond (>1e15) or millisecond timestamps
     divisor = 1000 if raw_ts.iloc[0] > 1e15 else 1
 
     df["open_time"] = pd.to_datetime(raw_ts // divisor, unit="ms")

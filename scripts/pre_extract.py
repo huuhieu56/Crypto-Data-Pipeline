@@ -5,19 +5,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
 
 from config.config import RAW_DATA_DIR, MONTHS_BACK
 from config.symbols import SYMBOLS, SYMBOLS_STATUS, BREAK_DATES
 from utils.logger import get_logger
 from utils.binance_utils import (
-    KLINES_COLUMNS,
+    RAW_KLINES_COLUMNS,
     download_klines_month,
-    fetch_klines_paginated,
-    sleep_between_requests,
 )
-from utils.data_utils import get_last_timestamp
+from utils.data_utils import get_last_timestamp, get_target_end, merge_and_save_klines
 
 logger = get_logger(__name__)
 
@@ -30,17 +28,9 @@ _GAP_WARNING_THRESHOLD_DAYS = 1
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _get_target_end(symbol: str) -> datetime:
-    """TRADING → now, BREAK → break_date."""
-    break_date_str = BREAK_DATES.get(symbol)
-    if break_date_str and SYMBOLS_STATUS.get(symbol) != "TRADING":
-        return datetime.strptime(break_date_str, "%Y-%m-%d")
-    return datetime.utcnow()
-
-
 def _get_target_months(months_back: int) -> list[tuple[int, int]]:
     """List of (year, month) tuples for Data Vision download."""
-    end_date = datetime.now() - relativedelta(months=1)
+    end_date = datetime.now(timezone.utc) - relativedelta(months=1)
     return [
         ((end_date - relativedelta(months=i)).year,
          (end_date - relativedelta(months=i)).month)
@@ -96,20 +86,7 @@ def _backfill_months(
 
     new_data = pd.concat(frames, ignore_index=True)
     csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-
-    if csv_path.exists():
-        old_df = pd.read_csv(csv_path, parse_dates=["open_time", "close_time"])
-        combined = pd.concat([old_df, new_data], ignore_index=True)
-    else:
-        combined = new_data
-
-    combined = (
-        combined
-        .drop_duplicates(subset=["open_time"], keep="last")
-        .sort_values("open_time")
-        .reset_index(drop=True)
-    )
-    combined.to_csv(csv_path, index=False)
+    combined = merge_and_save_klines(csv_path, new_data)
     logger.info(
         "Backfill complete for %s: %d/%d months succeeded, %s total records",
         symbol, len(frames), len(months), f"{len(combined):,}",
@@ -141,68 +118,11 @@ def extract_klines(
             logger.error("No Data Vision data available for %s", symbol)
             continue
 
-        combined = (
-            pd.concat(frames, ignore_index=True)
-            .sort_values("open_time")
-            .reset_index(drop=True)
-        )
-        output = RAW_DATA_DIR / f"{symbol}.csv"
-        combined.to_csv(output, index=False)
-        logger.info("Saved %s (%s records)", output.name, f"{len(combined):,}")
-        results[symbol] = combined
-
-    return results
-
-
-def _update_via_api(
-    symbols: list[str],
-    end_times: dict[str, int],
-) -> dict[str, pd.DataFrame]:
-    """REST API update for symbols after bulk/backfill."""
-    if not symbols:
-        return {}
-
-    results: dict[str, pd.DataFrame] = {}
-    default_end = int(datetime.now().timestamp() * 1000)
-
-    for idx, symbol in enumerate(symbols, 1):
-        last_ts = get_last_timestamp(symbol)
-        if last_ts is None:
-            logger.debug(
-                "[%d/%d] %s — no existing data, skip",
-                idx, len(symbols), symbol,
-            )
-            continue
-
-        end_time = end_times.get(symbol, default_end)
-
-        if last_ts >= end_time:
-            continue
-
-        new_frames = fetch_klines_paginated(symbol, last_ts, end_time)
-        if not new_frames:
-            logger.info(
-                "[%d/%d] %s: REST API returned 0 new records",
-                idx, len(symbols), symbol,
-            )
-            continue
-
-        new_df = pd.concat(new_frames, ignore_index=True)
+        new_data = pd.concat(frames, ignore_index=True)
         csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-        old_df = pd.read_csv(csv_path, parse_dates=["open_time", "close_time"])
-
-        combined = (
-            pd.concat([old_df, new_df], ignore_index=True)
-            .drop_duplicates(subset=["open_time"], keep="last")
-            .sort_values("open_time")
-            .reset_index(drop=True)
-        )
-        combined.to_csv(csv_path, index=False)
-        logger.info(
-            "[%d/%d] %s: +%d new (%s total)",
-            idx, len(symbols), symbol, len(new_df), f"{len(combined):,}",
-        )
-        results[symbol] = new_df
+        combined = merge_and_save_klines(csv_path, new_data)
+        logger.info("Saved %s (%s records)", csv_path.name, f"{len(combined):,}")
+        results[symbol] = combined
 
     return results
 
@@ -215,6 +135,9 @@ def pre_extract(
     months_back: int = MONTHS_BACK,
 ) -> dict[str, str]:
     """Detect gaps and auto-recover. See ProjectOverview §13."""
+    # Lazy import: pre_extract is entry point, defer extract import to runtime.
+    from scripts.extract import extract_recent_klines
+
     break_set = {
         s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") != "TRADING"
     }
@@ -227,7 +150,7 @@ def pre_extract(
     results: dict[str, str] = {}
 
     for symbol in symbols:
-        target_end = _get_target_end(symbol)
+        target_end = get_target_end(symbol)
         target_end_ms = int(target_end.timestamp() * 1000)
         is_break = symbol in break_set
 
@@ -256,7 +179,7 @@ def pre_extract(
         if gap_days < _GAP_THRESHOLD_DAYS:
             results[symbol] = "skip (gap < 30d, daily mode)"
         else:
-            last_dt = datetime.utcfromtimestamp(last_ts / 1000)
+            last_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
             backfill_info.append((symbol, last_dt, target_end))
 
     # No CSV → bulk Data Vision
@@ -268,7 +191,7 @@ def pre_extract(
         )
         extract_klines(bulk_symbols, months_back=months_back)
         for s in bulk_symbols:
-            target_end = _get_target_end(s)
+            target_end = get_target_end(s)
             target_end_ms = int(target_end.timestamp() * 1000)
             new_last_ts = get_last_timestamp(s)
 
@@ -292,7 +215,7 @@ def pre_extract(
         )
         for symbol in break_bulk:
             csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-            pd.DataFrame(columns=list(KLINES_COLUMNS) + ["symbol"]).to_csv(
+            pd.DataFrame(columns=list(RAW_KLINES_COLUMNS) + ["symbol"]).to_csv(
                 csv_path, index=False,
             )
             results[symbol] = "done (BREAK, placeholder — never tracked)"
@@ -357,7 +280,7 @@ def pre_extract(
                 len(break_api),
             )
 
-        recent = _update_via_api(api_symbols, api_end_times)
+        recent = extract_recent_klines(api_symbols, end_times=api_end_times)
         if recent:
             total = sum(len(df) for df in recent.values())
             logger.info(
@@ -382,7 +305,7 @@ def pre_extract(
         for s in api_symbols:
             new_last_ts = get_last_timestamp(s)
             target_end_ms = api_end_times.get(
-                s, int(datetime.utcnow().timestamp() * 1000),
+                s, int(datetime.now(timezone.utc).timestamp() * 1000),
             )
             if new_last_ts is not None and new_last_ts < target_end_ms:
                 remaining_days = (target_end_ms - new_last_ts) / 1000 / 86_400

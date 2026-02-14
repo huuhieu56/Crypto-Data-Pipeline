@@ -13,10 +13,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.config import RAW_DATA_DIR, ORDER_BOOK_LIMIT
-from config.symbols import SYMBOLS, SYMBOLS_STATUS, BREAK_DATES
+from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
 from utils.exceptions import ExtractError
 from utils.binance_utils import (
@@ -24,31 +24,35 @@ from utils.binance_utils import (
     get_book_ticker,
     get_order_book,
     fetch_klines_paginated,
+    sleep_between_requests,
 )
-from utils.data_utils import get_last_timestamp
+from utils.data_utils import (
+    get_last_timestamp,
+    get_target_end,
+    merge_and_save_klines,
+)
 
 logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def _get_target_end(symbol: str) -> datetime:
-    """TRADING → now, BREAK → break_date."""
-    break_date_str = BREAK_DATES.get(symbol)
-    if break_date_str and SYMBOLS_STATUS.get(symbol) != "TRADING":
-        return datetime.strptime(break_date_str, "%Y-%m-%d")
-    return datetime.utcnow()
-
-
-# ---------------------------------------------------------------------------
 # REST API (incremental)
 # ---------------------------------------------------------------------------
-def extract_recent_klines(symbols: list[str]) -> dict[str, pd.DataFrame]:
-    """Incremental klines update via REST API (target: now or break_date)."""
+def extract_recent_klines(
+    symbols: list[str],
+    end_times: dict[str, int] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Incremental klines update via REST API (target: now or break_date).
+
+    Args:
+        symbols: List of symbols to update.
+        end_times: Optional per-symbol end-time overrides (ms).
+                   If not given, each symbol uses get_target_end().
+    """
     if not symbols:
         return {}
 
+    end_times = end_times or {}
     results: dict[str, pd.DataFrame] = {}
 
     for idx, symbol in enumerate(symbols, 1):
@@ -60,8 +64,11 @@ def extract_recent_klines(symbols: list[str]) -> dict[str, pd.DataFrame]:
             )
             continue
 
-        target_end = _get_target_end(symbol)
-        end_time = int(target_end.timestamp() * 1000)
+        if symbol in end_times:
+            end_time = end_times[symbol]
+        else:
+            target_end = get_target_end(symbol)
+            end_time = int(target_end.timestamp() * 1000)
 
         if last_ts >= end_time:
             continue
@@ -76,15 +83,7 @@ def extract_recent_klines(symbols: list[str]) -> dict[str, pd.DataFrame]:
 
         new_df = pd.concat(new_frames, ignore_index=True)
         csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-        old_df = pd.read_csv(csv_path, parse_dates=["open_time", "close_time"])
-
-        combined = (
-            pd.concat([old_df, new_df], ignore_index=True)
-            .drop_duplicates(subset=["open_time"], keep="last")
-            .sort_values("open_time")
-            .reset_index(drop=True)
-        )
-        combined.to_csv(csv_path, index=False)
+        combined = merge_and_save_klines(csv_path, new_df)
         logger.info(
             "[%d/%d] %s: +%d new (%s total)",
             idx, len(symbols), symbol, len(new_df), f"{len(combined):,}",
@@ -103,7 +102,7 @@ def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
         return None
 
     symbols_set = set(symbols)
-    snapshot_time = datetime.utcnow()
+    snapshot_time = datetime.now(timezone.utc)
 
     try:
         ticker_raw = get_ticker_24h()
@@ -160,12 +159,9 @@ def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
     ]]
 
     output_path = RAW_DATA_DIR / "ticker_24h.csv"
-    if output_path.exists():
-        old = pd.read_csv(output_path)
-        merged = pd.concat([old, merged], ignore_index=True)
-
-    merged.to_csv(output_path, index=False)
-    logger.info("Saved ticker_24h (%s records)", f"{len(merged):,}")
+    write_header = not output_path.exists()
+    merged.to_csv(output_path, mode="a", header=write_header, index=False)
+    logger.info("Saved ticker_24h (+%d records)", len(merged))
     return merged
 
 
@@ -174,14 +170,28 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
     if not symbols:
         return None
 
-    timestamp = datetime.utcnow()
+    timestamp = datetime.now(timezone.utc)
     records = []
 
     for symbol in symbols:
         try:
             data = get_order_book(symbol, limit=ORDER_BOOK_LIMIT)
-            bid_vol = sum(float(b[1]) for b in data.get("bids", []))
-            ask_vol = sum(float(a[1]) for a in data.get("asks", []))
+            sleep_between_requests()
+
+            bid_vol = 0.0
+            for b in data.get("bids", []):
+                try:
+                    bid_vol += float(b[1])
+                except (ValueError, IndexError):
+                    pass
+
+            ask_vol = 0.0
+            for a in data.get("asks", []):
+                try:
+                    ask_vol += float(a[1])
+                except (ValueError, IndexError):
+                    pass
+
             total = bid_vol + ask_vol
 
             records.append({
