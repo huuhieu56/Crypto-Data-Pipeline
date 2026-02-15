@@ -24,6 +24,7 @@ from utils.db_utils import (
     upsert_on_conflict_nothing,
     get_spark_session,
     spark_write_jdbc,
+    spark_upsert_jdbc,
 )
 
 logger = get_logger(__name__)
@@ -67,7 +68,11 @@ def load_symbols(engine) -> None:
 
 
 def load_klines(spark) -> None:
-    """Load klines tu Parquet vao bang klines (Spark, file lon)."""
+    """Load klines tu Parquet vao bang klines (Spark, file lon).
+
+    Uses temp-table upsert: write to _tmp_klines -> INSERT ... ON CONFLICT
+    DO NOTHING -> drop temp.  Safe for re-runs without duplicate key errors.
+    """
     parquet_path = str(PROCESSED_DATA_DIR / "features.parquet")
     logger.info("Loading klines from %s via Spark", parquet_path)
 
@@ -86,15 +91,15 @@ def load_klines(spark) -> None:
         record_count = df_final.count()
         logger.info("Writing %s records to table 'klines'", f"{record_count:,}")
 
-        spark_write_jdbc(df_final, table="klines", mode="append")
+        spark_upsert_jdbc(
+            df_final,
+            table="klines",
+            conflict_columns=["symbol", "timestamp"],
+        )
         logger.info("Klines loaded successfully")
 
     except Exception as exc:
-        msg = str(exc).lower()
-        if "duplicate key value" in msg:
-            logger.warning("Some records already exist (duplicate key) — skipped by DB")
-        else:
-            raise LoadError(f"Failed to load klines: {exc}") from exc
+        raise LoadError(f"Failed to load klines: {exc}") from exc
 
 
 def load_ticker(engine) -> None:

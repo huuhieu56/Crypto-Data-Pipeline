@@ -5,18 +5,19 @@
 # Timeout: 2 giờ
 #
 # Tasks:
-#   1. extract_klines: Download dữ liệu nến mới từ Binance
-#   2. extract_ticker: Download thống kê 24h + best bid/ask
-#   3. extract_order_book: Snapshot order book (5–15 phút)
-#   3. transform: Chạy Spark job tính RSI, MACD
-#   4. load_klines: Ghi vào PostgreSQL bảng klines
-#   5. load_ticker: Ghi vào PostgreSQL bảng ticker_24h
-#   6. load_order_book: Ghi vào PostgreSQL bảng order_book_snapshot
+#   1. pre_extract: Self-healing gap detection + recovery (bulk / backfill)
+#   2. extract_klines: Download dữ liệu nến mới từ Binance REST API
+#   3. extract_ticker: Download thống kê 24h + best bid/ask
+#   4. transform: Chạy Spark job tính RSI, MACD
+#   5. load_klines: Ghi vào PostgreSQL bảng klines (upsert)
+#   6. load_ticker: Ghi vào PostgreSQL bảng ticker_24h
 #
 # Dependencies:
-#   extract_klines ─┬─▶ transform ──▶ load_klines
-#   extract_ticker ─┴──────────────▶ load_ticker
-#   extract_order_book ─────────────▶ load_order_book
+#   pre_extract ──▶ extract_klines ─┬─▶ transform ──▶ load_klines
+#                  extract_ticker  ─┴──────────────▶ load_ticker
+#
+# Note: order_book_snapshot chạy riêng (tần suất 5–15 phút),
+#       không thuộc daily batch ETL.
 # =============================================================================
 
 # TODO: Import Airflow libraries
@@ -29,12 +30,11 @@
 # - catchup=False
 
 # TODO: Define tasks
+# - pre_extract_task
 # - extract_klines_task
 # - extract_ticker_task
-# - extract_order_book_task
 # - transform_task
 # - load_klines_task
 # - load_ticker_task
-# - load_order_book_task
 
 # TODO: Set task dependencies

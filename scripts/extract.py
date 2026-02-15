@@ -1,6 +1,12 @@
-# =============================================================================
-# Extract Script - Thu thap du lieu tu Binance
-# =============================================================================
+"""Extract data from Binance.
+
+Two modes:
+  bulk  — Full historical download via Data Vision (monthly ZIP files)
+  daily — Incremental update via REST API + Ticker 24h + Order Book
+
+Bulk mode is used by pre_extract.py for first-time / backfill downloads.
+Daily mode runs after pre_extract.py for ongoing incremental updates.
+"""
 
 import sys
 from pathlib import Path
@@ -8,235 +14,168 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
-import io
-import zipfile
 import pandas as pd
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
+from datetime import datetime, timezone
 
-from config.config import (
-    RAW_DATA_DIR,
-    BINANCE_DATA_VISION_URL,
-    MONTHS_BACK,
-    API_LIMIT,
-    ORDER_BOOK_LIMIT,
-)
-from config.symbols import SYMBOLS
+from config.config import RAW_DATA_DIR, ORDER_BOOK_LIMIT, MONTHS_BACK
+from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
 from utils.exceptions import ExtractError
 from utils.binance_utils import (
-    make_request_raw,
-    get_klines,
     get_ticker_24h,
     get_book_ticker,
     get_order_book,
+    fetch_klines_paginated,
+    download_klines_month,
     sleep_between_requests,
+)
+from utils.data_utils import (
+    get_last_timestamp,
+    get_target_end,
+    get_target_months,
+    merge_and_save_klines,
 )
 
 logger = get_logger(__name__)
 
-# Binance klines API tra ve 12 cot, cot cuoi ("ignore") bi bo
-_KLINES_RAW_COLUMNS = [
-    "open_time", "open", "high", "low", "close", "volume",
-    "close_time", "quote_volume", "trades",
-    "taker_buy_base", "taker_buy_quote", "ignore",
-]
-_KLINES_COLUMNS = [c for c in _KLINES_RAW_COLUMNS if c != "ignore"]
-_NUMERIC_COLUMNS = [
-    "open", "high", "low", "close", "volume",
-    "quote_volume", "taker_buy_base", "taker_buy_quote",
-]
 
+# ---------------------------------------------------------------------------
+# Data Vision (bulk download)
+# ---------------------------------------------------------------------------
+def download_data_vision(
+    symbol: str,
+    months: list[tuple[int, int]],
+) -> int | None:
+    """Download klines from Data Vision month-by-month, append to CSV.
 
-# =============================================================================
-# Helpers
-# =============================================================================
-def _get_target_months(months_back: int) -> list[tuple[int, int]]:
-    """Tra ve danh sach (year, month) de download tu Data Vision."""
-    end_date = datetime.now() - relativedelta(months=1)
-    return [
-        ((end_date - relativedelta(months=i)).year,
-         (end_date - relativedelta(months=i)).month)
-        for i in range(months_back)
-    ]
+    Months are processed in chronological order so each write uses
+    the fast append path (no re-read of entire CSV).  Peak memory =
+    1 month (~44K rows) instead of all months concatenated (~1.58M).
 
-
-def _get_last_timestamp(symbol: str) -> int | None:
-    """Tra ve open_time cuoi cung (ms) tu file CSV da luu."""
+    Returns total record count, or None if no data was downloaded.
+    """
     csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-    if not csv_path.exists():
-        return None
-    try:
-        df = pd.read_csv(csv_path, usecols=["open_time"])
-        if df.empty:
-            return None
-        last = pd.to_datetime(df["open_time"].iloc[-1])
-        return int(last.timestamp() * 1000)
-    except Exception as exc:
-        logger.error("Cannot read last timestamp from %s: %s", csv_path.name, exc)
-        return None
+    months_ok = 0
+    total = 0
 
+    for year, month in sorted(months):
+        df = download_klines_month(symbol, year, month)
+        if df is not None:
+            total = merge_and_save_klines(csv_path, df)
+            months_ok += 1
+            logger.debug("%s %d-%02d: %d records", symbol, year, month, len(df))
 
-def _parse_klines_df(raw_data: list[list], symbol: str) -> pd.DataFrame:
-    """Chuyen raw klines (list of lists) thanh DataFrame chuan."""
-    df = pd.DataFrame(raw_data, columns=_KLINES_RAW_COLUMNS)
-    df = df.drop(columns=["ignore"])
-
-    for col in _NUMERIC_COLUMNS:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
-    df["symbol"] = symbol
-    return df
-
-
-# =============================================================================
-# Extract Klines - Binance Data Vision (bulk, one-time)
-# =============================================================================
-def _download_month(symbol: str, year: int, month: int) -> pd.DataFrame | None:
-    """Download 1 file ZIP klines tu Data Vision, parse thanh DataFrame."""
-    url = BINANCE_DATA_VISION_URL.format(symbol=symbol, year=year, month=month)
-
-    try:
-        content = make_request_raw(url, timeout=60)
-    except Exception as exc:
-        logger.warning("Download failed %s %d-%02d: %s", symbol, year, month, exc)
+    if months_ok == 0:
         return None
 
-    with zipfile.ZipFile(io.BytesIO(content)) as z:
-        with z.open(z.namelist()[0]) as f:
-            df = pd.read_csv(f, header=None, usecols=range(11), names=_KLINES_COLUMNS)
-
-    # Data Vision co the tra ve microseconds hoac milliseconds
-    raw_ts = df["open_time"].astype("int64")
-    divisor = 1000 if raw_ts.iloc[0] > 1e15 else 1
-
-    df["open_time"] = pd.to_datetime(raw_ts // divisor, unit="ms")
-    df["close_time"] = pd.to_datetime(
-        df["close_time"].astype("int64") // divisor, unit="ms",
+    logger.info(
+        "%s: %d/%d months OK, %s total records",
+        symbol, months_ok, len(months), f"{total:,}",
     )
-    df["symbol"] = symbol
-    return df
+    return total
 
 
-def extract_klines(
-    symbols: list[str],
+def extract_bulk(
+    symbols: list[str] | None = None,
     months_back: int = MONTHS_BACK,
-) -> dict[str, pd.DataFrame]:
-    """Bulk download klines tu Data Vision cho nhieu symbols."""
-    target_months = _get_target_months(months_back)
-    results: dict[str, pd.DataFrame] = {}
+) -> dict[str, int]:
+    """Force re-download all symbols from Data Vision.
+
+    Returns {symbol: record_count} instead of DataFrames to avoid
+    holding ~78M rows in memory simultaneously.
+    """
+    symbols = symbols or SYMBOLS
+    target_months = get_target_months(months_back)
+    results: dict[str, int] = {}
+
+    logger.info(
+        "=== Bulk Extract: %d symbols, %d months ===",
+        len(symbols), months_back,
+    )
 
     for idx, symbol in enumerate(symbols, 1):
-        logger.info("[%d/%d] Downloading %s", idx, len(symbols), symbol)
-        frames = []
+        logger.info("[%d/%d] Bulk downloading %s", idx, len(symbols), symbol)
+        total = download_data_vision(symbol, target_months)
+        if total is not None:
+            results[symbol] = total
+        else:
+            logger.error("No Data Vision data for %s", symbol)
 
-        for year, month in target_months:
-            df = _download_month(symbol, year, month)
-            if df is not None:
-                frames.append(df)
-
-        if not frames:
-            logger.error("No data for %s", symbol)
-            continue
-
-        combined = (
-            pd.concat(frames, ignore_index=True)
-            .sort_values("open_time")
-            .reset_index(drop=True)
-        )
-        output = RAW_DATA_DIR / f"{symbol}.csv"
-        combined.to_csv(output, index=False)
-        logger.info("Saved %s (%s records)", output.name, f"{len(combined):,}")
-        results[symbol] = combined
-
+    grand_total = sum(results.values())
+    logger.info(
+        "=== Bulk Extract complete: %d/%d symbols, %s records ===",
+        len(results), len(symbols), f"{grand_total:,}",
+    )
     return results
 
 
-# =============================================================================
-# Extract Recent Klines - REST API (daily incremental)
-# =============================================================================
-def _fetch_klines_paginated(
-    symbol: str,
-    start_time: int,
-    end_time: int,
-) -> list[pd.DataFrame]:
-    """Paginate qua /klines API tu start_time den end_time."""
-    frames = []
-    cursor = start_time + 60_000
+# ---------------------------------------------------------------------------
+# REST API (incremental)
+# ---------------------------------------------------------------------------
+def extract_recent_klines(
+    symbols: list[str],
+    end_times: dict[str, int] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Incremental klines update via REST API (target: now or break_date).
 
-    while True:
-        params = {"startTime": cursor, "endTime": end_time, "limit": API_LIMIT}
-
-        try:
-            data = get_klines(symbol, **params)
-        except Exception as exc:
-            logger.error("API error for %s: %s", symbol, exc)
-            break
-
-        if not data:
-            break
-
-        frames.append(_parse_klines_df(data, symbol))
-
-        if len(data) < API_LIMIT:
-            break
-
-        cursor = int(data[-1][0]) + 60_000
-        sleep_between_requests()
-
-    return frames
-
-
-def extract_recent_klines(symbols: list[str]) -> dict[str, pd.DataFrame]:
-    """Cap nhat klines moi tu REST API (incremental append)."""
+    Args:
+        symbols: List of symbols to update.
+        end_times: Optional per-symbol end-time overrides (ms).
+                   If not given, each symbol uses get_target_end().
+    """
     if not symbols:
         return {}
 
+    end_times = end_times or {}
     results: dict[str, pd.DataFrame] = {}
-    end_time = int(datetime.now().timestamp() * 1000)
 
     for idx, symbol in enumerate(symbols, 1):
-        last_ts = _get_last_timestamp(symbol)
+        last_ts = get_last_timestamp(symbol)
         if last_ts is None:
-            logger.debug("[%d/%d] %s — no existing data, skip", idx, len(symbols), symbol)
+            logger.debug(
+                "[%d/%d] %s — no existing data, skip",
+                idx, len(symbols), symbol,
+            )
             continue
 
-        new_frames = _fetch_klines_paginated(symbol, last_ts, end_time)
-        if not new_frames:
+        if symbol in end_times:
+            end_time = end_times[symbol]
+        else:
+            target_end = get_target_end(symbol)
+            end_time = int(target_end.timestamp() * 1000)
+
+        if last_ts >= end_time:
             continue
 
-        new_df = pd.concat(new_frames, ignore_index=True)
+        new_df = fetch_klines_paginated(symbol, last_ts, end_time)
+        if new_df is None or new_df.empty:
+            logger.info(
+                "[%d/%d] %s: REST API returned 0 new records",
+                idx, len(symbols), symbol,
+            )
+            continue
+
         csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-        old_df = pd.read_csv(csv_path, parse_dates=["open_time", "close_time"])
-
-        combined = (
-            pd.concat([old_df, new_df], ignore_index=True)
-            .drop_duplicates(subset=["open_time"], keep="last")
-            .sort_values("open_time")
-            .reset_index(drop=True)
-        )
-        combined.to_csv(csv_path, index=False)
+        total = merge_and_save_klines(csv_path, new_df)
         logger.info(
             "[%d/%d] %s: +%d new (%s total)",
-            idx, len(symbols), symbol, len(new_df), f"{len(combined):,}",
+            idx, len(symbols), symbol, len(new_df), f"{total:,}",
         )
-        results[symbol] = combined
+        results[symbol] = new_df
 
     return results
 
 
-# =============================================================================
-# Extract Ticker 24h
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Ticker 24h & Order Book
+# ---------------------------------------------------------------------------
 def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
-    """Lay ticker/24hr + bookTicker, merge va luu CSV."""
+    """Fetch ticker/24hr + bookTicker, append to CSV."""
     if not symbols:
         return None
 
     symbols_set = set(symbols)
-    snapshot_time = datetime.utcnow()
+    snapshot_time = datetime.now(timezone.utc)
 
     try:
         ticker_raw = get_ticker_24h()
@@ -269,7 +208,6 @@ def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
     book_df = book_df.rename(columns={"bidPrice": "bid_price", "askPrice": "ask_price"})
     book_df = book_df[["symbol", "bid_price", "ask_price"]]
 
-    # Merge + cast types
     merged = ticker_df.merge(book_df, on="symbol", how="left")
 
     float_cols = [
@@ -293,33 +231,40 @@ def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
         "trade_count", "bid_price", "ask_price", "spread_pct",
     ]]
 
-    # Append vao CSV
     output_path = RAW_DATA_DIR / "ticker_24h.csv"
-    if output_path.exists():
-        old = pd.read_csv(output_path)
-        merged = pd.concat([old, merged], ignore_index=True)
-
-    merged.to_csv(output_path, index=False)
-    logger.info("Saved ticker_24h (%s records)", f"{len(merged):,}")
+    write_header = not output_path.exists()
+    merged.to_csv(output_path, mode="a", header=write_header, index=False)
+    logger.info("Saved ticker_24h (+%d records)", len(merged))
     return merged
 
 
-# =============================================================================
-# Extract Order Book Snapshot
-# =============================================================================
 def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
-    """Lay order book depth, tinh imbalance cho moi symbol."""
+    """Fetch order book depth and compute imbalance."""
     if not symbols:
         return None
 
-    timestamp = datetime.utcnow()
+    timestamp = datetime.now(timezone.utc)
     records = []
 
     for symbol in symbols:
         try:
             data = get_order_book(symbol, limit=ORDER_BOOK_LIMIT)
-            bid_vol = sum(float(b[1]) for b in data.get("bids", []))
-            ask_vol = sum(float(a[1]) for a in data.get("asks", []))
+            sleep_between_requests()
+
+            bid_vol = 0.0
+            for b in data.get("bids", []):
+                try:
+                    bid_vol += float(b[1])
+                except (ValueError, IndexError):
+                    pass
+
+            ask_vol = 0.0
+            for a in data.get("asks", []):
+                try:
+                    ask_vol += float(a[1])
+                except (ValueError, IndexError):
+                    pass
+
             total = bid_vol + ask_vol
 
             records.append({
@@ -344,49 +289,49 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
     return df
 
 
-# =============================================================================
+# ---------------------------------------------------------------------------
 # Entry Points
-# =============================================================================
-def extract_bulk(
-    symbols: list[str] | None = None,
-    months_back: int = MONTHS_BACK,
-) -> None:
-    """One-time bulk download tu Binance Data Vision."""
-    symbols = symbols or SYMBOLS
-    logger.info("=== Bulk extraction: %d symbols, %d months ===", len(symbols), months_back)
-
-    results = extract_klines(symbols, months_back=months_back)
-    total = sum(len(df) for df in results.values())
-    logger.info("Bulk complete: %d/%d symbols, %s records", len(results), len(symbols), f"{total:,}")
-
-
+# ---------------------------------------------------------------------------
 def extract_daily(symbols: list[str] | None = None) -> None:
-    """Daily extraction: recent klines + ticker 24h + order book."""
+    """Daily extract: REST API klines + ticker + order book."""
     symbols = symbols or SYMBOLS
-    logger.info("=== Daily extraction: %d symbols ===", len(symbols))
+    trading = [
+        s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"
+    ]
+    non_trading = [s for s in symbols if s not in set(trading)]
 
+    logger.info(
+        "=== Daily Extract: %d symbols (%d TRADING, %d BREAK) ===",
+        len(symbols), len(trading), len(non_trading),
+    )
+
+    # REST API incremental klines (all symbols including BREAK)
     recent = extract_recent_klines(symbols)
     if recent:
         total = sum(len(df) for df in recent.values())
-        logger.info("Recent klines: %d symbols, %s new records", len(recent), f"{total:,}")
+        logger.info(
+            "REST API complete — %d/%d symbols updated, %s new records",
+            len(recent), len(symbols), f"{total:,}",
+        )
 
-    extract_ticker_24h(symbols)
-    extract_order_book_snapshot(symbols)
-    logger.info("=== Daily extraction finished ===")
+    # Ticker & order book for TRADING symbols only
+    extract_ticker_24h(trading)
+    extract_order_book_snapshot(trading)
+    logger.info("=== Daily Extract finished ===")
 
 
-# =============================================================================
+# ---------------------------------------------------------------------------
 # CLI
-# =============================================================================
+# ---------------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Extract data from Binance API & Data Vision",
+        description="Extract data from Binance (bulk Data Vision or daily REST API)",
     )
     parser.add_argument(
         "--mode",
-        choices=["bulk", "daily", "full"],
-        default="full",
-        help="bulk = Data Vision only, daily = REST API only, full = both (default: full)",
+        choices=["daily", "bulk"],
+        default="daily",
+        help="daily = incremental REST API, bulk = full Data Vision (default: daily)",
     )
     parser.add_argument(
         "--symbols",
@@ -408,14 +353,11 @@ def main() -> None:
     args = _build_parser().parse_args()
     symbols = args.symbols or SYMBOLS
 
-    logger.info(
-        "Extract started — mode=%s, symbols=%d, months=%d",
-        args.mode, len(symbols), args.months,
-    )
+    logger.info("Extract started | mode=%s | symbols=%d", args.mode, len(symbols))
 
-    if args.mode in ("bulk", "full"):
+    if args.mode == "bulk":
         extract_bulk(symbols, months_back=args.months)
-    if args.mode in ("daily", "full"):
+    else:
         extract_daily(symbols)
 
 

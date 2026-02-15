@@ -129,7 +129,7 @@ def get_spark_session(app_name: str = "CryptoPipeline") -> SparkSession:
     spark = (
         SparkSession.builder
         .appName(app_name)
-        .master("local[1]")
+        .master("local[*]")
         .config("spark.jars.packages", SPARK_CONFIG["jdbc_package"])
         .config("spark.driver.memory", SPARK_CONFIG["driver_memory"])
         .config("spark.sql.execution.arrow.pyspark.enabled", SPARK_CONFIG["arrow_enabled"])
@@ -157,3 +157,50 @@ def spark_write_jdbc(df, table: str, mode: str = "append") -> None:
         properties=JDBC_PROPERTIES,
     )
     logger.info("Write to table '%s' completed", table)
+
+
+def spark_upsert_jdbc(
+    df,
+    table: str,
+    conflict_columns: list[str],
+) -> None:
+    """Spark DataFrame -> PostgreSQL via temp table + ON CONFLICT DO NOTHING.
+
+    Steps:
+      1. Write to _tmp_{table} (overwrite — no PK constraints)
+      2. INSERT INTO {table} SELECT * FROM _tmp ON CONFLICT DO NOTHING
+      3. DROP _tmp_{table}
+
+    Safe for re-runs: duplicates are silently skipped instead of raising.
+    """
+    temp_table = f"_tmp_{table}"
+
+    # 1. Spark write to temp table (fast, no PK constraint)
+    logger.info("Writing to temp table '%s' via JDBC", temp_table)
+    df.write.jdbc(
+        url=JDBC_URL,
+        table=temp_table,
+        mode="overwrite",
+        properties=JDBC_PROPERTIES,
+    )
+
+    # 2. Upsert from temp -> target
+    col_list = ", ".join(df.columns)
+    conflict_list = ", ".join(conflict_columns)
+    upsert_sql = (
+        f"INSERT INTO {table} ({col_list}) "
+        f"SELECT {col_list} FROM {temp_table} "
+        f"ON CONFLICT ({conflict_list}) DO NOTHING"
+    )
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        result = conn.execute(text(upsert_sql))
+        inserted = result.rowcount
+        conn.execute(text(f"DROP TABLE IF EXISTS {temp_table}"))
+        conn.commit()
+
+    logger.info(
+        "Upserted to '%s': %s new rows (duplicates skipped)",
+        table, f"{inserted:,}",
+    )

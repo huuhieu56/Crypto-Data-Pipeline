@@ -6,7 +6,7 @@
 --   - klines (Fact): Dữ liệu nến 1 phút + technical indicators
 --   - ticker_24h (Fact): Thống kê 24h hàng ngày + best bid/ask + spread
 --   - order_book_snapshot (Fact): Snapshot order book
---   - predictions (Fact): Kết quả dự báo từ LSTM model
+--   - predictions (Fact): Kết quả dự báo từ LSTM model (mỗi giờ)
 --
 -- Chạy: psql -U postgres -d crypto_dw -f sql/schema.sql
 -- =============================================================================
@@ -70,25 +70,25 @@ CREATE TABLE IF NOT EXISTS order_book_snapshot (
     CONSTRAINT fk_ob_symbol FOREIGN KEY (symbol) REFERENCES symbols(symbol)
 );
 
--- -- 5. Bảng Fact: Predictions (Kết quả dự báo AI)
--- CREATE TABLE IF NOT EXISTS predictions (
---     symbol VARCHAR(20),
---     predicted_at TIMESTAMP, -- Thời điểm chạy model
---     step_index INT,         -- Dự báo cho bước thứ mấy (ví dụ: 5 phút tới)
---     target_time TIMESTAMP,  -- Thời gian thực tế được dự báo
---     predicted_close NUMERIC(30, 10),
---     model_version VARCHAR(50),
---     actual_close NUMERIC(30, 10), -- Điền sau khi có giá thật
---     error_pct NUMERIC(10, 4),     -- Điền sau khi có giá thật
+-- 5. Bảng Fact: Predictions (Kết quả dự báo AI)
+CREATE TABLE IF NOT EXISTS predictions (
+    symbol VARCHAR(20),
+    predicted_at TIMESTAMP, -- Thời điểm chạy model (mỗi giờ)
+    step_index INT,         -- Phút thứ i trong 60 phút tới (1-60)
+    target_time TIMESTAMP,  -- Thời gian thực tế được dự báo
+    predicted_close NUMERIC(30, 10),
+    model_version VARCHAR(50),
+    actual_close NUMERIC(30, 10), -- Điền sau khi có giá thật
+    error_pct NUMERIC(10, 4),     -- Điền sau khi có giá thật
     
---     PRIMARY KEY (symbol, predicted_at, step_index),
---     CONSTRAINT fk_pred_symbol FOREIGN KEY (symbol) REFERENCES symbols(symbol)
--- );
+    PRIMARY KEY (symbol, predicted_at, step_index),
+    CONSTRAINT fk_pred_symbol FOREIGN KEY (symbol) REFERENCES symbols(symbol)
+);
 
--- -- =============================================================================
--- -- Indexes (Tối ưu tốc độ truy vấn)
--- -- =============================================================================
--- CREATE INDEX IF NOT EXISTS idx_klines_symbol_time ON klines(symbol, timestamp DESC);
--- CREATE INDEX IF NOT EXISTS idx_predictions_target_time ON predictions(target_time);
--- CREATE INDEX IF NOT EXISTS idx_ticker_snapshot_time ON ticker_24h(snapshot_time DESC);
--- CREATE INDEX IF NOT EXISTS idx_order_book_snapshot_time ON order_book_snapshot(timestamp DESC);
+-- =============================================================================
+-- Indexes (Tối ưu tốc độ truy vấn)
+-- =============================================================================
+CREATE INDEX IF NOT EXISTS idx_klines_symbol_time ON klines(symbol, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_predictions_target_time ON predictions(target_time);
+CREATE INDEX IF NOT EXISTS idx_ticker_snapshot_time ON ticker_24h(snapshot_time DESC);
+CREATE INDEX IF NOT EXISTS idx_order_book_snapshot_time ON order_book_snapshot(timestamp DESC);
