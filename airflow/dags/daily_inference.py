@@ -1,23 +1,17 @@
 # =============================================================================
-# Hourly Inference DAG - Apache Airflow
+# Daily Inference DAG - Apache Airflow
 # =============================================================================
-# Schedule: Đầu mỗi giờ (0 * * * *)
-# Timeout: 10 phút
+# Schedule: 02:30 AM daily (sau daily_etl)
+# Timeout: 15 phút
 #
 # Tasks:
 #   1. load_model: Load model LSTM từ .pth file
-#   2. predict: Dùng 360 nến 1-min gần nhất (6h) → dự báo 60 nến tiếp theo (1h)
-#   3. save_predictions: Ghi 3,000 predictions vào PostgreSQL
+#   2. predict: Dùng 60 ngày lịch sử → dự báo 7 ngày tiếp theo (50 coins)
+#   3. save_predictions: Ghi 350 predictions vào PostgreSQL
 #   4. update_actuals: Cập nhật actual_close cho dự báo đã qua
 #
 # Dependencies:
 #   load_model ──▶ predict ──▶ save_predictions ──▶ update_actuals
-#
-# Note:
-#   - Mỗi giờ predict 1 lần: 50 coins × 60 steps = 3,000 records/lần
-#   - Input: 360 nến 1-min gần nhất (6h lookback) với 7 features
-#   - Output: 60 nến 1-min tiếp theo (1h ahead) — predicted close price
-#   - Scalping/intraday: trader có thể action dựa trên 1h prediction
 # =============================================================================
 
 # TODO: Import Airflow libraries
@@ -25,13 +19,13 @@
 # TODO: Define default_args
 
 # TODO: Define DAG
-# - dag_id='hourly_inference'
-# - schedule='0 * * * *'   # Đầu mỗi giờ
+# - dag_id='daily_inference'
+# - schedule='30 2 * * *'  # 02:30 AM daily, sau daily_etl (02:00)
 # - catchup=False
 
 # TODO: Define tasks
 # - load_model_task
-# - predict_task (50 coins × 60 steps = 3,000 records/lần)
+# - predict_task (50 coins × 7 days = 350 records/ngày)
 # - save_predictions_task
 # - update_actuals_task (cập nhật predictions cũ đã có actual price)
 

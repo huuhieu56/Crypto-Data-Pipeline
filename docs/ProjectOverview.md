@@ -77,14 +77,14 @@ Số records = 50 coins × 3 năm × 365 ngày
 Kích thước = 54,750 × 150 bytes/record ≈ 8 MB
 ```
 
-### 3.3. Bảng `predictions` (Hourly inference - 60 nến/lần)
+### 3.3. Bảng `predictions` (Hourly inference - 60 phút/lần)
 
 ```
-Số records = 50 coins × 3 năm × 365 ngày × 24 giờ × 60 predictions/lần
-           = 50 × 3 × 8,760 × 60
+Số records = 50 coins × 3 năm × 365 ngày × 24 lần/ngày × 60 predictions/lần
+           = 50 × 3 × 365 × 24 × 60
            = 78,840,000 records
 
-Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
+Kích thước = 78,840,000 × 80 bytes/record ≈ 6 GB
 ```
 
 ### 3.4. Tổng hợp theo bảng
@@ -92,10 +92,10 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 | Bảng          | Số records     | Kích thước   | Tần suất ghi     |
 | ------------- | -------------- | ------------ | ---------------- |
 | `symbols`     | 50             | < 1 KB       | 1 lần (setup)    |
-| `klines`      | 78,840,000     | ~7.5 GB      | 72,000 recs/ngày |
-| `ticker_24h`  | 54,750         | ~8 MB        | 50 recs/ngày     |
-| `predictions` | 78,840,000     | ~6 GB        | 72,000 recs/ngày |
-| **Total**     | **~158 triệu** | **~13.5 GB** | -                |
+| `klines`      | 78,840,000     | ~7.5 GB      | 50 recs/phút       |
+| `ticker_24h`  | 54,750         | ~8 MB        | 50 recs/ngày      |
+| `predictions` | 78,840,000     | ~6 GB        | 3,000 recs/giờ    |
+| **Total**     | **~157.7 triệu** | **~13.5 GB** | -               |
 
 ### 3.5. Breakdown theo layer
 
@@ -103,9 +103,7 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 | --------------------- | ---------- | ---------- | ---------------------------------- |
 | Raw (Data Lake)       | CSV        | ~7.5 GB    | Dữ liệu gốc từ Binance             |
 | Processed (Data Lake) | Parquet    | ~2 GB      | Nén tốt hơn CSV                    |
-| Warehouse             | PostgreSQL | ~16 GB     | Bao gồm index + predictions (~6GB) |
-
-> **Kết luận:** Dữ liệu ~158 triệu records đủ lớn để minh họa Big Data processing với Spark, vẫn chạy được trên máy 16GB RAM.
+| Warehouse             | PostgreSQL | ~8 GB      | Bao gồm index + predictions (~30MB) |
 
 ---
 
@@ -220,10 +218,10 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 | Bảng                  | Binance API Endpoint                               | Mô tả                                    | Tần suất thu thập |
 | --------------------- | -------------------------------------------------- | ---------------------------------------- | ----------------- |
 | `symbols`             | `/api/v3/exchangeInfo`                             | Thông tin trading pair                   | 1 lần (setup)     |
-| `klines`              | `/api/v3/klines`                                   | Dữ liệu nến (OHLCV)                      | Daily             |
+| `klines`              | `/api/v3/klines`                                   | Dữ liệu nến (OHLCV)                      | Mỗi phút          |
 | `ticker_24h`          | `/api/v3/ticker/24hr`, `/api/v3/ticker/bookTicker` | Thống kê 24h + best bid/ask + spread     | Daily             |
-| `order_book_snapshot` | `/api/v3/depth`                                    | Snapshot order book để đo áp lực mua/bán | 5–15 phút         |
-| `predictions`         | (Internal)                                         | Kết quả từ LSTM model                    | Hourly            |
+| `order_book_snapshot` | `/api/v3/depth`                                    | Snapshot order book để đo áp lực mua/bán | Daily             |
+| `predictions`         | (Internal)                                         | Kết quả từ LSTM model                    | Mỗi giờ           |
 
 ### 5.3. Bảng `symbols` (Dimension Table)
 
@@ -309,14 +307,14 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 
 ### 5.6. Bảng `predictions` (Fact Table)
 
-> **Mục đích:** Lưu riêng kết quả dự báo 60 nến/lần, tách biệt khỏi dữ liệu thực tế để dễ đánh giá model performance.
+> **Mục đích:** Lưu riêng kết quả dự báo 60 phút/lần (mỗi giờ), tách biệt khỏi dữ liệu thực tế để dễ đánh giá model performance.
 
 | Column            | Type        | Description                       | Nguồn      |
 | ----------------- | ----------- | --------------------------------- | ---------- |
 | `symbol`          | VARCHAR(20) | FK → symbols.symbol               | System     |
-| `predicted_at`    | TIMESTAMPTZ | Thời điểm chạy dự báo             | System     |
-| `step_index`      | INTEGER     | Vị trí nến dự báo (1-60)          | System     |
-| `target_time`     | TIMESTAMPTZ | Thời điểm được dự báo             | System     |
+| `predicted_at`    | TIMESTAMPTZ | Thời điểm chạy dự báo (mỗi giờ)    | System     |
+| `step_index`      | INTEGER     | Phút dự báo thứ i (1-60)           | System     |
+| `target_time`     | TIMESTAMPTZ | Phút được dự báo                  | System     |
 | `predicted_close` | DOUBLE      | Giá close dự báo                  | LSTM Model |
 | `model_version`   | VARCHAR(50) | Version của model sử dụng         | System     |
 | `actual_close`    | DOUBLE      | Giá thực tế (cập nhật sau)        | Binance    |
@@ -331,10 +329,10 @@ Kích thước = 78.84 triệu × 80 bytes/record ≈ 6 GB
 ```
 | symbol  | predicted_at        | step | target_time         | predicted | actual  | error_pct |
 |---------|---------------------|------|---------------------|-----------|---------|-----------|
-| BTCUSDT | 2026-01-26 10:00:00 |  1   | 2026-01-26 10:01:00 | 102,345.5 | 102,400 | 0.053%    |
-| BTCUSDT | 2026-01-26 10:00:00 |  2   | 2026-01-26 10:02:00 | 102,380.2 | 102,420 | 0.039%    |
+| BTCUSDT | 2026-01-26 14:00:00 |  1   | 2026-01-26 14:01:00 | 102,345.5 | 102,340 | 0.005%    |
+| BTCUSDT | 2026-01-26 14:00:00 |  2   | 2026-01-26 14:02:00 | 102,348.2 | 102,355 | 0.007%    |
 | ...     | ...                 | ...  | ...                 | ...       | ...     | ...       |
-| BTCUSDT | 2026-01-26 10:00:00 | 60   | 2026-01-26 11:00:00 | 102,890.5 | 102,850 | 0.039%    |
+| BTCUSDT | 2026-01-26 14:00:00 | 60   | 2026-01-26 14:60:00 | 102,890.5 | 102,850 | 0.039%    |
 ```
 
 > **Ý nghĩa:** Tách predictions ra bảng riêng giúp:
@@ -432,7 +430,7 @@ ORDER BY avg_error ASC;
 │                                                                                          │
 │   ┌─────────────────┐   ┌─────────────────────┐   ┌─────────────────────────┐   ┌───────────────────┐ │
 │   │ /exchangeInfo   │   │    /klines          │   │    /ticker/24hr         │   │    /depth         │ │
-│   │ (1 lần setup)   │   │ (Daily: 50 coins)   │   │ (Daily: 50 coins)       │   │ (5–15 phút)       │ │
+│   │ (1 lần setup)   │   │ (Mỗi phút: 50 coins)│   │ (Daily: 50 coins)       │   │ (Daily)            │ │
 │   └────────┬────────┘   └──────────┬──────────┘   └────────────┬────────────┘   └─────────┬─────────┘ │
 │            │                       │                           │                           │           │
 │            ▼                       ▼                           ▼                           ▼           │
@@ -471,15 +469,17 @@ ORDER BY avg_error ASC;
 | Output     | `data/raw/symbols.json` |
 | Ghi vào    | Bảng `symbols`          |
 
-#### 6.2.2. Extract Klines (Daily)
+#### 6.2.2. Extract Klines (Mỗi phút)
 
 | Thuộc tính | Giá trị                                                                |
 | ---------- | ---------------------------------------------------------------------- |
 | API        | `/api/v3/klines`                                                       |
-| Tần suất   | Daily (2:00 AM)                                                        |
+| Tần suất   | Mỗi phút (* * * * *)                                                    |
 | Chiến lược | Bulk download từ Binance Data Vision (lịch sử), REST API (dữ liệu mới) |
 | Output     | `data/raw/{SYMBOL}.csv`                                                |
 | Ghi vào    | Bảng `klines` (sau Transform)                                          |
+
+> **Lưu ý:** Extract initial nặng (bulk 3 năm × 50 coins = 78M rows). Sau khi bulk xong, mỗi phút chỉ lấy 1 nến/coin (50 API calls) → rất nhẹ. Transform + Load với Spark để giữ nhất quán kiến trúc.
 
 #### 6.2.3. Extract Ticker 24h + Best Bid/Ask (Daily)
 
@@ -493,17 +493,17 @@ ORDER BY avg_error ASC;
 
 > **Lưu ý:** API ticker/24hr và bookTicker trả về snapshot tại thời điểm gọi, không phải dữ liệu lịch sử. Mỗi ngày lưu 1 record/coin.
 
-#### 6.2.4. Extract Order Book Snapshot (5–15 phút)
+#### 6.2.4. Extract Order Book Snapshot (Daily)
 
 | Thuộc tính | Giá trị                            |
 | ---------- | ---------------------------------- |
 | API        | `/api/v3/depth`                    |
-| Tần suất   | 5–15 phút                          |
+| Tần suất   | Daily (0 0 * * *), cùng daily_snapshot DAG |
 | Đặc điểm   | Snapshot top N levels              |
 | Output     | `data/raw/order_book_snapshot.csv` |
 | Ghi vào    | Bảng `order_book_snapshot`         |
 
-> **Lưu ý:** Tần suất thấp để tránh rate limit; chỉ lưu các chỉ số tổng hợp.
+> **Lưu ý:** Lấy 1 snapshot/ngày để đơn giản hóa pipeline. Đủ để phân tích xu hướng áp lực mua/bán theo ngày mà không gây rate limit.
 
 ### 6.3. Transform - Xử lý với Spark
 
@@ -524,10 +524,10 @@ ORDER BY avg_error ASC;
 | Bảng                  | Input                   | Mode   | Ghi chú                           |
 | --------------------- | ----------------------- | ------ | --------------------------------- |
 | `symbols`             | symbols.json            | Upsert | 1 lần setup, update nếu cần       |
-| `klines`              | features.parquet        | Append | Dữ liệu mới mỗi ngày              |
-| `ticker_24h`          | ticker_24h.csv          | Append | 50 records/ngày                   |
-| `order_book_snapshot` | order_book_snapshot.csv | Append | Snapshot mỗi 5–15 phút            |
-| `predictions`         | (từ inference DAG)      | Append | 50 records/giờ (hourly inference) |
+| `klines`              | features.parquet        | Append | Dữ liệu mới mỗi phút (minutely_extract)    |
+| `ticker_24h`          | ticker_24h.csv          | Append | 50 records/ngày (daily_snapshot)       |
+| `order_book_snapshot` | order_book_snapshot.csv | Append | 50 records/ngày (daily_snapshot)       |
+| `predictions`         | (từ inference)           | Append | 3,000 records/giờ (hourly_inference)   |
 
 ---
 
@@ -544,48 +544,66 @@ ORDER BY avg_error ASC;
 
 ### 7.2. Danh sách DAGs
 
-| DAG                | Schedule        | Mô tả                                  |
-| ------------------ | --------------- | -------------------------------------- |
-| `daily_etl`        | 02:00 AM daily  | Extract → Transform → Load dữ liệu mới |
-| `weekly_retrain`   | 03:00 AM Sunday | Train lại model với dữ liệu mới        |
-| `hourly_inference` | Every hour      | Chạy dự báo và lưu kết quả             |
+| DAG                  | Schedule        | Mô tả                                        |
+| -------------------- | --------------- | ---------------------------------------------- |
+| `minutely_extract`   | * * * * *       | Extract → Transform → Load klines mỗi phút     |
+| `daily_snapshot`     | 0 0 * * *       | Ticker 24h + Order Book snapshot hàng ngày      |
+| `hourly_inference`   | 0 * * * *       | Dự báo 60 phút, update actuals, mỗi giờ        |
+| `weekly_retrain`     | 0 3 * * 0       | Train lại model với dữ liệu mới                |
 
-### 7.3. DAG: daily_etl
+### 7.3. DAG: minutely_extract
 
 ```
-Trigger: 02:00 AM mỗi ngày
-Timeout: 2 giờ
+Trigger: Mỗi phút (* * * * *)
+Timeout: 50 giây
+max_active_runs: 1 (tránh overlap)
 
-                           ┌──────────────────┐
-                           │  extract_ticker  │
-                           │                  │
-                           │ - GET /ticker/24hr│
-                           │ - Save CSV        │
-                           └────────┬─────────┘
-                                    │
-┌──────────────────┐                │
-│  extract_klines  │                │
-│                  │                │
-│ - GET /klines    │                │
-│ - 50 coins       │                ▼
-│ - Save CSV       │        ┌──────────────────┐     ┌──────────────────┐
-└────────┬─────────┘        │  load_ticker     │     │                  │
-         │                  │                  │     │                  │
-         │                  │ - JDBC write     │     │                  │
-         ▼                  │ - ticker_24h     │     │                  │
-┌──────────────────┐        └──────────────────┘     │                  │
-│   transform      │                                 │     load_klines  │
-│                  │                                 │                  │
-│ - Spark job      │─────────────────────────────────▶ - JDBC write    │
-│ - Calc RSI, MACD │                                 │ - klines table  │
-│ - Save Parquet   │                                 │                  │
-└──────────────────┘                                 └──────────────────┘
-      30 phút                   5 phút                    10 phút
+Note: ETL nặng chỉ lần đầu (bulk 3 năm × 50 coins = 78M rows, dùng Spark).
+      Sau đó mỗi phút chỉ xử lý 50 rows (1 nến/coin) — Spark vẫn chạy được
+      vì giữ nhất quán kiến trúc, overhead chấp nhận được (~15-20s).
+
+┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│ extract_klines   │────▶│    transform     │────▶│   load_klines    │
+│                  │     │                  │     │                  │
+│ - GET /klines    │     │ - Spark job      │     │ - Spark JDBC     │
+│   ?limit=1       │     │ - Calc RSI, MACD │     │ - klines table   │
+│ - 50 coins       │     │ - Save Parquet   │     │ - upsert         │
+└──────────────────┘     └──────────────────┘     └──────────────────┘
+     ~5 giây                   ~10 giây                  ~5 giây
 ```
 
-> **Parallel execution:** `extract_klines` và `extract_ticker` chạy song song để tối ưu thời gian.
+> **Spark cho incremental:** Mặc dù 50 rows/phút thì Spark hơi overkill, nhưng giữ Spark để thống nhất codebase với bulk processing (78M rows) và giữ giá trị showcasing cho portfolio.
 
-### 7.4. DAG: weekly_retrain
+### 7.4. DAG: daily_snapshot
+
+```
+Trigger: 00:00 AM mỗi ngày (0 0 * * *)
+Timeout: 15 phút
+
+┌────────────────────┐     ┌────────────────────┐
+│  extract_ticker    │───▶│    load_ticker      │
+│                    │     │                    │
+│- GET /ticker/24hr  │     │ - Spark JDBC       │
+│- GET /bookTicker   │     │ - ticker_24h table │
+│- Save CSV          │     │                    │
+└────────────────────┘     └────────────────────┘
+       ~3 giây                    ~5 giây
+
+┌────────────────────┐     ┌────────────────────┐
+│ extract_order_book │───▶│  load_order_book    │
+│                    │     │                    │
+│- GET /depth        │     │ - Spark JDBC       │
+│- 50 coins          │     │ - order_book table │
+│- Save CSV          │     │                    │
+└────────────────────┘     └────────────────────┘
+       ~10 giây                   ~5 giây
+
+(2 nhánh chạy song song)
+```
+
+> **Note:** Ticker 24h là rolling 24h snapshot, Order book là snapshot áp lực mua/bán — cả hai lấy 1 lần/ngày là đủ cho phân tích.
+
+### 7.5. DAG: weekly_retrain
 
 ```
 Trigger: 03:00 AM Chủ Nhật
@@ -596,61 +614,86 @@ Timeout: 4 giờ
 │              │     │              │     │              │
 │ - Query DB   │     │ - LSTM train │     │ - Calc MAE   │
 │ - Create     │     │ - GPU        │     │ - Save model │
-│   sequences  │     │ - 20 epochs  │     │   if better  │
+│   sequences  │     │ - 100 epochs │     │   if better  │
 └──────────────┘     └──────────────┘     └──────────────┘
     10 phút              2 giờ               5 phút
 ```
 
-### 7.5. DAG: hourly_inference
+### 7.6. DAG: hourly_inference
 
 ```
-Trigger: Mỗi giờ (xx:05)
-Timeout: 15 phút
+Trigger: Đầu mỗi giờ (0 * * * *)
+Timeout: 10 phút
 
 ┌──────────────┐     ┌──────────────┐     ┌─────────────────────┐     ┌──────────────┐
 │  load_model  │────▶│   predict    │────▶│  save_predictions   │────▶│ update_actual│
 │              │     │              │     │                     │     │              │
-│ - Load .pth  │     │ - Get last   │     │ - Insert vào bảng   │     │ - Sau 1 giờ  │
-│ - To GPU     │     │   60 candles │     │   predictions       │     │ - Cập nhật   │
-│              │     │ - Predict    │     │ - 50 coins × 60     │     │   actual_close│
-│              │     │   next 60    │     │ = 3,000 records/giờ │     │ - Calc error │
+│ - Load .pth  │     │ - Get last   │     │ - Insert vào bảng   │     │ - Cập nhật   │
+│ - To GPU     │     │   360 nến    │     │   predictions       │     │   actual_close│
+│              │     │ - Predict    │     │ - 50 coins × 60     │     │   cho dự báo │
+│              │     │   next 60 min│     │ = 3,000 records/giờ│     │   đã qua     │
 └──────────────┘     └──────────────┘     └─────────────────────┘     └──────────────┘
-    1 phút               5 phút                 2 phút                    (delayed)
+    1 phút               3 phút                 1 phút                    1 phút
 ```
 
-> **Note:** Task `update_actual` được schedule chạy sau `save_predictions` 1 giờ để lấy giá thực tế của tất cả 60 nến và tính error_pct.
+> **Note:** Task `update_actual` cập nhật giá close thực tế từ bảng klines cho các dự báo đã qua và tính error_pct.
 
 ---
 
-## 8. Model LSTM
+## 8. Model LSTM — Dự báo giá nến 1-min (Scalping/Intraday)
 
-### 8.1. Cấu hình
+### 8.1. Thiết kế tổng quan
 
-| Parameter    | Value | Giải thích                                   |
-| ------------ | ----- | -------------------------------------------- |
-| Input window | 60    | Dùng 60 nến quá khứ để dự báo                |
-| Features     | 7     | open, high, low, close, volume, rsi_14, macd |
-| Hidden size  | 128   | Số neurons trong LSTM layer                  |
-| Num layers   | 2     | Số LSTM layers                               |
-| Output       | 60    | Giá close của 60 nến tiếp theo (1 giờ)       |
-| Dropout      | 0.2   | Tránh overfitting                            |
+**Bài toán:** Dùng 360 nến 1-min gần nhất (6h lookback) để dự báo giá close 60 nến tiếp theo (1h ahead).
 
-### 8.2. Training Strategy
+**Tại sao 1-min scalping?**
 
-| Aspect               | Value           |
-| -------------------- | --------------- |
+| Khía cạnh            | Daily aggregated          | 1-min candles (được chọn)       |
+| -------------------- | ------------------------- | -------------------------------- |
+| Actionable           | 7 ngày chờ — chậm           | 1h ahead — trader action ngay    |
+| RSI/MACD             | Phải aggregate lại daily  | RSI(14 phút) = scalping đúng chuẩn |
+| Data volume          | ~1,095 rows/coin           | ~1.58M rows/coin — Big Data!    |
+| Training time        | Vài phút                  | Hàng giờ (GPU recommended)       |
+| Ứng dụng             | Portfolio rebalancing      | Scalping, day trading           |
+| Prediction frequency | 1 lần/ngày                 | 24 lần/ngày (mỗi giờ)            |
+
+**Pipeline:** Klines 1-min (raw) → Spark Transform (RSI-14, MACD) → LSTM (360→60)
+
+### 8.2. Cấu hình
+
+| Parameter    | Value | Giải thích                                                        |
+| ------------ | ----- | ----------------------------------------------------------------- |
+| Input window | 360   | 360 nến 1-min = 6 giờ lookback (bao trùm phên giao dịch)           |
+| Features     | 7     | open, high, low, close, volume, rsi_14, macd                     |
+| Hidden size  | 128   | Đủ lớn cho 1-min time series với nhiều noise                       |
+| Num layers   | 2     | 2 LSTM layers                                                    |
+| Output       | 60    | Predicted close price 60 phút tiếp theo                           |
+| Dropout      | 0.2   | Moderate — data lớn đủ để không cần dropout cao                    |
+
+### 8.3. Training Strategy
+
+| Aspect               | Value            |
+| -------------------- | ---------------- |
 | Train/Val/Test split | 70% / 15% / 15% |
-| Optimizer            | Adam, lr=0.001  |
-| Loss function        | MSE             |
-| Epochs               | 20-50           |
-| Early stopping       | Patience = 5    |
-| Batch size           | 64              |
+| Optimizer            | Adam, lr=0.001   |
+| Loss function        | MSE              |
+| Epochs               | 50               |
+| Early stopping       | Patience = 10    |
+| Batch size           | 64               |
 
-### 8.3. Input/Output Shape
+### 8.4. Input/Output Shape
 
 ```
-Input:  (batch_size, 60, 7)    # 60 timesteps, 7 features
-Output: (batch_size, 60)       # predicted close prices for next 60 minutes
+Input:  (batch_size, 360, 7)   # 360 nến 1-min (6h), 7 features/nến
+Output: (batch_size, 60)       # predicted close price cho 60 phút tiếp theo
+```
+
+### 8.5. Data Volume (cho LSTM)
+
+```
+Training samples/coin = 1,576,800 nến - 360 (input) - 60 (output) + 1 = 1,576,381 samples
+Tổng = 50 coins × 1,576,381 ≈ 78.8M training samples
+~78M rows — đây là lý do cần Spark + GPU
 ```
 
 ---
@@ -679,24 +722,38 @@ Output: (batch_size, 60)       # predicted close prices for next 60 minutes
 
 ```
 crypto-pipeline/
+├── config/
+│   ├── config.py               # Centralized config (paths, DB, API, Spark, Model)
+│   └── symbols.py              # SYMBOL_REGISTRY (50 coins, single source of truth)
 ├── airflow/
 │   └── dags/
-│       ├── daily_etl.py
-│       ├── weekly_retrain.py
-│       └── hourly_inference.py
+│       ├── minutely_extract.py # ETL klines mỗi phút (* * * * *)
+│       ├── daily_snapshot.py   # Ticker 24h + Order Book (0 0 * * *)
+│       ├── weekly_retrain.py   # Retrain Chủ Nhật 03:00 AM
+│       └── hourly_inference.py # Inference mỗi giờ (0 * * * *)
 ├── data/
-│   ├── raw/                    # Data Lake - Raw
+│   ├── raw/                    # Data Lake - Raw (CSV)
 │   │   ├── BTCUSDT.csv
 │   │   └── ...
-│   └── processed/              # Data Lake - Processed
+│   └── processed/              # Data Lake - Processed (Parquet)
 │       └── features.parquet
 ├── models/
-│   └── lstm_v1.pth
+│   ├── model.py                # LSTM definition (PyTorch)
+│   └── lstm_v1.pth             # Trained weights
 ├── scripts/
-│   ├── extract.py
-│   ├── transform.py
-│   ├── load.py
-│   └── train.py
+│   ├── pre_extract.py          # Self-healing gap detection + recovery
+│   ├── extract.py              # Data Vision bulk + REST API mỗi phút
+│   ├── transform.py            # Spark: RSI-14, MACD-12/26/9 trên 1-min
+│   ├── load.py                 # Spark JDBC upsert → PostgreSQL
+│   ├── train.py                # LSTM training (360→60, 1-min candles)
+│   ├── inference.py            # Predict 60 phút cho 50 coins (mỗi giờ)
+│   └── update_actuals.py       # Cập nhật actual_close + error_pct
+├── utils/
+│   ├── binance_utils.py        # API wrappers (retry, rate limit)
+│   ├── db_utils.py             # SQLAlchemy, Spark JDBC, upsert
+│   ├── data_utils.py           # Timestamps, merge CSV, date utils
+│   ├── exceptions.py           # Custom exceptions (E/T/L layers)
+│   └── logger.py               # Logging config
 ├── docker-compose.yml
 ├── requirements.txt
 └── README.md
@@ -811,18 +868,20 @@ LIMIT 5;
 
 #### Panel 4: BTC Price Chart (Time Series)
 
-| Thuộc tính | Giá trị       |
-| ---------- | ------------- |
-| Loại       | Time series   |
-| Time range | Last 24 hours |
+| Thuộc tính | Giá trị      |
+| ---------- | ------------ |
+| Loại       | Time series  |
+| Time range | Last 7 days  |
+
+> **Lưu ý:** Dữ liệu klines cập nhật mỗi phút (minutely_extract DAG). Chart hiển thị dữ liệu 1-min từ DB, refresh 1 phút để cập nhật real-time.
 
 ```sql
 SELECT
     timestamp,
     close AS price
 FROM klines
-WHERE symbol = 'BTCUSDT'
-  AND timestamp >= NOW() - INTERVAL '24 hours'
+WHERE symbol = $symbol
+  AND timestamp >= NOW() - INTERVAL '7 days'
 ORDER BY timestamp;
 ```
 
@@ -839,11 +898,13 @@ SELECT
     p.actual_close,
     p.predicted_close
 FROM predictions p
-WHERE p.symbol = 'BTCUSDT'
+WHERE p.symbol = $symbol
   AND p.actual_close IS NOT NULL
-  AND p.target_time >= NOW() - INTERVAL '24 hours'
+  AND p.target_time >= NOW() - INTERVAL '30 days'
 ORDER BY p.target_time;
 ```
+
+> **Lưu ý:** Predictions cập nhật mỗi giờ (60 phút/lần), hiển thị 7 ngày để thấy trend model performance. Mỗi giờ có thêm 60 data points/coin.
 
 #### Panel 6: Model Performance (Stat Panels)
 
@@ -884,17 +945,19 @@ ORDER BY k.rsi_14 DESC;
 | Alert                 | Điều kiện                               | Notification |
 | --------------------- | --------------------------------------- | ------------ |
 | RSI Overbought        | RSI > 70 cho BTC hoặc ETH               | Slack/Email  |
-| Prediction Error High | MAE > threshold trong 1 giờ             | Slack        |
+| Prediction Error High | MAPE > 5% trong tuần qua               | Slack        |
 | Volume Spike          | Volume 24h tăng > 200% so với hôm trước | Slack        |
 
 ### 10.5. Refresh Rate
 
-| Panel type        | Refresh interval |
-| ----------------- | ---------------- |
-| Price charts      | 1 phút           |
-| Volume/Gainers    | 1 giờ            |
-| Model performance | 1 giờ            |
-| RSI Heatmap       | 5 phút           |
+> **Lưu ý:** Dữ liệu klines cập nhật mỗi phút (minutely_extract DAG), predictions cập nhật mỗi giờ (hourly_inference DAG). Refresh interval càng nhỏ càng nhanh thấy dữ liệu mới.
+
+| Panel type        | Refresh interval | Giải thích                                       |
+| ----------------- | ---------------- | ------------------------------------------------ |
+| Price charts      | 1 phút           | Klines cập nhật mỗi phút, real-time tracking     |
+| Volume/Gainers    | 1 giờ            | Snapshot daily, thay đổi ít                       |
+| Model performance | 1 giờ            | Predictions cập nhật mỗi giờ                     |
+| RSI Heatmap       | 1 phút           | RSI trên 1-min, cập nhật mỗi phút theo klines    |
 
 ---
 
@@ -920,7 +983,7 @@ ORDER BY k.rsi_14 DESC;
 
 | Ngày | Task                                      | Deliverable                  |
 | ---- | ----------------------------------------- | ---------------------------- |
-| 1-2  | Setup Airflow, tạo daily_etl DAG          | DAG chạy được từ UI          |
+| 1-2  | Setup Airflow, tạo minutely_extract DAG  | DAG chạy được từ UI          |
 | 3-4  | Tạo weekly_retrain, hourly_inference DAGs | Tất cả DAGs hoạt động        |
 | 5-7  | Test scheduling, error handling           | Retry hoạt động, logs đầy đủ |
 
@@ -945,7 +1008,7 @@ ORDER BY k.rsi_14 DESC;
 ### Automation
 
 - [ ] Airflow Web UI accessible (port 8080)
-- [ ] daily_etl DAG chạy thành công
+- [ ] minutely_extract DAG chạy thành công
 - [ ] weekly_retrain DAG chạy thành công
 - [ ] hourly_inference DAG chạy thành công
 
@@ -958,7 +1021,7 @@ ORDER BY k.rsi_14 DESC;
 ### Visualization
 
 - [ ] Grafana accessible (port 3000)
-- [ ] Dashboard hiển thị giá real-time
+- [ ] Dashboard hiển thị giá (cập nhật mỗi phút)
 - [ ] Dashboard hiển thị predicted vs actual
 
 ---
@@ -980,7 +1043,7 @@ ORDER BY k.rsi_14 DESC;
 
 ### 13.1. Self-Healing Extract (`_pre_extract`)
 
-Pipeline tự động phát hiện và phục hồi gap dữ liệu mỗi lần chạy `extract_daily`, không cần can thiệp thủ công.
+Pipeline tự động phát hiện và phục hồi gap dữ liệu mỗi lần chạy `minutely_extract`, không cần can thiệp thủ công.
 
 #### Khái niệm chính — `target_end_time`
 

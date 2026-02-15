@@ -92,20 +92,34 @@ SPARK_CONFIG = {
 # Model Hyperparameters (LSTM)
 # =============================================================================
 MODEL_CONFIG = {
-    "input_window": 60,     # Số nến quá khứ
-    "output_window": 60,    # Số nến dự báo
-    "features": 7,          # open, high, low, close, volume, rsi_14, macd
-    "hidden_size": 128,
+    "input_window": 360,     # 360 nến 1-min (6 giờ lookback)
+    "output_window": 60,     # 60 nến 1-min (1 giờ prediction)
+    "features": 7,           # open, high, low, close, volume, rsi_14, macd
+    "hidden_size": 128,      # Đủ lớn cho 1-min time series
     "num_layers": 2,
-    "dropout": 0.2,
+    "dropout": 0.2,           # Moderate cho 1-min data
     "learning_rate": 0.001,
-    "epochs": 50,
-    "batch_size": 64,
-    "early_stopping_patience": 5,
+    "epochs": 50,             # Dataset lớn → ít epochs hơn
+    "batch_size": 64,         # Batch lớn cho dataset lớn
+    "early_stopping_patience": 10,
     "train_ratio": 0.70,
     "val_ratio": 0.15,
     "test_ratio": 0.15,
 }
+
+# =============================================================================
+# Klines Raw Schema — Binance API / Data Vision
+# =============================================================================
+_KLINES_RAW_COLUMNS = [
+    "open_time", "open", "high", "low", "close", "volume",
+    "close_time", "quote_volume", "trades",
+    "taker_buy_base", "taker_buy_quote", "ignore",
+]
+RAW_KLINES_COLUMNS = [c for c in _KLINES_RAW_COLUMNS if c != "ignore"]
+NUMERIC_COLUMNS = [
+    "open", "high", "low", "close", "volume",
+    "quote_volume", "taker_buy_base", "taker_buy_quote",
+]
 
 # =============================================================================
 # Feature columns — dùng chung cho Transform & Load

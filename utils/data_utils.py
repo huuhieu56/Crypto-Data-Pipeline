@@ -7,6 +7,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dateutil.relativedelta import relativedelta
+
 import pandas as pd
 
 from config.config import RAW_DATA_DIR
@@ -30,27 +32,80 @@ def get_target_end(symbol: str) -> datetime:
     return datetime.now(timezone.utc)
 
 
-def merge_and_save_klines(csv_path: Path, new_df: pd.DataFrame) -> pd.DataFrame:
+# ---------------------------------------------------------------------------
+# CSV I/O helpers (optimized for large klines files)
+# ---------------------------------------------------------------------------
+
+def _tail_open_time(csv_path: Path) -> str | None:
+    """Read the last row's open_time from a sorted CSV.  O(1) I/O."""
+    try:
+        with open(csv_path, "rb") as f:
+            header = f.readline().decode().strip()
+            cols = header.split(",")
+            ot_idx = cols.index("open_time")
+
+            f.seek(0, 2)
+            size = f.tell()
+            if size <= len(header) + 2:
+                return None
+
+            chunk = min(512, size)
+            f.seek(-chunk, 2)
+            tail = f.read().decode().strip()
+
+        last_line = tail.rsplit("\n", 1)[-1]
+        if not last_line or last_line == header:
+            return None
+        return last_line.split(",")[ot_idx]
+    except Exception:
+        return None
+
+
+def _count_lines(csv_path: Path) -> int:
+    """Count data rows in CSV (header excluded).  Fast buffered byte scan."""
+    count = 0
+    with open(csv_path, "rb") as f:
+        while True:
+            buf = f.read(1 << 20)  # 1 MB chunks
+            if not buf:
+                break
+            count += buf.count(b"\n")
+    return max(count - 1, 0)  # subtract header
+
+
+def merge_and_save_klines(csv_path: Path, new_df: pd.DataFrame) -> int:
     """Merge *new_df* into existing CSV (dedup by open_time, sort, save).
 
-    If the CSV does not exist or is empty, *new_df* is used as-is.
-    Returns the final combined DataFrame.
-    """
-    if csv_path.exists():
-        try:
-            old_df = pd.read_csv(csv_path, parse_dates=["open_time", "close_time"])
-            if old_df.empty:
-                combined = new_df
-            else:
-                combined = pd.concat([old_df, new_df], ignore_index=True)
-        except Exception as exc:
-            logger.warning(
-                "Cannot read %s, overwriting: %s", csv_path.name, exc,
-            )
-            combined = new_df
-    else:
-        combined = new_df
+    Optimization (common case — incremental / chronological append):
+      If new data is strictly AFTER existing data, append-only without
+      re-reading the entire CSV.  Falls back to full dedup only when
+      overlap is detected (e.g. backfill re-download).
 
+    Returns total record count (int) instead of DataFrame to avoid
+    holding millions of rows in memory.
+    """
+    new_df = new_df.drop_duplicates(subset=["open_time"], keep="last")
+    new_df = new_df.sort_values("open_time").reset_index(drop=True)
+
+    if not csv_path.exists() or csv_path.stat().st_size < 50:
+        new_df.to_csv(csv_path, index=False)
+        return len(new_df)
+
+    # --- fast path: append-only when no overlap ---
+    last_existing = _tail_open_time(csv_path)
+    if last_existing is not None:
+        new_first = str(new_df["open_time"].iloc[0])
+        if pd.Timestamp(new_first) > pd.Timestamp(last_existing):
+            new_df.to_csv(csv_path, mode="a", header=False, index=False)
+            logger.debug(
+                "Fast append: +%d rows -> %s", len(new_df), csv_path.name,
+            )
+            return _count_lines(csv_path)
+
+    # --- slow path: overlap -> full dedup ---
+    logger.debug("Full merge (overlap): %s", csv_path.name)
+    old_df = pd.read_csv(csv_path)
+    combined = pd.concat([old_df, new_df], ignore_index=True)
     combined = (
         combined
         .drop_duplicates(subset=["open_time"], keep="last")
@@ -58,51 +113,57 @@ def merge_and_save_klines(csv_path: Path, new_df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
     combined.to_csv(csv_path, index=False)
-    return combined
+    return len(combined)
 
 
 def get_last_timestamp(symbol: str) -> int | None:
-    """Get last timestamp (in milliseconds) of a symbol's CSV data.
-
-    Reads only the header and last line of the file for performance
-    (CSVs are sorted by open_time).
-    """
+    """Get last open_time (ms) from a symbol's sorted CSV.  O(1) I/O."""
     csv_path = RAW_DATA_DIR / f"{symbol}.csv"
     if not csv_path.exists():
         return None
-    try:
-        with open(csv_path, "rb") as f:
-            # Read header to find open_time column index
-            header_line = f.readline().decode().strip()
-            columns = header_line.split(",")
-            try:
-                ot_idx = columns.index("open_time")
-            except ValueError:
-                logger.error("No 'open_time' column in %s", csv_path.name)
-                return None
-
-            # Seek to end and scan backwards for the last newline
-            f.seek(0, 2)
-            file_size = f.tell()
-            if file_size <= len(header_line) + 1:
-                # File has only the header (or is empty)
-                return None
-
-            # Read a small tail chunk (last 512 bytes is plenty for one row)
-            chunk_size = min(512, file_size)
-            f.seek(-chunk_size, 2)
-            tail = f.read().decode()
-
-        last_line = tail.strip().rsplit("\n", 1)[-1]
-        if not last_line or last_line == header_line:
-            return None
-
-        fields = last_line.split(",")
-        last = pd.to_datetime(fields[ot_idx], utc=True)
-        return int(last.timestamp() * 1000)
-    except Exception as exc:
-        logger.error("Cannot read last timestamp from %s: %s", csv_path.name, exc)
+    raw = _tail_open_time(csv_path)
+    if raw is None:
         return None
+    try:
+        ts = pd.to_datetime(raw, utc=True)
+        return int(ts.timestamp() * 1000)
+    except Exception as exc:
+        logger.error(
+            "Cannot parse timestamp '%s' from %s: %s", raw, symbol, exc,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Date / month utilities (Data Vision)
+# ---------------------------------------------------------------------------
+
+def get_target_months(months_back: int) -> list[tuple[int, int]]:
+    """Last *months_back* completed months as (year, month) tuples."""
+    end_date = datetime.now(timezone.utc) - relativedelta(months=1)
+    return [
+        ((end_date - relativedelta(months=i)).year,
+         (end_date - relativedelta(months=i)).month)
+        for i in range(months_back)
+    ]
+
+
+def get_months_between(
+    start_dt: datetime,
+    end_dt: datetime,
+) -> list[tuple[int, int]]:
+    """Complete months between *start_dt* and *end_dt*."""
+    months: list[tuple[int, int]] = []
+    cursor = start_dt.replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0,
+    ) + relativedelta(months=1)
+    while True:
+        next_month = cursor + relativedelta(months=1)
+        if next_month > end_dt:
+            break
+        months.append((cursor.year, cursor.month))
+        cursor = next_month
+    return months
 
 
 # TODO: normalize_data() — Min-Max normalization for features

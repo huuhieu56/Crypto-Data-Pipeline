@@ -1,9 +1,11 @@
-"""Daily incremental extract from Binance REST API.
+"""Extract data from Binance.
 
-Run after pre_extract.py. Handles:
-  - REST API incremental klines update (gap < 30 days)
-  - Ticker 24h + Book Ticker
-  - Order Book snapshot
+Two modes:
+  bulk  — Full historical download via Data Vision (monthly ZIP files)
+  daily — Incremental update via REST API + Ticker 24h + Order Book
+
+Bulk mode is used by pre_extract.py for first-time / backfill downloads.
+Daily mode runs after pre_extract.py for ongoing incremental updates.
 """
 
 import sys
@@ -15,7 +17,7 @@ import argparse
 import pandas as pd
 from datetime import datetime, timezone
 
-from config.config import RAW_DATA_DIR, ORDER_BOOK_LIMIT
+from config.config import RAW_DATA_DIR, ORDER_BOOK_LIMIT, MONTHS_BACK
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
 from utils.exceptions import ExtractError
@@ -24,15 +26,87 @@ from utils.binance_utils import (
     get_book_ticker,
     get_order_book,
     fetch_klines_paginated,
+    download_klines_month,
     sleep_between_requests,
 )
 from utils.data_utils import (
     get_last_timestamp,
     get_target_end,
+    get_target_months,
     merge_and_save_klines,
 )
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data Vision (bulk download)
+# ---------------------------------------------------------------------------
+def download_data_vision(
+    symbol: str,
+    months: list[tuple[int, int]],
+) -> int | None:
+    """Download klines from Data Vision month-by-month, append to CSV.
+
+    Months are processed in chronological order so each write uses
+    the fast append path (no re-read of entire CSV).  Peak memory =
+    1 month (~44K rows) instead of all months concatenated (~1.58M).
+
+    Returns total record count, or None if no data was downloaded.
+    """
+    csv_path = RAW_DATA_DIR / f"{symbol}.csv"
+    months_ok = 0
+    total = 0
+
+    for year, month in sorted(months):
+        df = download_klines_month(symbol, year, month)
+        if df is not None:
+            total = merge_and_save_klines(csv_path, df)
+            months_ok += 1
+            logger.debug("%s %d-%02d: %d records", symbol, year, month, len(df))
+
+    if months_ok == 0:
+        return None
+
+    logger.info(
+        "%s: %d/%d months OK, %s total records",
+        symbol, months_ok, len(months), f"{total:,}",
+    )
+    return total
+
+
+def extract_bulk(
+    symbols: list[str] | None = None,
+    months_back: int = MONTHS_BACK,
+) -> dict[str, int]:
+    """Force re-download all symbols from Data Vision.
+
+    Returns {symbol: record_count} instead of DataFrames to avoid
+    holding ~78M rows in memory simultaneously.
+    """
+    symbols = symbols or SYMBOLS
+    target_months = get_target_months(months_back)
+    results: dict[str, int] = {}
+
+    logger.info(
+        "=== Bulk Extract: %d symbols, %d months ===",
+        len(symbols), months_back,
+    )
+
+    for idx, symbol in enumerate(symbols, 1):
+        logger.info("[%d/%d] Bulk downloading %s", idx, len(symbols), symbol)
+        total = download_data_vision(symbol, target_months)
+        if total is not None:
+            results[symbol] = total
+        else:
+            logger.error("No Data Vision data for %s", symbol)
+
+    grand_total = sum(results.values())
+    logger.info(
+        "=== Bulk Extract complete: %d/%d symbols, %s records ===",
+        len(results), len(symbols), f"{grand_total:,}",
+    )
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -73,20 +147,19 @@ def extract_recent_klines(
         if last_ts >= end_time:
             continue
 
-        new_frames = fetch_klines_paginated(symbol, last_ts, end_time)
-        if not new_frames:
+        new_df = fetch_klines_paginated(symbol, last_ts, end_time)
+        if new_df is None or new_df.empty:
             logger.info(
                 "[%d/%d] %s: REST API returned 0 new records",
                 idx, len(symbols), symbol,
             )
             continue
 
-        new_df = pd.concat(new_frames, ignore_index=True)
         csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-        combined = merge_and_save_klines(csv_path, new_df)
+        total = merge_and_save_klines(csv_path, new_df)
         logger.info(
             "[%d/%d] %s: +%d new (%s total)",
-            idx, len(symbols), symbol, len(new_df), f"{len(combined):,}",
+            idx, len(symbols), symbol, len(new_df), f"{total:,}",
         )
         results[symbol] = new_df
 
@@ -252,7 +325,13 @@ def extract_daily(symbols: list[str] | None = None) -> None:
 # ---------------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Extract data from Binance REST API (daily incremental)",
+        description="Extract data from Binance (bulk Data Vision or daily REST API)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["daily", "bulk"],
+        default="daily",
+        help="daily = incremental REST API, bulk = full Data Vision (default: daily)",
     )
     parser.add_argument(
         "--symbols",
@@ -261,6 +340,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="override symbol list (e.g. --symbols BTCUSDT ETHUSDT)",
     )
+    parser.add_argument(
+        "--months",
+        type=int,
+        default=MONTHS_BACK,
+        help=f"months of history for bulk mode (default: {MONTHS_BACK})",
+    )
     return parser
 
 
@@ -268,8 +353,12 @@ def main() -> None:
     args = _build_parser().parse_args()
     symbols = args.symbols or SYMBOLS
 
-    logger.info("Extract started | symbols=%d", len(symbols))
-    extract_daily(symbols)
+    logger.info("Extract started | mode=%s | symbols=%d", args.mode, len(symbols))
+
+    if args.mode == "bulk":
+        extract_bulk(symbols, months_back=args.months)
+    else:
+        extract_daily(symbols)
 
 
 if __name__ == "__main__":

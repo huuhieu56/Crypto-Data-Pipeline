@@ -13,8 +13,13 @@ import requests
 
 from config.config import (
     BINANCE_ENDPOINTS,
+    BINANCE_DATA_VISION_URL,
+    API_LIMIT,
     API_TIMEOUT,
     API_SLEEP,
+    _KLINES_RAW_COLUMNS,
+    RAW_KLINES_COLUMNS,
+    NUMERIC_COLUMNS,
 )
 from utils.logger import get_logger
 from utils.exceptions import APIRequestError
@@ -29,58 +34,54 @@ _DEFAULT_MAX_RETRIES = 3
 _RETRY_BACKOFF = 2  # seconds, doubles after each retry
 
 
+def _request_with_retry(
+    url: str,
+    params: dict | None = None,
+    timeout: int | None = None,
+    max_retries: int = _DEFAULT_MAX_RETRIES,
+) -> requests.Response:
+    """HTTP GET with retry, exponential backoff, 429/404 handling."""
+    timeout = timeout or API_TIMEOUT
+    last_exc: Exception | None = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            logger.warning("HTTP %s from %s (%d/%d)", status, url, attempt, max_retries)
+            last_exc = exc
+            if status == 404:
+                break
+            if status == 429:
+                wait = _RETRY_BACKOFF * attempt * 2
+                logger.warning("Rate limited — waiting %ds", wait)
+                time.sleep(wait)
+                continue
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            logger.warning("%s for %s (%d/%d)", type(exc).__name__, url, attempt, max_retries)
+            last_exc = exc
+        except Exception as exc:
+            logger.error("Unexpected error calling %s: %s", url, exc)
+            last_exc = exc
+            break
+
+        if attempt < max_retries:
+            time.sleep(_RETRY_BACKOFF * attempt)
+
+    raise APIRequestError(endpoint=url, detail=str(last_exc))
+
+
 def make_request(
     url: str,
     params: dict | None = None,
     timeout: int | None = None,
     max_retries: int = _DEFAULT_MAX_RETRIES,
 ) -> dict | list:
-    """GET request with retry and exponential backoff."""
-    timeout = timeout or API_TIMEOUT
-    last_exc: Exception | None = None
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = requests.get(url, params=params, timeout=timeout)
-            response.raise_for_status()
-            return response.json()
-        except requests.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else None
-            logger.warning(
-                "HTTP %s from %s (attempt %d/%d)",
-                status, url, attempt, max_retries,
-            )
-            # 429 Too Many Requests — wait longer
-            if status == 429:
-                wait = _RETRY_BACKOFF * attempt * 2
-                logger.warning("Rate limited — waiting %ds", wait)
-                time.sleep(wait)
-            last_exc = exc
-        except requests.ConnectionError as exc:
-            logger.warning(
-                "Connection error for %s (attempt %d/%d): %s",
-                url, attempt, max_retries, exc,
-            )
-            last_exc = exc
-        except requests.Timeout as exc:
-            logger.warning(
-                "Timeout for %s (attempt %d/%d)",
-                url, attempt, max_retries,
-            )
-            last_exc = exc
-        except Exception as exc:
-            last_exc = exc
-            logger.error("Unexpected error calling %s: %s", url, exc)
-            break
-
-        if attempt < max_retries:
-            wait = _RETRY_BACKOFF * attempt
-            time.sleep(wait)
-
-    raise APIRequestError(
-        endpoint=url,
-        detail=str(last_exc),
-    )
+    """GET → JSON with retry."""
+    return _request_with_retry(url, params, timeout, max_retries).json()
 
 
 def make_request_raw(
@@ -89,37 +90,8 @@ def make_request_raw(
     timeout: int | None = None,
     max_retries: int = _DEFAULT_MAX_RETRIES,
 ) -> bytes:
-    """Like make_request but returns raw bytes (for zip downloads)."""
-    timeout = timeout or API_TIMEOUT
-    last_exc: Exception | None = None
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = requests.get(url, params=params, timeout=timeout)
-            response.raise_for_status()
-            return response.content
-        except requests.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else None
-            logger.warning(
-                "Download error %s (attempt %d/%d): %s",
-                url, attempt, max_retries, exc,
-            )
-            last_exc = exc
-            # 404 Not Found — resource does not exist, retrying is pointless
-            if status == 404:
-                break
-            if attempt < max_retries:
-                time.sleep(_RETRY_BACKOFF * attempt)
-        except Exception as exc:
-            logger.warning(
-                "Download error %s (attempt %d/%d): %s",
-                url, attempt, max_retries, exc,
-            )
-            last_exc = exc
-            if attempt < max_retries:
-                time.sleep(_RETRY_BACKOFF * attempt)
-
-    raise APIRequestError(endpoint=url, detail=str(last_exc))
+    """GET → raw bytes with retry (for ZIP downloads)."""
+    return _request_with_retry(url, params, timeout, max_retries).content
 
 
 # ---------------------------------------------------------------------------
@@ -154,20 +126,8 @@ def sleep_between_requests() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Klines constants & parsing
+# Klines parsing
 # ---------------------------------------------------------------------------
-
-# Binance klines: 12 columns, drop "ignore"
-_KLINES_RAW_COLUMNS = [
-    "open_time", "open", "high", "low", "close", "volume",
-    "close_time", "quote_volume", "trades",
-    "taker_buy_base", "taker_buy_quote", "ignore",
-]
-RAW_KLINES_COLUMNS = [c for c in _KLINES_RAW_COLUMNS if c != "ignore"]
-NUMERIC_COLUMNS = [
-    "open", "high", "low", "close", "volume",
-    "quote_volume", "taker_buy_base", "taker_buy_quote",
-]
 
 
 def parse_klines_df(raw_data: list[list], symbol: str):
@@ -190,8 +150,6 @@ def parse_klines_df(raw_data: list[list], symbol: str):
 
 def download_klines_month(symbol: str, year: int, month: int):
     """Download 1-month klines ZIP from Data Vision. Returns DataFrame or None."""
-    from config.config import BINANCE_DATA_VISION_URL
-
     url = BINANCE_DATA_VISION_URL.format(symbol=symbol, year=year, month=month)
 
     try:
@@ -236,12 +194,16 @@ def fetch_klines_paginated(
     start_time: int,
     end_time: int,
     limit: int | None = None,
-) -> list:
-    """Paginate /klines API from start_time to end_time. Returns list of DataFrames."""
-    from config.config import API_LIMIT as _DEFAULT_LIMIT
+) -> pd.DataFrame | None:
+    """Paginate /klines API from start_time to end_time.
 
-    limit = limit or _DEFAULT_LIMIT
-    frames = []
+    Collects raw API rows first, then parses into a single DataFrame
+    at the end — avoids creating N intermediate DataFrames (1 per page).
+
+    Returns DataFrame or None if no data.
+    """
+    limit = limit or API_LIMIT
+    all_raw: list[list] = []
     cursor = start_time + 60_000
 
     while True:
@@ -256,7 +218,7 @@ def fetch_klines_paginated(
         if not data:
             break
 
-        frames.append(parse_klines_df(data, symbol))
+        all_raw.extend(data)
 
         if len(data) < limit:
             break
@@ -264,4 +226,6 @@ def fetch_klines_paginated(
         cursor = int(data[-1][0]) + 60_000
         sleep_between_requests()
 
-    return frames
+    if not all_raw:
+        return None
+    return parse_klines_df(all_raw, symbol)
