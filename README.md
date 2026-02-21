@@ -105,10 +105,10 @@ docker compose up -d
 # 2. Install Python dependencies
 pip install -r requirements.txt
 
-# 3. Run pre-extract (self-healing: detect gaps, bulk download 3 năm)
+# 3. Run pre-extract (self-healing: detect gaps)
 python scripts/pre_extract.py
 
-# 4. Run initial ETL (nặng lần đầu: 78M rows)
+# 4. Run initial ETL 
 python scripts/extract.py
 python scripts/transform.py
 python scripts/load.py
