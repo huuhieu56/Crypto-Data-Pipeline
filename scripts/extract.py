@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse
 import pandas as pd
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.config import RAW_DATA_DIR, ORDER_BOOK_LIMIT, MONTHS_BACK
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
@@ -37,6 +38,8 @@ from utils.data_utils import (
 )
 
 logger = get_logger(__name__)
+KLINES_MAX_WORKERS = 8
+ORDERBOOK_MAX_WORKERS = 8
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +109,18 @@ def extract_bulk(
         "=== Bulk Extract complete: %d/%d symbols, %s records ===",
         len(results), len(symbols), f"{grand_total:,}",
     )
+
+    # Keep snapshot data in sync with klines extract
+    trading = [
+        s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"
+    ]
+    extract_ticker_24h(trading)
+    extract_order_book_snapshot(trading)
+    logger.info(
+        "Bulk snapshot complete — ticker/order_book for %d TRADING symbols",
+        len(trading),
+    )
+
     return results
 
 
@@ -129,14 +144,10 @@ def extract_recent_klines(
     end_times = end_times or {}
     results: dict[str, pd.DataFrame] = {}
 
-    for idx, symbol in enumerate(symbols, 1):
+    def _extract_one(symbol: str) -> tuple[str, pd.DataFrame | None, int | None]:
         last_ts = get_last_timestamp(symbol)
         if last_ts is None:
-            logger.debug(
-                "[%d/%d] %s — no existing data, skip",
-                idx, len(symbols), symbol,
-            )
-            continue
+            return symbol, None, None
 
         if symbol in end_times:
             end_time = end_times[symbol]
@@ -145,23 +156,39 @@ def extract_recent_klines(
             end_time = int(target_end.timestamp() * 1000)
 
         if last_ts >= end_time:
-            continue
+            return symbol, None, None
 
         new_df = fetch_klines_paginated(symbol, last_ts, end_time)
         if new_df is None or new_df.empty:
-            logger.info(
-                "[%d/%d] %s: REST API returned 0 new records",
-                idx, len(symbols), symbol,
-            )
-            continue
+            return symbol, None, None
 
         csv_path = RAW_DATA_DIR / f"{symbol}.csv"
         total = merge_and_save_klines(csv_path, new_df)
-        logger.info(
-            "[%d/%d] %s: +%d new (%s total)",
-            idx, len(symbols), symbol, len(new_df), f"{total:,}",
-        )
-        results[symbol] = new_df
+        return symbol, new_df, total
+
+    max_workers = min(KLINES_MAX_WORKERS, len(symbols))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {
+            pool.submit(_extract_one, symbol): (idx, symbol)
+            for idx, symbol in enumerate(symbols, 1)
+        }
+        for future in as_completed(future_map):
+            idx, symbol = future_map[future]
+            try:
+                symbol, new_df, total = future.result()
+            except Exception as exc:
+                logger.error("[%d/%d] %s: extract failed: %s", idx, len(symbols), symbol, exc)
+                continue
+
+            if new_df is None or total is None:
+                logger.debug("[%d/%d] %s: no new klines", idx, len(symbols), symbol)
+                continue
+
+            logger.info(
+                "[%d/%d] %s: +%d new (%s total)",
+                idx, len(symbols), symbol, len(new_df), f"{total:,}",
+            )
+            results[symbol] = new_df
 
     return results
 
@@ -246,10 +273,9 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
     timestamp = datetime.now(timezone.utc)
     records = []
 
-    for symbol in symbols:
+    def _extract_one(symbol: str) -> dict | None:
         try:
             data = get_order_book(symbol, limit=ORDER_BOOK_LIMIT)
-            sleep_between_requests()
 
             bid_vol = 0.0
             for b in data.get("bids", []):
@@ -267,15 +293,31 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
 
             total = bid_vol + ask_vol
 
-            records.append({
+            return {
                 "symbol": symbol,
                 "timestamp": timestamp,
                 "total_bid_volume": bid_vol,
                 "total_ask_volume": ask_vol,
                 "imbalance": bid_vol / total if total > 0 else 0.0,
-            })
+            }
         except Exception as exc:
             logger.error("Order book failed for %s: %s", symbol, exc)
+            return None
+
+    max_workers = min(ORDERBOOK_MAX_WORKERS, len(symbols))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {pool.submit(_extract_one, symbol): symbol for symbol in symbols}
+        for future in as_completed(future_map):
+            symbol = future_map[future]
+            try:
+                rec = future.result()
+                if rec is not None:
+                    records.append(rec)
+            except Exception as exc:
+                logger.error("Order book future failed for %s: %s", symbol, exc)
+
+    # Small sleep after concurrent burst to stay polite with API limits
+    sleep_between_requests()
 
     if not records:
         logger.error("No order book data collected")
@@ -292,7 +334,9 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
 # ---------------------------------------------------------------------------
 # Entry Points
 # ---------------------------------------------------------------------------
-def extract_daily(symbols: list[str] | None = None) -> None:
+def extract_daily(
+    symbols: list[str] | None = None,
+) -> None:
     """Daily extract: REST API klines + ticker + order book."""
     symbols = symbols or SYMBOLS
     trading = [
@@ -314,7 +358,7 @@ def extract_daily(symbols: list[str] | None = None) -> None:
             len(recent), len(symbols), f"{total:,}",
         )
 
-    # Ticker & order book for TRADING symbols only
+    # Ticker & order book for same TRADING symbols as extract scope
     extract_ticker_24h(trading)
     extract_order_book_snapshot(trading)
     logger.info("=== Daily Extract finished ===")
@@ -338,7 +382,7 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="+",
         metavar="SYM",
         default=None,
-        help="override symbol list (e.g. --symbols BTCUSDT ETHUSDT)",
+        help="override symbols for klines + ticker + orderbook (e.g. --symbols BTCUSDT ETHUSDT)",
     )
     parser.add_argument(
         "--months",
@@ -353,7 +397,11 @@ def main() -> None:
     args = _build_parser().parse_args()
     symbols = args.symbols or SYMBOLS
 
-    logger.info("Extract started | mode=%s | symbols=%d", args.mode, len(symbols))
+    logger.info(
+        "Extract started | mode=%s | symbols=%d",
+        args.mode,
+        len(symbols),
+    )
 
     if args.mode == "bulk":
         extract_bulk(symbols, months_back=args.months)

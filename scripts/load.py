@@ -4,11 +4,13 @@
 
 import sys
 from pathlib import Path
+import argparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import json
 import pandas as pd
+from pyspark.sql.functions import col, lit, to_timestamp, max as spark_max
 
 from config.config import (
     RAW_DATA_DIR,
@@ -23,11 +25,38 @@ from utils.db_utils import (
     init_schema,
     upsert_on_conflict_nothing,
     get_spark_session,
-    spark_write_jdbc,
     spark_upsert_jdbc,
 )
 
 logger = get_logger(__name__)
+LOAD_STATE_PATH = PROCESSED_DATA_DIR / "load_state.json"
+
+
+def _parquet_has_data_files(parquet_path: Path) -> bool:
+    if not parquet_path.exists() or not parquet_path.is_dir():
+        return False
+    for p in parquet_path.rglob("*"):
+        if p.is_file() and (p.name.startswith("part-") or p.suffix == ".parquet"):
+            return True
+    return False
+
+
+def _load_state() -> dict[str, str]:
+    if not LOAD_STATE_PATH.exists():
+        return {}
+    try:
+        with open(LOAD_STATE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items()}
+    except Exception as exc:
+        logger.warning("Cannot read load state (%s), reset state", exc)
+    return {}
+
+
+def _save_state(state: dict[str, str]) -> None:
+    with open(LOAD_STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 # =============================================================================
@@ -67,14 +96,27 @@ def load_symbols(engine) -> None:
         raise LoadError(f"Failed to load symbols: {exc}") from exc
 
 
-def load_klines(spark) -> None:
-    """Load klines tu Parquet vao bang klines (Spark, file lon).
+def load_klines(spark, parquet_source: Path | None = None) -> None:
+    """Load klines tu Parquet vao bang klines (Spark JDBC upsert).
 
     Uses temp-table upsert: write to _tmp_klines -> INSERT ... ON CONFLICT
     DO NOTHING -> drop temp.  Safe for re-runs without duplicate key errors.
     """
-    parquet_path = str(PROCESSED_DATA_DIR / "features.parquet")
+    delta_path = PROCESSED_DATA_DIR / "features_delta.parquet"
+    full_path = PROCESSED_DATA_DIR / "features.parquet"
+
+    if parquet_source is not None:
+        parquet_path = str(parquet_source)
+    else:
+        parquet_path = str(delta_path if delta_path.exists() else full_path)
+
+    if not _parquet_has_data_files(Path(parquet_path)):
+        logger.warning("No features parquet found (delta/full) — skipping klines load")
+        return
+
+    source_name = "delta" if parquet_path == str(delta_path) else "full"
     logger.info("Loading klines from %s via Spark", parquet_path)
+    logger.info("Klines source: %s", source_name)
 
     try:
         df = spark.read.parquet(parquet_path)
@@ -89,6 +131,9 @@ def load_klines(spark) -> None:
         df_final = df.select(*existing_cols)
 
         record_count = df_final.count()
+        if record_count == 0:
+            logger.info("No rows to load into 'klines'")
+            return
         logger.info("Writing %s records to table 'klines'", f"{record_count:,}")
 
         spark_upsert_jdbc(
@@ -102,56 +147,146 @@ def load_klines(spark) -> None:
         raise LoadError(f"Failed to load klines: {exc}") from exc
 
 
-def load_ticker(engine) -> None:
-    """Load ticker_24h tu CSV vao bang ticker_24h (Pandas)."""
-    csv_path = RAW_DATA_DIR / "ticker_24h.csv"
+def _cast_columns(df, cast_map: dict[str, str]):
+    for col_name, target_type in cast_map.items():
+        if col_name in df.columns:
+            df = df.withColumn(col_name, col(col_name).cast(target_type))
+    return df
+
+
+def _load_snapshot_csv_via_spark(
+    spark,
+    *,
+    csv_path: Path,
+    table_name: str,
+    time_col: str,
+    state_key: str,
+    expected_cols: list[str],
+    cast_map: dict[str, str],
+    conflict_columns: list[str],
+    empty_msg: str,
+) -> None:
     if not csv_path.exists():
-        logger.warning("Ticker file not found: %s — skipping", csv_path)
+        logger.warning("%s file not found: %s — skipping", table_name, csv_path)
         return
 
-    logger.info("Loading ticker from %s", csv_path.name)
-    try:
-        df = pd.read_csv(csv_path)
-        numeric_cols = ["price_change", "high_24h", "low_24h", "bid_price", "ask_price"]
-        for col_name in numeric_cols:
-            if col_name in df.columns:
-                df[col_name] = pd.to_numeric(df[col_name], errors="coerce")
+    state = _load_state()
+    df = spark.read.option("header", True).csv(str(csv_path))
 
-        df.to_sql(
-            "ticker_24h",
-            engine,
-            if_exists="append",
-            index=False,
-            method=upsert_on_conflict_nothing,
+    if time_col in df.columns:
+        df = df.withColumn(time_col, to_timestamp(col(time_col)))
+
+    last_loaded = state.get(state_key)
+    if last_loaded and time_col in df.columns:
+        df = df.filter(col(time_col) > lit(last_loaded).cast("timestamp"))
+
+    df = _cast_columns(df, cast_map)
+
+    existing_cols = [c for c in expected_cols if c in df.columns]
+    if not existing_cols:
+        logger.warning("No expected columns found for table '%s'", table_name)
+        return
+
+    df_final = df.select(*existing_cols)
+    row_count = df_final.count()
+    if row_count == 0:
+        logger.info(empty_msg)
+        return
+
+    spark_upsert_jdbc(
+        df_final,
+        table=table_name,
+        conflict_columns=conflict_columns,
+    )
+    logger.info("Loaded %d %s records", row_count, table_name)
+
+    if time_col in df_final.columns:
+        max_snapshot = df_final.select(spark_max(time_col).alias("mx")).collect()[0]["mx"]
+        if max_snapshot is not None:
+            state[state_key] = max_snapshot.isoformat()
+            _save_state(state)
+
+
+def load_ticker(spark) -> None:
+    """Load ticker_24h tu CSV vao bang ticker_24h (Spark JDBC upsert)."""
+    logger.info("Loading ticker from ticker_24h.csv")
+    try:
+        _load_snapshot_csv_via_spark(
+            spark,
+            csv_path=RAW_DATA_DIR / "ticker_24h.csv",
+            table_name="ticker_24h",
+            time_col="snapshot_time",
+            state_key="ticker_24h_last_snapshot_time",
+            expected_cols=[
+                "symbol", "snapshot_time", "price_change", "price_change_pct",
+                "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
+                "trade_count", "bid_price", "ask_price", "spread_pct",
+            ],
+            cast_map={
+                "price_change": "double",
+                "price_change_pct": "double",
+                "high_24h": "double",
+                "low_24h": "double",
+                "volume_24h": "double",
+                "quote_volume_24h": "double",
+                "bid_price": "double",
+                "ask_price": "double",
+                "spread_pct": "double",
+                "trade_count": "int",
+            },
+            conflict_columns=["symbol", "snapshot_time"],
+            empty_msg="No new ticker rows to load",
         )
-        logger.info("Loaded %d ticker records", len(df))
     except Exception as exc:
         raise LoadError(f"Failed to load ticker: {exc}") from exc
 
 
-def load_orderbook(engine) -> None:
-    """Load order_book_snapshot tu CSV vao bang order_book_snapshot (Pandas)."""
-    csv_path = RAW_DATA_DIR / "order_book_snapshot.csv"
-    if not csv_path.exists():
-        logger.warning("Order book file not found: %s — skipping", csv_path)
-        return
-
-    logger.info("Loading order book from %s", csv_path.name)
+def load_orderbook(spark) -> None:
+    """Load order_book_snapshot tu CSV vao bang order_book_snapshot (Spark JDBC upsert)."""
+    logger.info("Loading order book from order_book_snapshot.csv")
     try:
-        df = pd.read_csv(csv_path)
-        if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-        df.to_sql(
-            "order_book_snapshot",
-            engine,
-            if_exists="append",
-            index=False,
-            method=upsert_on_conflict_nothing,
+        _load_snapshot_csv_via_spark(
+            spark,
+            csv_path=RAW_DATA_DIR / "order_book_snapshot.csv",
+            table_name="order_book_snapshot",
+            time_col="timestamp",
+            state_key="order_book_last_timestamp",
+            expected_cols=["symbol", "timestamp", "total_bid_volume", "total_ask_volume", "imbalance"],
+            cast_map={
+                "total_bid_volume": "double",
+                "total_ask_volume": "double",
+                "imbalance": "double",
+            },
+            conflict_columns=["symbol", "timestamp"],
+            empty_msg="No new order book rows to load",
         )
-        logger.info("Loaded %d order book records", len(df))
     except Exception as exc:
         raise LoadError(f"Failed to load order book: {exc}") from exc
+
+
+def _resolve_klines_source(klines_source: str) -> Path | None:
+    delta_path = PROCESSED_DATA_DIR / "features_delta.parquet"
+    full_path = PROCESSED_DATA_DIR / "features.parquet"
+    delta_ok = _parquet_has_data_files(delta_path)
+    full_ok = _parquet_has_data_files(full_path)
+
+    if klines_source == "delta":
+        if not delta_ok:
+            logger.warning("Requested --klines-source=delta but delta parquet missing")
+            return None
+        return delta_path
+
+    if klines_source == "full":
+        if not full_ok:
+            logger.warning("Requested --klines-source=full but full parquet missing")
+            return None
+        return full_path
+
+    if delta_ok:
+        return delta_path
+    if full_ok:
+        return full_path
+    return None
 
 
 # =============================================================================
@@ -161,8 +296,7 @@ def load_orderbook(engine) -> None:
 # =============================================================================
 # CLI
 # =============================================================================
-def _build_parser() -> "argparse.ArgumentParser":
-    import argparse
+def _build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         description="Load data into PostgreSQL",
@@ -181,10 +315,20 @@ def _build_parser() -> "argparse.ArgumentParser":
         default=[],
         help="skip specific tables",
     )
+    parser.add_argument(
+        "--klines-source",
+        choices=["delta", "full", "auto"],
+        default="auto",
+        help="source parquet for klines load (default: auto=delta if exists else full)",
+    )
     return parser
 
 
-def main(only: set[str] | None = None, skip: set[str] | None = None) -> None:
+def main(
+    only: set[str] | None = None,
+    skip: set[str] | None = None,
+    klines_source: str = "auto",
+) -> None:
     skip = skip or set()
     logger.info("=== Load pipeline started ===")
 
@@ -197,22 +341,32 @@ def main(only: set[str] | None = None, skip: set[str] | None = None) -> None:
     engine = get_engine()
     init_schema(engine)
 
-    # 2. Load bang nho bang Pandas
+    # 2. Load symbols
     if _should_load("symbols"):
         load_symbols(engine)
-    if _should_load("ticker"):
-        load_ticker(engine)
-    if _should_load("orderbook"):
-        load_orderbook(engine)
 
-    # 3. Load bang lon bang Spark
-    if _should_load("klines"):
-        spark = get_spark_session("CryptoLoad")
-        try:
-            load_klines(spark)
-        finally:
-            spark.stop()
-            logger.info("SparkSession stopped")
+    spark_needed = _should_load("ticker") or _should_load("orderbook") or _should_load("klines")
+    if not spark_needed:
+        logger.info("=== Load pipeline finished ===")
+        return
+
+    spark = get_spark_session("CryptoLoad")
+    try:
+        if _should_load("ticker"):
+            load_ticker(spark)
+        if _should_load("orderbook"):
+            load_orderbook(spark)
+
+        if _should_load("klines"):
+            target = _resolve_klines_source(klines_source)
+            if target is None:
+                logger.warning("No parquet source available for klines load")
+            else:
+                logger.info("Selected klines parquet source: %s", target)
+                load_klines(spark, parquet_source=target)
+    finally:
+        spark.stop()
+        logger.info("SparkSession stopped")
 
     logger.info("=== Load pipeline finished ===")
 
@@ -222,4 +376,5 @@ if __name__ == "__main__":
     main(
         only=set(args.only) if args.only else None,
         skip=set(args.skip),
+        klines_source=args.klines_source,
     )

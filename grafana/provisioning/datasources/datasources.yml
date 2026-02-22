@@ -5,12 +5,25 @@
 # File này sẽ được mount vào container Grafana
 # =============================================================================
 
-# TODO: Configure PostgreSQL datasource
-# apiVersion: 1
-# datasources:
-#   - name: PostgreSQL
-#     type: postgres
-#     url: postgres:5432
-#     database: crypto_dw
-#     user: crypto_user
-#     ...
+apiVersion: 1
+
+datasources:
+  - name: PostgreSQL
+    uid: postgres_ds
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: crypto_db
+    user: ${POSTGRES_USER}
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1500
+      timescaledb: false
+      maxOpenConns: 20
+      maxIdleConns: 5
+      connMaxLifetime: 14400
+      connMaxIdleTime: 14400
+    isDefault: true
+    editable: true

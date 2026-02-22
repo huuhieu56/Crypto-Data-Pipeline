@@ -4,11 +4,15 @@
 # Cấu hình tự động load dashboard từ JSON files
 # =============================================================================
 
-# TODO: Configure dashboard provisioning
-# apiVersion: 1
-# providers:
-#   - name: 'default'
-#     folder: ''
-#     type: file
-#     options:
-#       path: /var/lib/grafana/dashboards
+apiVersion: 1
+
+providers:
+  - name: crypto-dashboards
+    orgId: 1
+    folder: Crypto
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
