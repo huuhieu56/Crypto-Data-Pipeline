@@ -6,18 +6,669 @@
 # Chạy: pytest tests/test_extract.py -v
 # =============================================================================
 
-# TODO: Import pytest và extract module
+# ---------------------------------------------------------------------------
+# 1. IMPORTS
+# ---------------------------------------------------------------------------
+import sys
+from pathlib import Path
 
-# TODO: Test extract_symbols()
-# - Test API response parsing
-# - Test filter 50 coins
-# - Test output format
+# Đảm bảo project root nằm trên sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# TODO: Test extract_klines()
-# - Test với mock API response
-# - Test CSV output format
-# - Test date range handling
+import pytest
+import pandas as pd
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
-# TODO: Test extract_ticker_24h()
-# - Test API response parsing
-# - Test CSV output format
+from scripts.extract import (
+    download_data_vision,
+    extract_bulk,
+    extract_recent_klines,
+    extract_ticker_24h,
+    extract_order_book_snapshot,
+    extract_daily,
+)
+from utils.exceptions import ExtractError
+
+
+# ---------------------------------------------------------------------------
+# 2. MOCK DATA TEMPLATES (module-level constants)
+# ---------------------------------------------------------------------------
+# Lưu ý: DataFrames là mutable → dùng fixtures trả về .copy() thay vì
+# truy cập trực tiếp. Các list/dict dưới đây chỉ đọc, không bị mutate.
+# ---------------------------------------------------------------------------
+
+_KLINES_DF_DATA = {
+    "open_time": pd.to_datetime([1704067200000, 1704067260000], unit="ms"),
+    "open": [42000.0, 42300.0],
+    "high": [42500.0, 42400.0],
+    "low": [41800.0, 42100.0],
+    "close": [42300.0, 42200.0],
+    "volume": [100.5, 80.2],
+    "close_time": pd.to_datetime([1704067259999, 1704067319999], unit="ms"),
+    "quote_volume": [4230000.0, 3384400.0],
+    "trades": [500, 300],
+    "taker_buy_base": [60.3, 40.1],
+    "taker_buy_quote": [2538000.0, 1692200.0],
+    "symbol": ["BTCUSDT", "BTCUSDT"],
+}
+
+# --- Ticker 24h mock data (raw API response) ---
+SAMPLE_TICKER_24H_RAW = [
+    {
+        "symbol": "BTCUSDT",
+        "priceChange": "1500.00",
+        "priceChangePercent": "3.50",
+        "highPrice": "44000.00",
+        "lowPrice": "41000.00",
+        "volume": "25000.50",
+        "quoteVolume": "1050000000.00",
+        "count": 1200000,
+    },
+    {
+        "symbol": "ETHUSDT",
+        "priceChange": "80.00",
+        "priceChangePercent": "2.80",
+        "highPrice": "2900.00",
+        "lowPrice": "2750.00",
+        "volume": "150000.20",
+        "quoteVolume": "420000000.00",
+        "count": 800000,
+    },
+    # Coin không nằm trong danh sách test → phải bị lọc bỏ
+    {
+        "symbol": "DOGEUSDT",
+        "priceChange": "0.005",
+        "priceChangePercent": "1.20",
+        "highPrice": "0.42",
+        "lowPrice": "0.40",
+        "volume": "5000000.00",
+        "quoteVolume": "2050000.00",
+        "count": 300000,
+    },
+]
+
+# --- Book ticker mock data ---
+SAMPLE_BOOK_TICKER_RAW = [
+    {"symbol": "BTCUSDT", "bidPrice": "42290.00", "askPrice": "42310.00"},
+    {"symbol": "ETHUSDT", "bidPrice": "2849.50", "askPrice": "2850.50"},
+    {"symbol": "DOGEUSDT", "bidPrice": "0.4100", "askPrice": "0.4105"},
+]
+
+# --- Order book mock data ---
+SAMPLE_ORDER_BOOK = {
+    "bids": [
+        ["42290.00", "1.5"],
+        ["42285.00", "2.3"],
+        ["42280.00", "0.8"],
+    ],
+    "asks": [
+        ["42310.00", "1.2"],
+        ["42315.00", "3.1"],
+        ["42320.00", "0.5"],
+    ],
+}
+
+# Danh sách symbols dùng trong test
+TEST_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+
+
+# ---------------------------------------------------------------------------
+# 3. FIXTURES
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sample_klines_df():
+    """Bản sao mới của klines DataFrame cho mỗi test — tránh mutation."""
+    return pd.DataFrame(_KLINES_DF_DATA).copy()
+
+
+@pytest.fixture
+def tmp_raw_dir(tmp_path):
+    """Tạo thư mục raw tạm thời."""
+    raw = tmp_path / "data" / "raw"
+    raw.mkdir(parents=True)
+    return raw
+
+
+@pytest.fixture
+def sample_csv(tmp_raw_dir, sample_klines_df):
+    """Tạo CSV mẫu có sẵn dữ liệu cho BTCUSDT."""
+    csv_path = tmp_raw_dir / "BTCUSDT.csv"
+    sample_klines_df.to_csv(csv_path, index=False)
+    return csv_path
+
+
+# ============================================================================
+# 4. TEST CASES
+# ============================================================================
+
+
+# ============================================================================
+# 4.1 download_data_vision()
+# ============================================================================
+class TestDownloadDataVision:
+    """Tests cho download_data_vision() — bulk download từ Data Vision."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, sample_klines_df):
+        """Setup chung: mock download_klines_month & merge_and_save_klines."""
+        self.sample_df = sample_klines_df
+        self.mock_download = MagicMock(return_value=sample_klines_df)
+        self.mock_merge = MagicMock(return_value=100)
+        monkeypatch.setattr(
+            "scripts.extract.download_klines_month", self.mock_download,
+        )
+        monkeypatch.setattr(
+            "scripts.extract.merge_and_save_klines", self.mock_merge,
+        )
+
+    # --- Happy Path ---
+    def test_happy_path_downloads_all_months(self):
+        """API trả về data cho tất cả các tháng → trả về tổng record count."""
+        months = [(2024, 1), (2024, 2), (2024, 3)]
+        result = download_data_vision("BTCUSDT", months)
+
+        assert result == 100
+        assert self.mock_download.call_count == 3
+        assert self.mock_merge.call_count == 3
+
+    def test_months_processed_in_chronological_order(self):
+        """Months phải được sắp xếp theo thứ tự thời gian trước khi download."""
+        # Truyền months không đúng thứ tự
+        months = [(2024, 3), (2024, 1), (2024, 2)]
+        download_data_vision("BTCUSDT", months)
+
+        # Kiểm tra gọi theo thứ tự sorted
+        calls = self.mock_download.call_args_list
+        assert calls[0].args == ("BTCUSDT", 2024, 1)
+        assert calls[1].args == ("BTCUSDT", 2024, 2)
+        assert calls[2].args == ("BTCUSDT", 2024, 3)
+
+    # --- Sad Path ---
+    def test_all_months_fail_returns_none(self):
+        """Tất cả tháng đều thất bại → trả về None."""
+        self.mock_download.return_value = None
+
+        result = download_data_vision("BTCUSDT", [(2024, 1), (2024, 2)])
+
+        assert result is None
+
+    # --- Edge Case ---
+    def test_partial_months_success(self):
+        """Một số tháng thành công, một số thất bại → vẫn trả về tổng."""
+        self.mock_download.side_effect = [self.sample_df, None, self.sample_df]
+        self.mock_merge.return_value = 200
+
+        result = download_data_vision("BTCUSDT", [(2024, 1), (2024, 2), (2024, 3)])
+
+        assert result == 200
+        assert self.mock_merge.call_count == 2  # chỉ 2 tháng OK
+
+    def test_empty_months_list_returns_none(self):
+        """Danh sách months rỗng → trả về None."""
+        result = download_data_vision("BTCUSDT", [])
+        assert result is None
+        self.mock_download.assert_not_called()
+
+
+# ============================================================================
+# 4.2 extract_bulk()
+# ============================================================================
+class TestExtractBulk:
+    """Tests cho extract_bulk() — bulk download toàn bộ symbols."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch):
+        """Setup chung: mock download_data_vision & get_target_months."""
+        self.mock_dv = MagicMock(return_value=5000)
+        self.mock_months = MagicMock(return_value=[(2024, 1)])
+        monkeypatch.setattr(
+            "scripts.extract.download_data_vision", self.mock_dv,
+        )
+        monkeypatch.setattr(
+            "scripts.extract.get_target_months", self.mock_months,
+        )
+
+    # --- Happy Path ---
+    def test_happy_path_returns_dict_of_counts(self):
+        """Tất cả symbols download thành công → dict {symbol: count}."""
+        result = extract_bulk(symbols=TEST_SYMBOLS, months_back=1)
+
+        assert result == {"BTCUSDT": 5000, "ETHUSDT": 5000}
+        assert self.mock_dv.call_count == 2
+
+    # --- Sad Path ---
+    def test_all_symbols_fail_returns_empty(self):
+        """Tất cả symbols thất bại → dict rỗng."""
+        self.mock_dv.return_value = None
+
+        result = extract_bulk(symbols=TEST_SYMBOLS, months_back=1)
+
+        assert result == {}
+
+    # --- Edge Case ---
+    def test_partial_symbols_success(self):
+        """Một số symbols thành công → chỉ chứa symbols thành công."""
+        self.mock_dv.side_effect = [10000, None]
+
+        result = extract_bulk(symbols=TEST_SYMBOLS, months_back=1)
+
+        assert result == {"BTCUSDT": 10000}
+        assert "ETHUSDT" not in result
+
+
+# ============================================================================
+# 4.3 extract_recent_klines()
+# ============================================================================
+class TestExtractRecentKlines:
+    """Tests cho extract_recent_klines() — incremental REST API update."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, sample_klines_df):
+        """Setup chung: mock 4 dependencies dùng trong extract_recent_klines."""
+        self.sample_df = sample_klines_df
+        self.mock_last_ts = MagicMock(return_value=1704067200000)
+        self.mock_target_end = MagicMock(
+            return_value=datetime(2024, 1, 2, tzinfo=timezone.utc),
+        )
+        self.mock_fetch = MagicMock(return_value=sample_klines_df)
+        self.mock_merge = MagicMock(return_value=100)
+
+        monkeypatch.setattr(
+            "scripts.extract.get_last_timestamp", self.mock_last_ts,
+        )
+        monkeypatch.setattr(
+            "scripts.extract.get_target_end", self.mock_target_end,
+        )
+        monkeypatch.setattr(
+            "scripts.extract.fetch_klines_paginated", self.mock_fetch,
+        )
+        monkeypatch.setattr(
+            "scripts.extract.merge_and_save_klines", self.mock_merge,
+        )
+
+    # --- Happy Path ---
+    def test_happy_path_returns_new_data(self):
+        """Có data mới từ API → trả về dict {symbol: DataFrame}."""
+        result = extract_recent_klines(["BTCUSDT"])
+
+        assert "BTCUSDT" in result
+        assert len(result["BTCUSDT"]) == 2
+        self.mock_fetch.assert_called_once()
+
+    # --- Sad Path ---
+    def test_no_existing_data_skips_symbol(self):
+        """Symbol chưa có dữ liệu (last_ts=None) → bị skip."""
+        self.mock_last_ts.return_value = None
+
+        result = extract_recent_klines(["BTCUSDT"])
+
+        assert result == {}
+
+    def test_api_returns_empty_dataframe(self):
+        """API trả về DataFrame rỗng → không có kết quả."""
+        self.mock_fetch.return_value = pd.DataFrame()
+
+        result = extract_recent_klines(["BTCUSDT"])
+
+        assert result == {}
+
+    def test_api_returns_none(self):
+        """API trả về None → không có kết quả."""
+        self.mock_fetch.return_value = None
+
+        result = extract_recent_klines(["BTCUSDT"])
+
+        assert result == {}
+
+    # --- Edge Cases ---
+    def test_empty_symbols_list_returns_empty(self):
+        """Truyền list rỗng → trả về dict rỗng, không gọi API."""
+        result = extract_recent_klines([])
+        assert result == {}
+
+    def test_already_up_to_date_skips(self):
+        """last_ts >= end_time → data đã up-to-date, skip."""
+        self.mock_last_ts.return_value = 1704153600000  # 2024-01-02 UTC
+        self.mock_target_end.return_value = datetime(2024, 1, 1, tzinfo=timezone.utc)
+
+        result = extract_recent_klines(["BTCUSDT"])
+
+        assert result == {}
+
+    def test_end_times_override(self):
+        """end_times param được ưu tiên thay vì get_target_end()."""
+        custom_end = 1704200000000
+        result = extract_recent_klines(
+            ["BTCUSDT"], end_times={"BTCUSDT": custom_end},
+        )
+
+        assert "BTCUSDT" in result
+        # fetch được gọi với end_time = custom_end
+        self.mock_fetch.assert_called_once_with("BTCUSDT", 1704067200000, custom_end)
+
+
+# ============================================================================
+# 4.4 extract_ticker_24h()
+# ============================================================================
+class TestExtractTicker24h:
+    """Tests cho extract_ticker_24h() — fetch ticker + book ticker."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path):
+        """Setup chung: mock get_ticker_24h, get_book_ticker, RAW_DATA_DIR."""
+        self.tmp_path = tmp_path
+        monkeypatch.setattr("scripts.extract.RAW_DATA_DIR", tmp_path)
+
+        self.mock_ticker = MagicMock(return_value=SAMPLE_TICKER_24H_RAW)
+        self.mock_book = MagicMock(return_value=SAMPLE_BOOK_TICKER_RAW)
+        monkeypatch.setattr(
+            "scripts.extract.get_ticker_24h", self.mock_ticker,
+        )
+        monkeypatch.setattr(
+            "scripts.extract.get_book_ticker", self.mock_book,
+        )
+
+    # --- Happy Path ---
+    def test_happy_path_returns_merged_dataframe(self):
+        """API trả về data chuẩn → DataFrame đã merge & tính spread."""
+        (self.tmp_path / "ticker_24h.csv").touch()
+
+        result = extract_ticker_24h(TEST_SYMBOLS)
+
+        assert result is not None
+        assert len(result) == 2  # chỉ BTCUSDT và ETHUSDT
+        assert set(result["symbol"].tolist()) == {"BTCUSDT", "ETHUSDT"}
+
+        # Kiểm tra schema columns
+        expected_cols = [
+            "symbol", "snapshot_time", "price_change", "price_change_pct",
+            "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
+            "trade_count", "bid_price", "ask_price", "spread_pct",
+        ]
+        assert list(result.columns) == expected_cols
+
+    def test_spread_pct_computed_correctly(self):
+        """spread_pct = (ask - bid) / ask * 100."""
+        (self.tmp_path / "ticker_24h.csv").touch()
+
+        result = extract_ticker_24h(TEST_SYMBOLS)
+
+        btc_row = result[result["symbol"] == "BTCUSDT"].iloc[0]
+        expected_spread = (42310.0 - 42290.0) / 42310.0 * 100
+        assert btc_row["spread_pct"] == pytest.approx(expected_spread)
+
+    def test_numeric_columns_are_float(self):
+        """Tất cả numeric columns phải là float sau khi pd.to_numeric."""
+        (self.tmp_path / "ticker_24h.csv").touch()
+
+        result = extract_ticker_24h(TEST_SYMBOLS)
+
+        float_cols = [
+            "price_change", "price_change_pct", "high_24h", "low_24h",
+            "volume_24h", "quote_volume_24h", "bid_price", "ask_price",
+        ]
+        for col in float_cols:
+            assert result[col].dtype == "float64", f"{col} should be float64"
+
+    def test_filters_only_requested_symbols(self):
+        """Chỉ giữ symbols trong danh sách, loại bỏ coins khác."""
+        (self.tmp_path / "ticker_24h.csv").touch()
+
+        # Chỉ request BTCUSDT
+        result = extract_ticker_24h(["BTCUSDT"])
+
+        assert len(result) == 1
+        assert result.iloc[0]["symbol"] == "BTCUSDT"
+
+    # --- Sad Path ---
+    def test_ticker_api_error_raises_extract_error(self):
+        """get_ticker_24h() raise Exception → ExtractError."""
+        self.mock_ticker.side_effect = ConnectionError("Network unreachable")
+
+        with pytest.raises(ExtractError, match="Failed to fetch ticker/24hr"):
+            extract_ticker_24h(TEST_SYMBOLS)
+
+    def test_book_ticker_api_error_raises_extract_error(self):
+        """get_book_ticker() raise Exception → ExtractError."""
+        self.mock_book.side_effect = TimeoutError("Request timed out")
+
+        with pytest.raises(ExtractError, match="Failed to fetch bookTicker"):
+            extract_ticker_24h(TEST_SYMBOLS)
+
+    # --- Edge Cases ---
+    def test_empty_symbols_returns_none(self):
+        """Truyền list rỗng → trả về None, không gọi API."""
+        result = extract_ticker_24h([])
+        assert result is None
+
+    def test_api_returns_empty_data_raises_key_error(self):
+        """API trả về list rỗng → pd.DataFrame([]) không có cột 'symbol' → KeyError.
+
+        Ghi chú: Đây là hành vi thực tế của production code — không có guard
+        cho trường hợp API trả về mảng trống hoàn toàn.
+        """
+        self.mock_ticker.return_value = []
+        self.mock_book.return_value = []
+
+        with pytest.raises(KeyError):
+            extract_ticker_24h(TEST_SYMBOLS)
+
+    def test_symbol_in_ticker_but_not_in_book(self):
+        """Symbol có trong ticker nhưng book ticker rỗng → KeyError.
+
+        Ghi chú: pd.DataFrame([]) không có cột 'symbol', gây KeyError khi filter.
+        """
+        self.mock_book.return_value = []
+
+        with pytest.raises(KeyError):
+            extract_ticker_24h(TEST_SYMBOLS)
+
+    def test_symbol_in_ticker_but_missing_in_book(self):
+        """Symbol có trong ticker nhưng không match book ticker → NaN cho bid/ask."""
+        # book ticker có data nhưng cho symbol khác → left join = NaN
+        self.mock_book.return_value = [
+            {"symbol": "XYZUSDT", "bidPrice": "100.00", "askPrice": "101.00"},
+        ]
+        (self.tmp_path / "ticker_24h.csv").touch()
+
+        result = extract_ticker_24h(TEST_SYMBOLS)
+
+        assert result is not None
+        assert len(result) == 2
+        # bid_price và ask_price phải là NaN vì left join không match
+        assert result["bid_price"].isna().all()
+        assert result["ask_price"].isna().all()
+
+    def test_csv_created_with_header_if_not_exists(self):
+        """Nếu file CSV chưa tồn tại → tạo mới với header."""
+        csv_path = self.tmp_path / "ticker_24h.csv"
+        assert not csv_path.exists()
+
+        extract_ticker_24h(TEST_SYMBOLS)
+
+        assert csv_path.exists()
+        saved = pd.read_csv(csv_path)
+        assert len(saved) == 2
+        assert "symbol" in saved.columns
+
+
+# ============================================================================
+# 4.5 extract_order_book_snapshot()
+# ============================================================================
+class TestExtractOrderBookSnapshot:
+    """Tests cho extract_order_book_snapshot() — depth & imbalance."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path):
+        """Setup chung: mock get_order_book, sleep, RAW_DATA_DIR."""
+        self.tmp_path = tmp_path
+        monkeypatch.setattr("scripts.extract.RAW_DATA_DIR", tmp_path)
+        monkeypatch.setattr(
+            "scripts.extract.sleep_between_requests", lambda: None,
+        )
+
+        self.mock_ob = MagicMock(return_value=SAMPLE_ORDER_BOOK)
+        monkeypatch.setattr(
+            "scripts.extract.get_order_book", self.mock_ob,
+        )
+
+    # --- Happy Path ---
+    def test_happy_path_returns_dataframe(self):
+        """API trả về order book chuẩn → DataFrame với imbalance."""
+        result = extract_order_book_snapshot(["BTCUSDT"])
+
+        assert result is not None
+        assert len(result) == 1
+        row = result.iloc[0]
+        assert row["symbol"] == "BTCUSDT"
+
+        # bid_vol = 1.5 + 2.3 + 0.8 = 4.6
+        assert row["total_bid_volume"] == pytest.approx(4.6)
+        # ask_vol = 1.2 + 3.1 + 0.5 = 4.8
+        assert row["total_ask_volume"] == pytest.approx(4.8)
+        # imbalance = 4.6 / (4.6 + 4.8)
+        assert row["imbalance"] == pytest.approx(4.6 / 9.4)
+
+    def test_output_columns_correct(self):
+        """Kiểm tra schema cột output."""
+        result = extract_order_book_snapshot(["BTCUSDT"])
+
+        expected_cols = {
+            "symbol", "timestamp", "total_bid_volume",
+            "total_ask_volume", "imbalance",
+        }
+        assert set(result.columns) == expected_cols
+
+    def test_multiple_symbols(self):
+        """Nhiều symbols → mỗi symbol 1 row."""
+        result = extract_order_book_snapshot(TEST_SYMBOLS)
+
+        assert result is not None
+        assert len(result) == 2
+        assert set(result["symbol"].tolist()) == {"BTCUSDT", "ETHUSDT"}
+
+    # --- Sad Path ---
+    def test_all_symbols_fail_returns_none(self):
+        """Tất cả API calls thất bại → trả về None."""
+        self.mock_ob.side_effect = ConnectionError("Network down")
+
+        result = extract_order_book_snapshot(["BTCUSDT"])
+
+        assert result is None
+
+    def test_partial_failure_still_returns_data(self):
+        """Một symbol thất bại, một thành công → trả về data của symbol thành công."""
+        self.mock_ob.side_effect = [
+            SAMPLE_ORDER_BOOK,
+            ConnectionError("Timeout"),
+        ]
+
+        result = extract_order_book_snapshot(TEST_SYMBOLS)
+
+        assert result is not None
+        assert len(result) == 1
+        assert result.iloc[0]["symbol"] == "BTCUSDT"
+
+    # --- Edge Cases ---
+    def test_empty_symbols_returns_none(self):
+        """Truyền list rỗng → None."""
+        result = extract_order_book_snapshot([])
+        assert result is None
+
+    def test_empty_order_book_zero_imbalance(self):
+        """Order book không có bids/asks → imbalance = 0."""
+        self.mock_ob.return_value = {"bids": [], "asks": []}
+
+        result = extract_order_book_snapshot(["BTCUSDT"])
+
+        assert result is not None
+        row = result.iloc[0]
+        assert row["total_bid_volume"] == pytest.approx(0.0)
+        assert row["total_ask_volume"] == pytest.approx(0.0)
+        assert row["imbalance"] == pytest.approx(0.0)
+
+    def test_malformed_bid_values_skipped(self):
+        """Bid entries có giá trị không hợp lệ → bị skip, không crash."""
+        self.mock_ob.return_value = {
+            "bids": [
+                ["42290.00", "1.5"],
+                ["42285.00", "invalid"],  # giá trị lỗi
+                [],                       # entry trống
+            ],
+            "asks": [["42310.00", "2.0"]],
+        }
+
+        result = extract_order_book_snapshot(["BTCUSDT"])
+
+        assert result is not None
+        row = result.iloc[0]
+        # Chỉ bid đầu tiên hợp lệ
+        assert row["total_bid_volume"] == pytest.approx(1.5)
+        assert row["total_ask_volume"] == pytest.approx(2.0)
+
+
+# ============================================================================
+# 4.6 extract_daily()
+# ============================================================================
+class TestExtractDaily:
+    """Tests cho extract_daily() — orchestrator cho daily extract."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, sample_klines_df):
+        """Setup chung: mock 3 sub-functions."""
+        self.mock_klines = MagicMock(return_value={"BTCUSDT": sample_klines_df})
+        self.mock_ticker = MagicMock()
+        self.mock_ob = MagicMock()
+        monkeypatch.setattr(
+            "scripts.extract.extract_recent_klines", self.mock_klines,
+        )
+        monkeypatch.setattr(
+            "scripts.extract.extract_ticker_24h", self.mock_ticker,
+        )
+        monkeypatch.setattr(
+            "scripts.extract.extract_order_book_snapshot", self.mock_ob,
+        )
+
+    # --- Happy Path ---
+    def test_happy_path_calls_all_steps(self, monkeypatch):
+        """Chạy đủ 3 bước: klines, ticker, order book."""
+        monkeypatch.setattr(
+            "scripts.extract.SYMBOLS_STATUS",
+            {"BTCUSDT": "TRADING", "ETHUSDT": "TRADING"},
+        )
+
+        extract_daily(symbols=TEST_SYMBOLS)
+
+        self.mock_klines.assert_called_once_with(TEST_SYMBOLS)
+        self.mock_ticker.assert_called_once()
+        self.mock_ob.assert_called_once()
+
+    def test_break_symbols_excluded_from_ticker_and_orderbook(self, monkeypatch):
+        """BREAK symbols không được gọi ticker/order book, nhưng vẫn gọi klines."""
+        monkeypatch.setattr(
+            "scripts.extract.SYMBOLS_STATUS",
+            {"BTCUSDT": "TRADING", "CROUSDT": "BREAK"},
+        )
+        self.mock_klines.return_value = {}
+
+        extract_daily(symbols=["BTCUSDT", "CROUSDT"])
+
+        # klines gọi cho TẤT CẢ symbols
+        self.mock_klines.assert_called_once_with(["BTCUSDT", "CROUSDT"])
+        # ticker & order book chỉ gọi cho TRADING symbols
+        self.mock_ticker.assert_called_once_with(["BTCUSDT"])
+        self.mock_ob.assert_called_once_with(["BTCUSDT"])
+
+    # --- Edge Case ---
+    def test_unknown_status_defaults_to_trading(self, monkeypatch):
+        """Symbol không có trong SYMBOLS_STATUS → mặc định TRADING."""
+        monkeypatch.setattr("scripts.extract.SYMBOLS_STATUS", {})
+        self.mock_klines.return_value = {}
+
+        extract_daily(symbols=["NEWCOIN"])
+
+        # NEWCOIN phải nằm trong trading list
+        self.mock_ticker.assert_called_once_with(["NEWCOIN"])
+        self.mock_ob.assert_called_once_with(["NEWCOIN"])
