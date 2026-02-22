@@ -608,6 +608,30 @@ class TestExtractOrderBookSnapshot:
         assert row["total_bid_volume"] == pytest.approx(1.5)
         assert row["total_ask_volume"] == pytest.approx(2.0)
 
+    def test_csv_created_with_header_if_not_exists(self):
+        """Nếu file CSV chưa tồn tại → tạo mới với header."""
+        csv_path = self.tmp_path / "order_book_snapshot.csv"
+        assert not csv_path.exists()
+
+        extract_order_book_snapshot(["BTCUSDT"])
+
+        assert csv_path.exists()
+        saved = pd.read_csv(csv_path)
+        assert len(saved) == 1
+        expected_cols = {
+            "symbol", "timestamp", "total_bid_volume",
+            "total_ask_volume", "imbalance",
+        }
+        assert set(saved.columns) == expected_cols
+
+    def test_get_order_book_called_with_limit(self, monkeypatch):
+        """get_order_book phải được gọi với limit=ORDER_BOOK_LIMIT."""
+        monkeypatch.setattr("scripts.extract.ORDER_BOOK_LIMIT", 50)
+
+        extract_order_book_snapshot(["BTCUSDT"])
+
+        self.mock_ob.assert_called_once_with("BTCUSDT", limit=50)
+
 
 # ============================================================================
 # 4.6 extract_daily()
@@ -658,6 +682,20 @@ class TestExtractDaily:
         # klines gọi cho TẤT CẢ symbols
         self.mock_klines.assert_called_once_with(["BTCUSDT", "CROUSDT"])
         # ticker & order book chỉ gọi cho TRADING symbols
+        self.mock_ticker.assert_called_once_with(["BTCUSDT"])
+        self.mock_ob.assert_called_once_with(["BTCUSDT"])
+
+    def test_empty_klines_still_calls_ticker_and_orderbook(self, monkeypatch):
+        """Klines API trả về dict rỗng → vẫn tiếp tục gọi ticker & order book."""
+        monkeypatch.setattr(
+            "scripts.extract.SYMBOLS_STATUS",
+            {"BTCUSDT": "TRADING"},
+        )
+        self.mock_klines.return_value = {}
+
+        extract_daily(symbols=["BTCUSDT"])
+
+        self.mock_klines.assert_called_once_with(["BTCUSDT"])
         self.mock_ticker.assert_called_once_with(["BTCUSDT"])
         self.mock_ob.assert_called_once_with(["BTCUSDT"])
 
