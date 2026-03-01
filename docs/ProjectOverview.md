@@ -288,7 +288,7 @@ Kích thước = 78,840,000 × 80 bytes/record ≈ 6 GB
 | `trade_count`      | BIGINT      | Số lượng trades trong 24h         | Binance ticker/24hr |
 | `bid_price`        | DOUBLE      | Best bid                          | Binance bookTicker  |
 | `ask_price`        | DOUBLE      | Best ask                          | Binance bookTicker  |
-| `spread_pct`       | DOUBLE      | (ask - bid) / bid \* 100          | Calculated          |
+| `spread_pct`       | DOUBLE      | (ask - bid) / ask \* 100          | Calculated          |
 
 **Primary Key:** `(symbol, snapshot_time)`
 
