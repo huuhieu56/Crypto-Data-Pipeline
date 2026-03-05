@@ -9,7 +9,9 @@ from pathlib import Path
 
 from dateutil.relativedelta import relativedelta
 
+import numpy as np
 import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
 
 from config.config import RAW_DATA_DIR
 from config.symbols import SYMBOLS_STATUS, BREAK_DATES
@@ -166,7 +168,137 @@ def get_months_between(
     return months
 
 
-# TODO: normalize_data() — Min-Max normalization for features
-# TODO: denormalize_data() — Reverse normalization for predictions
-# TODO: create_sequences() — Build input/output sequences for LSTM
-# TODO: validate_data() — Check missing values, duplicates
+# ---------------------------------------------------------------------------
+# ML Data Helpers — used by scripts/train.py & scripts/inference.py
+# ---------------------------------------------------------------------------
+
+def validate_data(
+    df: pd.DataFrame,
+    required_cols: list[str],
+) -> pd.DataFrame:
+    """Check for missing columns, null values, and duplicates.
+
+    Drops rows with nulls in *required_cols* and logs warnings.
+    Returns cleaned DataFrame (original is not mutated).
+    """
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    df = df.copy()
+    null_counts = df[required_cols].isnull().sum()
+    total_nulls = null_counts.sum()
+    if total_nulls > 0:
+        logger.warning(
+            "Dropping %d rows with nulls:\n%s",
+            total_nulls,
+            null_counts[null_counts > 0].to_string(),
+        )
+        df = df.dropna(subset=required_cols)
+
+    dup_count = df.duplicated().sum()
+    if dup_count > 0:
+        logger.warning("Dropping %d duplicate rows", dup_count)
+        df = df.drop_duplicates()
+
+    return df.reset_index(drop=True)
+
+
+def normalize_data(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    scaler: MinMaxScaler | None = None,
+) -> tuple[pd.DataFrame, MinMaxScaler]:
+    """Min-Max normalize *feature_cols* in [0, 1].
+
+    Args:
+        df: Input DataFrame.
+        feature_cols: Columns to normalize.
+        scaler: Pre-fitted scaler (inference mode). If None, fit a new one.
+
+    Returns:
+        (scaled_df, scaler) — scaled_df is a copy, original unchanged.
+    """
+    df = df.copy()
+    if scaler is None:
+        scaler = MinMaxScaler()
+        df[feature_cols] = scaler.fit_transform(df[feature_cols])
+    else:
+        df[feature_cols] = scaler.transform(df[feature_cols])
+    return df, scaler
+
+
+def denormalize_data(
+    values: np.ndarray,
+    scaler: MinMaxScaler,
+    col_index: int,
+) -> np.ndarray:
+    """Inverse-transform a single feature column back to original scale.
+
+    Args:
+        values: 1-D array of scaled values.
+        scaler: Fitted MinMaxScaler (same used in normalize_data).
+        col_index: Index of the target column within the scaler's feature set.
+
+    Returns:
+        1-D array in original scale.
+    """
+    n_features = scaler.n_features_in_
+    dummy = np.zeros((len(values), n_features))
+    dummy[:, col_index] = values
+    inversed = scaler.inverse_transform(dummy)
+    return inversed[:, col_index]
+
+
+def create_sequences(
+    data: np.ndarray | pd.DataFrame,
+    input_window: int,
+    output_window: int,
+    feature_cols: list[str] | None = None,
+    target_col: str = "close",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build sliding-window sequences for LSTM training.
+
+    Args:
+        data: 2-D array or DataFrame with features (rows = timesteps).
+        input_window: Number of past timesteps per sample (e.g. 360).
+        output_window: Number of future timesteps to predict (e.g. 60).
+        feature_cols: Column names when *data* is a DataFrame.
+        target_col: Column to predict (default: 'close').
+
+    Returns:
+        (X, y) where:
+          X shape: (n_samples, input_window, n_features)
+          y shape: (n_samples, output_window)
+    """
+    if isinstance(data, pd.DataFrame):
+        if feature_cols is None:
+            feature_cols = list(data.columns)
+        target_idx = feature_cols.index(target_col)
+        arr = data[feature_cols].values.astype(np.float32)
+    else:
+        arr = np.asarray(data, dtype=np.float32)
+        target_idx = (
+            feature_cols.index(target_col) if feature_cols else 3
+        )  # default: 'close' is col-3 in FEATURE_COLUMNS
+
+    total = len(arr)
+    n_samples = total - input_window - output_window + 1
+    if n_samples <= 0:
+        raise ValueError(
+            f"Not enough data ({total} rows) for "
+            f"input_window={input_window} + output_window={output_window}"
+        )
+
+    X = np.empty((n_samples, input_window, arr.shape[1]), dtype=np.float32)
+    y = np.empty((n_samples, output_window), dtype=np.float32)
+
+    for i in range(n_samples):
+        X[i] = arr[i : i + input_window]
+        y[i] = arr[i + input_window : i + input_window + output_window, target_idx]
+
+    logger.info(
+        "Created %s sequences: X=%s, y=%s",
+        f"{n_samples:,}", X.shape, y.shape,
+    )
+    return X, y
