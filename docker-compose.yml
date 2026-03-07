@@ -46,7 +46,7 @@ services:
 
   # TODO: Cấu hình Grafana
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.4.0
     container_name: crypto_grafana_container
     depends_on:
       postgres:
