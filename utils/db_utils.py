@@ -204,3 +204,4 @@ def spark_upsert_jdbc(
         "Upserted to '%s': %s new rows (duplicates skipped)",
         table, f"{inserted:,}",
     )
+
