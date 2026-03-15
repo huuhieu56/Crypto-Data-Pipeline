@@ -1,10 +1,12 @@
 # =============================================================================
-# LSTM Model Definition - Crypto 1-min Price Prediction
+# LSTM Model Definition - Crypto 1-min Price Prediction (Per-Coin Weights)
 # =============================================================================
 # Model Architecture:
-#   - Input: (batch_size, 360, 7) - 360 nến 1-min (6h), 7 features/nến
+#   - Input: (batch_size, 600, 7) - 600 nến 1-min (10h), 7 features/nến
 #   - LSTM: 2 layers, hidden_size=128, dropout=0.2
 #   - Output: (batch_size, 60) - predicted close price cho 60 phút tiếp theo
+#
+# Mỗi coin có weight riêng: lstm_{symbol}_{version}.pth
 #
 # Features (7): trên nến 1 phút
 #   1. open

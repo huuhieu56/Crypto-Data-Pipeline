@@ -7,8 +7,8 @@ sử dụng Apache Spark, Apache Airflow, PostgreSQL, PyTorch LSTM và Grafana.
 
 - **Extract mỗi phút**: Gọi Binance REST API lấy nến 1-min cho 50 coins
 - **Transform**: Spark tính RSI(14), MACD(12/26/9) trên 1-min candles
-- **Inference mỗi giờ**: LSTM dùng 360 nến (6h) → dự báo 60 nến tới (1h)
-- **Retrain hàng tuần**: Train lại model trên toàn bộ dữ liệu lịch sử
+- **Inference mỗi giờ**: LSTM dùng 600 nến (10h) → dự báo 60 nến tới (1h)
+- **Retrain hàng tuần**: Train lại model per-coin (mỗi coin weight riêng)
 
 ## Cấu trúc thư mục
 
@@ -32,7 +32,7 @@ Crypto-Data-Pipeline/
 │   ├── extract.py                      # Thu thập từ Binance API & Data Vision
 │   ├── transform.py                    # Xử lý với Spark (RSI, MACD trên 1-min)
 │   ├── load.py                         # Ghi vào PostgreSQL (Spark JDBC upsert)
-│   ├── train.py                        # Huấn luyện LSTM (360→60, 1-min candles)
+│   ├── train.py                        # Huấn luyện LSTM per-coin (600→60, 1-min candles)
 │   ├── inference.py                    # Chạy dự báo mỗi giờ (360→60)
 │   └── update_actuals.py               # Cập nhật giá thực tế
 │
@@ -93,7 +93,7 @@ Crypto-Data-Pipeline/
 - **Transform**: Apache Spark (RSI, MACD trên 1-min candles)
 - **Load**: PostgreSQL (Spark JDBC upsert)
 - **Orchestrate**: Apache Airflow (minutely + hourly + weekly)
-- **Train**: PyTorch LSTM (360 nến → 60 nến)
+- **Train**: PyTorch LSTM per-coin (600 nến → 60 nến, weight riêng mỗi coin)
 - **Visualize**: Grafana
 
 ## Khởi chạy
@@ -113,8 +113,8 @@ python scripts/extract.py
 python scripts/transform.py
 python scripts/load.py
 
-# 5. Train model (cần đủ dữ liệu)
-python scripts/train.py
+# 5. Train model — mặc định BTC only, thêm coin qua --symbols
+python scripts/train.py --symbols BTCUSDT
 
 # 6. Airflow tự động: extract mỗi phút, inference mỗi giờ
 # Truy cập Airflow UI: http://localhost:8080
