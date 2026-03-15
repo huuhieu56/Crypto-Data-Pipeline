@@ -92,19 +92,21 @@ SPARK_CONFIG = {
 # Model Hyperparameters (LSTM)
 # =============================================================================
 MODEL_CONFIG = {
-    "input_window": 360,     # 360 nến 1-min (6 giờ lookback)
+    "input_window": 600,     # 600 nến 1-min (10 giờ lookback)
     "output_window": 60,     # 60 nến 1-min (1 giờ prediction)
     "features": 7,           # open, high, low, close, volume, rsi_14, macd
-    "hidden_size": 128,      # Đủ lớn cho 1-min time series
-    "num_layers": 2,
-    "dropout": 0.2,           # Moderate cho 1-min data
+    "hidden_size": 32,       # Nhỏ gọn, tránh overfit với limited data
+    "num_layers": 1,         # 1 layer — đủ cho time series ngắn
+    "dropout": 0.4,          # Cao hơn để regularize
     "learning_rate": 0.001,
-    "epochs": 50,             # Dataset lớn → ít epochs hơn
-    "batch_size": 64,         # Batch lớn cho dataset lớn
+    "epochs": 50,
+    "batch_size": 32,         # Nhỏ hơn cho 4GB VRAM
     "early_stopping_patience": 10,
     "train_ratio": 0.70,
     "val_ratio": 0.15,
     "test_ratio": 0.15,
+    "n_candles_to_load": 10000, # ~9400 examples — đủ data để train
+    "default_train_symbols": ["BTCUSDT"],  # Mặc định chỉ train BTC
 }
 
 # =============================================================================
