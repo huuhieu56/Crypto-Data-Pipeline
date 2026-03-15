@@ -161,7 +161,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  close AS price\nFROM klines\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
+          "rawSql": "SELECT\n  (timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  close AS price\nFROM klines\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
           "refId": "A"
         }
       ],
@@ -616,7 +616,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  imbalance\nFROM order_book_snapshot\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
+          "rawSql": "SELECT\n  (timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  imbalance\nFROM order_book_snapshot\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
           "refId": "A"
         }
       ],
@@ -709,7 +709,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  p.target_time AS time,\n  p.actual_close,\n  p.predicted_close\nFROM predictions p\nWHERE p.symbol = '${symbol}'\n  AND p.actual_close IS NOT NULL\n  AND $__timeFilter(p.target_time)\nORDER BY p.target_time",
+          "rawSql": "SELECT\n  (p.target_time AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  p.actual_close,\n  p.predicted_close\nFROM predictions p\nWHERE p.symbol = '${symbol}'\n  AND p.actual_close IS NOT NULL\n  AND $__timeFilter(p.target_time)\nORDER BY p.target_time",
           "refId": "A"
         }
       ],
