@@ -161,7 +161,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  close AS price\nFROM klines\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
+          "rawSql": "SELECT\n  (timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  close AS price\nFROM klines\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
           "refId": "A"
         }
       ],
@@ -616,7 +616,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  imbalance\nFROM order_book_snapshot\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
+          "rawSql": "SELECT\n  (timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  imbalance\nFROM order_book_snapshot\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
           "refId": "A"
         }
       ],
@@ -709,7 +709,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  k.timestamp AS time,\n  k.close AS actual_close\nFROM klines k\nWHERE k.symbol = '${symbol}'\n  AND k.timestamp >= (\n    SELECT MIN(predicted_at)\n    FROM predictions WHERE symbol = '${symbol}'\n      AND predicted_at >= (SELECT MAX(predicted_at) - INTERVAL '24 hours' FROM predictions WHERE symbol = '${symbol}')\n  )\n  AND k.timestamp <= (\n    SELECT MAX(predicted_at) + INTERVAL '1 hour'\n    FROM predictions WHERE symbol = '${symbol}'\n  )\nORDER BY k.timestamp",
+          "rawSql": "SELECT\n  (k.timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  k.close AS actual_close\nFROM klines k\nWHERE k.symbol = '${symbol}'\n  AND k.timestamp >= (\n    SELECT MIN(predicted_at)\n    FROM predictions WHERE symbol = '${symbol}'\n      AND predicted_at >= (SELECT MAX(predicted_at) - INTERVAL '24 hours' FROM predictions WHERE symbol = '${symbol}')\n  )\n  AND k.timestamp <= (\n    SELECT MAX(predicted_at) + INTERVAL '1 hour'\n    FROM predictions WHERE symbol = '${symbol}'\n  )\nORDER BY k.timestamp",
           "refId": "A"
         },
         {
@@ -720,7 +720,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  p.target_time AS time,\n  p.predicted_close\nFROM predictions p\nWHERE p.symbol = '${symbol}'\n  AND p.predicted_at >= (\n    SELECT MAX(predicted_at) - INTERVAL '24 hours'\n    FROM predictions WHERE symbol = '${symbol}'\n  )\nORDER BY p.target_time",
+          "rawSql": "SELECT\n  (p.target_time AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  p.predicted_close\nFROM predictions p\nWHERE p.symbol = '${symbol}'\n  AND p.predicted_at >= (\n    SELECT MAX(predicted_at) - INTERVAL '24 hours'\n    FROM predictions WHERE symbol = '${symbol}'\n  )\nORDER BY p.target_time",
           "refId": "B"
         }
       ],
