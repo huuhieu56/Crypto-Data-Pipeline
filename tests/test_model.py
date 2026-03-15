@@ -40,7 +40,7 @@ def model():
 def dummy_df():
     """Create a dummy DataFrame mimicking klines features."""
     np.random.seed(42)
-    n = 500
+    n = 800  # >= input_window(600) + output_window(60) + buffer
     return pd.DataFrame({
         "open": np.random.uniform(100, 200, n),
         "high": np.random.uniform(100, 200, n),
@@ -157,7 +157,7 @@ class TestDataUtils:
     def test_create_sequences_insufficient_data(self, dummy_df):
         """Raises ValueError when data is too short."""
         with pytest.raises(ValueError, match="Not enough data"):
-            create_sequences(dummy_df, 400, 200, feature_cols=list(dummy_df.columns))
+            create_sequences(dummy_df, 700, 200, feature_cols=list(dummy_df.columns))
 
     def test_normalize_denormalize_roundtrip(self, dummy_df):
         """Normalize → denormalize recovers original values."""

@@ -9,8 +9,8 @@ env/
 .env
 
 # Data files (quá lớn để commit)
-data/raw/*.csv
-data/processed/*.parquet
+data/raw/
+data/processed/
 
 # Model files
 models/*.pth
