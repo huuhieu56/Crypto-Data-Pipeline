@@ -1,6 +1,8 @@
-# =============================================================================
-# Load Script - Ghi du lieu vao PostgreSQL
-# =============================================================================
+"""Load script — write processed data to PostgreSQL.
+
+Reads transformed Parquet files from MinIO/local and loads them into
+PostgreSQL via Spark JDBC or pandas upsert.
+"""
 
 import sys
 from pathlib import Path
@@ -17,6 +19,7 @@ from config.config import (
     PROCESSED_DATA_DIR,
     KLINES_COLUMNS,
     KLINES_RENAME_MAP,
+    MINIO_CONFIG,
 )
 from utils.logger import get_logger
 from utils.exceptions import LoadError
@@ -27,9 +30,14 @@ from utils.db_utils import (
     get_spark_session,
     spark_upsert_jdbc,
 )
+from utils.storage import storage
 
 logger = get_logger(__name__)
-LOAD_STATE_PATH = PROCESSED_DATA_DIR / "load_state.json"
+
+BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
+BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
+_S3A_PROCESSED = f"s3a://{BUCKET_PROCESSED}"
+LOAD_STATE_KEY = "load_state.json"
 
 
 def _parquet_has_data_files(parquet_path: Path) -> bool:
@@ -42,45 +50,40 @@ def _parquet_has_data_files(parquet_path: Path) -> bool:
 
 
 def _load_state() -> dict[str, str]:
-    if not LOAD_STATE_PATH.exists():
-        return {}
+    """Load load state from MinIO."""
     try:
-        with open(LOAD_STATE_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return {str(k): str(v) for k, v in data.items()}
+        if storage.object_exists(BUCKET_PROCESSED, LOAD_STATE_KEY):
+            data = storage.download_json(BUCKET_PROCESSED, LOAD_STATE_KEY)
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items()}
     except Exception as exc:
-        logger.warning("Cannot read load state (%s), reset state", exc)
+        logger.warning("Cannot read load state from MinIO (%s), reset state", exc)
     return {}
 
 
 def _save_state(state: dict[str, str]) -> None:
-    with open(LOAD_STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
+    """Save load state to MinIO."""
+    storage.upload_json(BUCKET_PROCESSED, LOAD_STATE_KEY, state)
 
 
-# =============================================================================
-# Load functions
-# =============================================================================
+# --- Load Functions ----------------------------------------------------------
 
 def load_symbols(engine) -> None:
-    """Load symbols tu JSON vao bang symbols (Pandas, file nho)."""
-    json_path = RAW_DATA_DIR / "symbols.json"
-    if not json_path.exists():
-        logger.warning("Symbols file not found: %s — skipping", json_path)
+    """Load symbols tu MinIO JSON vao bang symbols (Pandas, file nho)."""
+    key = "symbols.json"
+    if not storage.object_exists(BUCKET_RAW, key):
+        logger.warning("Symbols file not found on MinIO: %s/%s — skipping", BUCKET_RAW, key)
         return
 
-    logger.info("Loading symbols from %s", json_path.name)
+    logger.info("Loading symbols from MinIO %s/%s", BUCKET_RAW, key)
     try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = storage.download_json(BUCKET_RAW, key)
 
         if isinstance(data, dict) and "symbols" in data:
             df = pd.DataFrame(data["symbols"])
         else:
             df = pd.DataFrame(data)
 
-        # Giu dung 4 cot khop voi schema bang symbols
         target_cols = ["symbol", "base_asset", "quote_asset", "status"]
         df = df[[c for c in target_cols if c in df.columns]]
 
@@ -96,37 +99,40 @@ def load_symbols(engine) -> None:
         raise LoadError(f"Failed to load symbols: {exc}") from exc
 
 
-def load_klines(spark, parquet_source: Path | None = None) -> None:
-    """Load klines tu Parquet vao bang klines (Spark JDBC upsert).
+def load_klines(spark, parquet_source: str | None = None) -> None:
+    """Load klines tu MinIO Parquet vao bang klines (Spark JDBC upsert).
 
     Uses temp-table upsert: write to _tmp_klines -> INSERT ... ON CONFLICT
     DO NOTHING -> drop temp.  Safe for re-runs without duplicate key errors.
     """
-    delta_path = PROCESSED_DATA_DIR / "features_delta.parquet"
-    full_path = PROCESSED_DATA_DIR / "features.parquet"
+    s3a_delta = f"{_S3A_PROCESSED}/features_delta.parquet"
+    s3a_full = f"{_S3A_PROCESSED}/features.parquet"
 
     if parquet_source is not None:
-        parquet_path = str(parquet_source)
+        parquet_path = parquet_source
     else:
-        parquet_path = str(delta_path if delta_path.exists() else full_path)
+        # Prefer delta file, fall back to full features
+        delta_exists = len(storage.list_objects(BUCKET_PROCESSED, "features_delta.parquet/")) > 0
+        full_exists = len(storage.list_objects(BUCKET_PROCESSED, "features.parquet/")) > 0
+        if delta_exists:
+            parquet_path = s3a_delta
+        elif full_exists:
+            parquet_path = s3a_full
+        else:
+            logger.warning("No features parquet found on MinIO — skipping klines load")
+            return
 
-    if not _parquet_has_data_files(Path(parquet_path)):
-        logger.warning("No features parquet found (delta/full) — skipping klines load")
-        return
-
-    source_name = "delta" if parquet_path == str(delta_path) else "full"
-    logger.info("Loading klines from %s via Spark", parquet_path)
+    source_name = "delta" if "delta" in parquet_path else "full"
+    logger.info("Loading klines from MinIO: %s", parquet_path)
     logger.info("Klines source: %s", source_name)
 
     try:
         df = spark.read.parquet(parquet_path)
 
-        # Rename columns theo mapping tu config
         for old_name, new_name in KLINES_RENAME_MAP.items():
             if old_name in df.columns:
                 df = df.withColumnRenamed(old_name, new_name)
 
-        # Chon dung cac cot can thiet
         existing_cols = [c for c in KLINES_COLUMNS if c in df.columns]
         df_final = df.select(*existing_cols)
 
@@ -157,7 +163,7 @@ def _cast_columns(df, cast_map: dict[str, str]):
 def _load_snapshot_csv_via_spark(
     spark,
     *,
-    csv_path: Path,
+    minio_key: str,
     table_name: str,
     time_col: str,
     state_key: str,
@@ -166,12 +172,18 @@ def _load_snapshot_csv_via_spark(
     conflict_columns: list[str],
     empty_msg: str,
 ) -> None:
-    if not csv_path.exists():
-        logger.warning("%s file not found: %s — skipping", table_name, csv_path)
+    if not storage.object_exists(BUCKET_RAW, minio_key):
+        logger.warning("%s not found on MinIO: %s/%s — skipping", table_name, BUCKET_RAW, minio_key)
         return
 
+    # Download CSV from MinIO to temp dir for Spark
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    storage.download_file(BUCKET_RAW, minio_key, tmp_path)
+
     state = _load_state()
-    df = spark.read.option("header", True).csv(str(csv_path))
+    df = spark.read.option("header", True).csv(str(tmp_path))
 
     if time_col in df.columns:
         df = df.withColumn(time_col, to_timestamp(col(time_col)))
@@ -209,11 +221,11 @@ def _load_snapshot_csv_via_spark(
 
 def load_ticker(spark) -> None:
     """Load ticker_24h tu CSV vao bang ticker_24h (Spark JDBC upsert)."""
-    logger.info("Loading ticker from ticker_24h.csv")
+    logger.info("Loading ticker from MinIO ticker_24h.csv")
     try:
         _load_snapshot_csv_via_spark(
             spark,
-            csv_path=RAW_DATA_DIR / "ticker_24h.csv",
+            minio_key="ticker_24h.csv",
             table_name="ticker_24h",
             time_col="snapshot_time",
             state_key="ticker_24h_last_snapshot_time",
@@ -243,11 +255,11 @@ def load_ticker(spark) -> None:
 
 def load_orderbook(spark) -> None:
     """Load order_book_snapshot tu CSV vao bang order_book_snapshot (Spark JDBC upsert)."""
-    logger.info("Loading order book from order_book_snapshot.csv")
+    logger.info("Loading order book from MinIO order_book_snapshot.csv")
     try:
         _load_snapshot_csv_via_spark(
             spark,
-            csv_path=RAW_DATA_DIR / "order_book_snapshot.csv",
+            minio_key="order_book_snapshot.csv",
             table_name="order_book_snapshot",
             time_col="timestamp",
             state_key="order_book_last_timestamp",
@@ -264,38 +276,33 @@ def load_orderbook(spark) -> None:
         raise LoadError(f"Failed to load order book: {exc}") from exc
 
 
-def _resolve_klines_source(klines_source: str) -> Path | None:
-    delta_path = PROCESSED_DATA_DIR / "features_delta.parquet"
-    full_path = PROCESSED_DATA_DIR / "features.parquet"
-    delta_ok = _parquet_has_data_files(delta_path)
-    full_ok = _parquet_has_data_files(full_path)
+def _resolve_klines_source(klines_source: str) -> str | None:
+    delta_exists = len(storage.list_objects(BUCKET_PROCESSED, "features_delta.parquet/")) > 0
+    full_exists = len(storage.list_objects(BUCKET_PROCESSED, "features.parquet/")) > 0
+
+    s3a_delta = f"{_S3A_PROCESSED}/features_delta.parquet"
+    s3a_full = f"{_S3A_PROCESSED}/features.parquet"
 
     if klines_source == "delta":
-        if not delta_ok:
-            logger.warning("Requested --klines-source=delta but delta parquet missing")
+        if not delta_exists:
+            logger.warning("Requested --klines-source=delta but delta missing on MinIO")
             return None
-        return delta_path
+        return s3a_delta
 
     if klines_source == "full":
-        if not full_ok:
-            logger.warning("Requested --klines-source=full but full parquet missing")
+        if not full_exists:
+            logger.warning("Requested --klines-source=full but full missing on MinIO")
             return None
-        return full_path
+        return s3a_full
 
-    if delta_ok:
-        return delta_path
-    if full_ok:
-        return full_path
+    if delta_exists:
+        return s3a_delta
+    if full_exists:
+        return s3a_full
     return None
 
 
-# =============================================================================
-# Main
-# =============================================================================
-
-# =============================================================================
-# CLI
-# =============================================================================
+# --- CLI ---------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
@@ -337,11 +344,11 @@ def main(
             return table in only
         return table not in skip
 
-    # 1. Init DB schema
+    # 1. Initialize DB schema
     engine = get_engine()
     init_schema(engine)
 
-    # 2. Load symbols
+    # 2. Load symbols into DB
     if _should_load("symbols"):
         load_symbols(engine)
 

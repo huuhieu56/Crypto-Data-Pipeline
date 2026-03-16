@@ -1,5 +1,5 @@
 # =============================================================================
-# Test Model Module
+# Test Model Module (Updated for Phase 1 improvements)
 # =============================================================================
 # Unit tests cho models/model.py, utils/data_utils.py (ML helpers)
 #
@@ -16,12 +16,14 @@ import pandas as pd
 import pytest
 import torch
 
-from models.model import LSTMModel, save_model, load_model
+from models.model import LSTMModel, DirectionalLoss, save_model, load_model
 from utils.data_utils import (
     create_sequences,
     normalize_data,
     denormalize_data,
     validate_data,
+    compute_log_returns,
+    returns_to_price,
 )
 from config.config import MODEL_CONFIG
 
@@ -40,12 +42,16 @@ def model():
 def dummy_df():
     """Create a dummy DataFrame mimicking klines features."""
     np.random.seed(42)
-    n = 800  # >= input_window(600) + output_window(60) + buffer
+    n = 800  # >= input_window(120) + output_window(60) + buffer
+    base_price = 70000
+    # Generate realistic-ish price data
+    returns = np.random.normal(0, 0.001, n)
+    close = base_price * np.exp(np.cumsum(returns))
     return pd.DataFrame({
-        "open": np.random.uniform(100, 200, n),
-        "high": np.random.uniform(100, 200, n),
-        "low": np.random.uniform(100, 200, n),
-        "close": np.random.uniform(100, 200, n),
+        "open": close * (1 + np.random.normal(0, 0.0005, n)),
+        "high": close * (1 + np.abs(np.random.normal(0, 0.001, n))),
+        "low": close * (1 - np.abs(np.random.normal(0, 0.001, n))),
+        "close": close,
         "volume": np.random.uniform(1e6, 1e8, n),
         "rsi_14": np.random.uniform(20, 80, n),
         "macd": np.random.uniform(-5, 5, n),
@@ -82,7 +88,7 @@ class TestLSTMModel:
         """Model has a reasonable number of parameters."""
         total = sum(p.numel() for p in model.parameters())
         assert total > 0
-        # Sanity check: 2-layer LSTM(7→128) + FC(128→60) should be ~200K-400K
+        # 2-layer LSTM(7→128) + FC(128→60) — ~200K-500K params
         assert 100_000 < total < 1_000_000
 
     def test_custom_config(self):
@@ -94,6 +100,56 @@ class TestLSTMModel:
         x = torch.randn(2, 100, 5)
         y = model(x)
         assert y.shape == (2, 30)
+
+
+# ---------------------------------------------------------------------------
+# Test DirectionalLoss (Phase 1)
+# ---------------------------------------------------------------------------
+
+class TestDirectionalLoss:
+    """Tests for the custom DirectionalLoss."""
+
+    def test_same_direction_no_penalty(self):
+        """No directional penalty when predictions match target direction."""
+        loss_fn = DirectionalLoss(directional_weight=1.0)
+        # Both increasing
+        pred = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+        target = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+        loss = loss_fn(pred, target)
+        # MSE = 0, dir_penalty = 0
+        assert loss.item() == pytest.approx(0.0, abs=1e-6)
+
+    def test_wrong_direction_has_penalty(self):
+        """Directional penalty kicks in when directions mismatch."""
+        loss_fn = DirectionalLoss(directional_weight=1.0)
+        # pred goes up, target goes down
+        pred = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+        target = torch.tensor([[4.0, 3.0, 2.0, 1.0]])
+        loss_with_dir = loss_fn(pred, target)
+
+        # Compare with pure MSE
+        mse_only = DirectionalLoss(directional_weight=0.0)
+        loss_without_dir = mse_only(pred, target)
+
+        assert loss_with_dir.item() > loss_without_dir.item()
+
+    def test_zero_weight_equals_mse(self):
+        """With weight=0, DirectionalLoss equals MSE."""
+        loss_fn = DirectionalLoss(directional_weight=0.0)
+        mse_fn = torch.nn.MSELoss()
+        pred = torch.randn(4, 60)
+        target = torch.randn(4, 60)
+        assert loss_fn(pred, target).item() == pytest.approx(
+            mse_fn(pred, target).item(), abs=1e-6,
+        )
+
+    def test_single_step_no_crash(self):
+        """Does not crash with single timestep output."""
+        loss_fn = DirectionalLoss(directional_weight=0.5)
+        pred = torch.tensor([[1.0]])
+        target = torch.tensor([[2.0]])
+        loss = loss_fn(pred, target)
+        assert loss.item() > 0
 
 
 # ---------------------------------------------------------------------------
@@ -160,13 +216,12 @@ class TestDataUtils:
             create_sequences(dummy_df, 700, 200, feature_cols=list(dummy_df.columns))
 
     def test_normalize_denormalize_roundtrip(self, dummy_df):
-        """Normalize → denormalize recovers original values."""
+        """Normalize → denormalize recovers original values (StandardScaler)."""
         feature_cols = list(dummy_df.columns)
         scaled_df, scaler = normalize_data(dummy_df, feature_cols)
 
-        # All values should be in [0, 1]
-        assert scaled_df[feature_cols].min().min() >= -1e-7
-        assert scaled_df[feature_cols].max().max() <= 1.0 + 1e-7
+        # StandardScaler: values should roughly center around 0
+        assert scaled_df[feature_cols].mean().abs().max() < 0.1
 
         # Round-trip for 'close' column
         close_idx = feature_cols.index("close")
@@ -206,3 +261,42 @@ class TestDataUtils:
         df = pd.DataFrame({"a": [1, 1, 2], "b": [3, 3, 4]})
         clean = validate_data(df, ["a", "b"])
         assert len(clean) == 2
+
+
+# ---------------------------------------------------------------------------
+# Test Log-Returns (Phase 1)
+# ---------------------------------------------------------------------------
+
+class TestLogReturns:
+    """Tests for log-returns computation and price reconstruction."""
+
+    def test_compute_log_returns_shape(self, dummy_df):
+        """Log-returns drops 1 row."""
+        result = compute_log_returns(dummy_df)
+        assert len(result) == len(dummy_df) - 1
+
+    def test_compute_log_returns_values(self):
+        """Log-returns are correct: log(p_t / p_{t-1})."""
+        df = pd.DataFrame({
+            "close": [100.0, 110.0, 105.0],
+            "volume": [1000, 2000, 3000],
+        })
+        result = compute_log_returns(df, price_cols=["close"])
+        expected = [np.log(110.0 / 100.0), np.log(105.0 / 110.0)]
+        np.testing.assert_allclose(result["close"].values, expected, rtol=1e-6)
+        # Volume should be unchanged
+        np.testing.assert_array_equal(result["volume"].values, [2000, 3000])
+
+    def test_returns_to_price_roundtrip(self):
+        """Convert prices → log-returns → prices recovers originals."""
+        prices = np.array([100.0, 105.0, 103.0, 108.0, 110.0])
+        log_returns = np.diff(np.log(prices))
+        recovered = returns_to_price(log_returns, last_price=prices[0])
+        np.testing.assert_allclose(recovered, prices[1:], rtol=1e-6)
+
+    def test_returns_to_price_single_step(self):
+        """Works with a single return value."""
+        log_ret = np.array([0.01])  # ~1% increase
+        result = returns_to_price(log_ret, last_price=100.0)
+        expected = 100.0 * np.exp(0.01)
+        np.testing.assert_allclose(result, [expected], rtol=1e-6)

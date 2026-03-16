@@ -1,6 +1,8 @@
-# =============================================================================
-# Data Utilities - Crypto Data Pipeline
-# =============================================================================
+"""Data utilities for the Crypto Data Pipeline.
+
+Provides klines I/O helpers (MinIO Parquet), date/month calculations,
+log-return transformations, and scikit-learn normalization.
+"""
 
 from __future__ import annotations
 
@@ -11,18 +13,21 @@ from dateutil.relativedelta import relativedelta
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
+import pyarrow as pa
+import pyarrow.parquet as pq
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
-from config.config import RAW_DATA_DIR
+from config.config import RAW_DATA_DIR, MINIO_CONFIG
 from config.symbols import SYMBOLS_STATUS, BREAK_DATES
 from utils.logger import get_logger
+from utils.storage import storage
 
 logger = get_logger(__name__)
 
+BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 
-# ---------------------------------------------------------------------------
-# Shared helpers (used by pre_extract.py & extract.py)
-# ---------------------------------------------------------------------------
+
+# --- Shared Helpers ----------------------------------------------------------
 
 def get_target_end(symbol: str) -> datetime:
     """TRADING → now (UTC), BREAK → break_date."""
@@ -34,79 +39,61 @@ def get_target_end(symbol: str) -> datetime:
     return datetime.now(timezone.utc)
 
 
-# ---------------------------------------------------------------------------
-# CSV I/O helpers (optimized for large klines files)
-# ---------------------------------------------------------------------------
+# --- MinIO Parquet I/O (optimized for large klines) -------------------------
 
-def _tail_open_time(csv_path: Path) -> str | None:
-    """Read the last row's open_time from a sorted CSV.  O(1) I/O."""
+def _read_minio_last_open_time(key: str) -> pd.Timestamp | None:
+    """Read the last open_time from a Parquet file on MinIO."""
     try:
-        with open(csv_path, "rb") as f:
-            header = f.readline().decode().strip()
-            cols = header.split(",")
-            ot_idx = cols.index("open_time")
-
-            f.seek(0, 2)
-            size = f.tell()
-            if size <= len(header) + 2:
-                return None
-
-            chunk = min(512, size)
-            f.seek(-chunk, 2)
-            tail = f.read().decode().strip()
-
-        last_line = tail.rsplit("\n", 1)[-1]
-        if not last_line or last_line == header:
+        table = storage.download_parquet(BUCKET_RAW, key)
+        if table.num_rows == 0:
             return None
-        return last_line.split(",")[ot_idx]
+        df = table.column("open_time").to_pandas()
+        last_val = df.iloc[-1]
+        return pd.Timestamp(last_val)
     except Exception:
         return None
 
 
-def _count_lines(csv_path: Path) -> int:
-    """Count data rows in CSV (header excluded).  Fast buffered byte scan."""
-    count = 0
-    with open(csv_path, "rb") as f:
-        while True:
-            buf = f.read(1 << 20)  # 1 MB chunks
-            if not buf:
-                break
-            count += buf.count(b"\n")
-    return max(count - 1, 0)  # subtract header
-
-
-def merge_and_save_klines(csv_path: Path, new_df: pd.DataFrame) -> int:
-    """Merge *new_df* into existing CSV (dedup by open_time, sort, save).
+def merge_and_save_klines(object_key: str, new_df: pd.DataFrame) -> int:
+    """Merge *new_df* into existing Parquet on MinIO (dedup by open_time).
 
     Optimization (common case — incremental / chronological append):
-      If new data is strictly AFTER existing data, append-only without
-      re-reading the entire CSV.  Falls back to full dedup only when
-      overlap is detected (e.g. backfill re-download).
+      If new data is strictly AFTER existing data, append to the
+      Parquet file without full dedup.  Falls back to full dedup
+      only when overlap is detected (e.g. backfill re-download).
 
-    Returns total record count (int) instead of DataFrame to avoid
-    holding millions of rows in memory.
+    Args:
+        object_key: MinIO key e.g. "BTCUSDT.parquet"
+        new_df: DataFrame of new klines records
+
+    Returns total record count.
     """
     new_df = new_df.drop_duplicates(subset=["open_time"], keep="last")
     new_df = new_df.sort_values("open_time").reset_index(drop=True)
+    new_table = pa.Table.from_pandas(new_df, preserve_index=False)
 
-    if not csv_path.exists() or csv_path.stat().st_size < 50:
-        new_df.to_csv(csv_path, index=False)
+    if not storage.object_exists(BUCKET_RAW, object_key):
+        storage.upload_parquet(BUCKET_RAW, object_key, new_table)
         return len(new_df)
 
     # --- fast path: append-only when no overlap ---
-    last_existing = _tail_open_time(csv_path)
+    last_existing = _read_minio_last_open_time(object_key)
     if last_existing is not None:
-        new_first = str(new_df["open_time"].iloc[0])
-        if pd.Timestamp(new_first) > pd.Timestamp(last_existing):
-            new_df.to_csv(csv_path, mode="a", header=False, index=False)
+        new_first = pd.Timestamp(new_df["open_time"].iloc[0])
+        if new_first > last_existing:
+            old_table = storage.download_parquet(BUCKET_RAW, object_key)
+            combined = pa.concat_tables([old_table, new_table])
+            storage.upload_parquet(BUCKET_RAW, object_key, combined)
             logger.debug(
-                "Fast append: +%d rows -> %s", len(new_df), csv_path.name,
+                "Fast append: +%d rows -> %s",
+                len(new_df), object_key,
             )
-            return _count_lines(csv_path)
+            return combined.num_rows
 
     # --- slow path: overlap -> full dedup ---
-    logger.debug("Full merge (overlap): %s", csv_path.name)
-    old_df = pd.read_csv(csv_path)
+    logger.debug("Full merge (overlap): %s", object_key)
+    old_table = storage.download_parquet(BUCKET_RAW, object_key)
+    old_df = old_table.to_pandas()
     combined = pd.concat([old_df, new_df], ignore_index=True)
     combined = (
         combined
@@ -114,31 +101,31 @@ def merge_and_save_klines(csv_path: Path, new_df: pd.DataFrame) -> int:
         .sort_values("open_time")
         .reset_index(drop=True)
     )
-    combined.to_csv(csv_path, index=False)
+    combined_table = pa.Table.from_pandas(combined, preserve_index=False)
+    storage.upload_parquet(BUCKET_RAW, object_key, combined_table)
     return len(combined)
 
 
 def get_last_timestamp(symbol: str) -> int | None:
-    """Get last open_time (ms) from a symbol's sorted CSV.  O(1) I/O."""
-    csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-    if not csv_path.exists():
+    """Get last open_time (ms) from a symbol's Parquet on MinIO."""
+    key = f"{symbol}.parquet"
+    if not storage.object_exists(BUCKET_RAW, key):
         return None
-    raw = _tail_open_time(csv_path)
-    if raw is None:
+    ts = _read_minio_last_open_time(key)
+    if ts is None:
         return None
     try:
-        ts = pd.to_datetime(raw, utc=True)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
         return int(ts.timestamp() * 1000)
     except Exception as exc:
         logger.error(
-            "Cannot parse timestamp '%s' from %s: %s", raw, symbol, exc,
+            "Cannot parse timestamp from %s: %s", symbol, exc,
         )
         return None
 
 
-# ---------------------------------------------------------------------------
-# Date / month utilities (Data Vision)
-# ---------------------------------------------------------------------------
+# --- Date / Month Utilities (Data Vision) -----------------------------------
 
 def get_target_months(months_back: int) -> list[tuple[int, int]]:
     """Last *months_back* completed months as (year, month) tuples."""
@@ -168,9 +155,7 @@ def get_months_between(
     return months
 
 
-# ---------------------------------------------------------------------------
-# ML Data Helpers — used by scripts/train.py & scripts/inference.py
-# ---------------------------------------------------------------------------
+# --- ML Data Helpers ---------------------------------------------------------
 
 def validate_data(
     df: pd.DataFrame,
@@ -204,12 +189,67 @@ def validate_data(
     return df.reset_index(drop=True)
 
 
+# --- Log-Return Helpers ------------------------------------------------------
+
+def compute_log_returns(
+    df: pd.DataFrame,
+    price_cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Convert price columns to log-returns: log(p_t / p_{t-1}).
+
+    Non-price columns (volume, rsi_14, macd) are passed through unchanged.
+    The first row becomes NaN and is dropped.
+
+    Args:
+        df: DataFrame with price columns.
+        price_cols: Columns to convert. Default: open, high, low, close.
+
+    Returns:
+        DataFrame with log-returns (1 row shorter).
+    """
+    if price_cols is None:
+        price_cols = ["open", "high", "low", "close"]
+
+    df = df.copy()
+    for col in price_cols:
+        if col in df.columns:
+            df[col] = np.log(df[col] / df[col].shift(1))
+
+    # Drop the first row (NaN from shift)
+    df = df.iloc[1:].reset_index(drop=True)
+    return df
+
+
+def returns_to_price(
+    log_returns: np.ndarray,
+    last_price: float,
+) -> np.ndarray:
+    """Convert predicted log-returns back to absolute prices.
+
+    Args:
+        log_returns: 1-D array of predicted log-returns.
+        last_price: The last known actual price (anchor point).
+
+    Returns:
+        1-D array of predicted prices.
+    """
+    # Cumulative sum of log-returns, then exponentiate
+    cum_returns = np.cumsum(log_returns)
+    prices = last_price * np.exp(cum_returns)
+    return prices
+
+
+# --- Normalization -----------------------------------------------------------
+
 def normalize_data(
     df: pd.DataFrame,
     feature_cols: list[str],
-    scaler: MinMaxScaler | None = None,
-) -> tuple[pd.DataFrame, MinMaxScaler]:
-    """Min-Max normalize *feature_cols* in [0, 1].
+    scaler: StandardScaler | MinMaxScaler | None = None,
+) -> tuple[pd.DataFrame, StandardScaler | MinMaxScaler]:
+    """Normalize *feature_cols* using StandardScaler (z-score).
+
+    StandardScaler preserves relative magnitude of changes,
+    unlike MinMaxScaler which compresses everything to [0, 1].
 
     Args:
         df: Input DataFrame.
@@ -221,7 +261,7 @@ def normalize_data(
     """
     df = df.copy()
     if scaler is None:
-        scaler = MinMaxScaler()
+        scaler = StandardScaler()
         df[feature_cols] = scaler.fit_transform(df[feature_cols])
     else:
         df[feature_cols] = scaler.transform(df[feature_cols])
@@ -230,14 +270,16 @@ def normalize_data(
 
 def denormalize_data(
     values: np.ndarray,
-    scaler: MinMaxScaler,
+    scaler: StandardScaler | MinMaxScaler,
     col_index: int,
 ) -> np.ndarray:
     """Inverse-transform a single feature column back to original scale.
 
+    Works with both StandardScaler and MinMaxScaler.
+
     Args:
         values: 1-D array of scaled values.
-        scaler: Fitted MinMaxScaler (same used in normalize_data).
+        scaler: Fitted scaler (same used in normalize_data).
         col_index: Index of the target column within the scaler's feature set.
 
     Returns:
@@ -261,7 +303,7 @@ def create_sequences(
 
     Args:
         data: 2-D array or DataFrame with features (rows = timesteps).
-        input_window: Number of past timesteps per sample (e.g. 360).
+        input_window: Number of past timesteps per sample (e.g. 120).
         output_window: Number of future timesteps to predict (e.g. 60).
         feature_cols: Column names when *data* is a DataFrame.
         target_col: Column to predict (default: 'close').

@@ -26,10 +26,8 @@ from scripts.transform import (
     OUTPUT_SCHEMA,
     _parquet_has_data_files,
     _cleanup_empty_parquet_dir,
-    _tail_csv_rows,
     _load_transform_state,
     _save_transform_state,
-    _estimate_missing_rows,
 )
 
 
@@ -432,115 +430,6 @@ class TestCleanupEmptyParquetDir:
         # Should not raise
 
 
-# =============================================================================
-# Test _tail_csv_rows
-# =============================================================================
-
-class TestTailCsvRows:
-
-    def test_reads_last_n_rows(self, tmp_dir):
-        csv_path = tmp_dir / "test.csv"
-        lines = ["open_time,close_time,value"]
-        for i in range(20):
-            lines.append(f"2024-01-01 00:{i:02d}:00,2024-01-01 00:{i+1:02d}:00,{i}")
-        csv_path.write_text("\n".join(lines))
-
-        result = _tail_csv_rows(csv_path, 5)
-        assert len(result) == 5
-        assert result["value"].iloc[-1] == 19
-
-    def test_returns_empty_for_zero_rows(self, tmp_dir):
-        csv_path = tmp_dir / "test.csv"
-        csv_path.write_text("open_time,close_time,value\n2024-01-01,2024-01-02,1\n")
-        result = _tail_csv_rows(csv_path, 0)
-        assert result.empty
-
-    def test_reads_all_if_n_larger_than_file(self, tmp_dir):
-        csv_path = tmp_dir / "small.csv"
-        lines = [
-            "open_time,close_time,value",
-            "2024-01-01 00:00:00,2024-01-01 00:01:00,10",
-            "2024-01-01 00:01:00,2024-01-01 00:02:00,20",
-        ]
-        csv_path.write_text("\n".join(lines))
-
-        result = _tail_csv_rows(csv_path, 100)
-        assert len(result) == 3
-
-    def test_handles_header_only_file(self, tmp_dir):
-        csv_path = tmp_dir / "header_only.csv"
-        csv_path.write_text("open_time,close_time,value\n")
-        result = _tail_csv_rows(csv_path, 5)
-        assert result.empty or len(result) == 0
-
-
-# =============================================================================
-# Test _load_transform_state / _save_transform_state
-# =============================================================================
-
-class TestTransformState:
-
-    def test_save_and_load_roundtrip(self, tmp_dir, monkeypatch):
-        state_path = tmp_dir / "state.json"
-        monkeypatch.setattr("scripts.transform.TRANSFORM_STATE_PATH", state_path)
-
-        state = {"BTCUSDT": "2024-06-01T00:00:00", "ETHUSDT": "2024-06-01T01:00:00"}
-        _save_transform_state(state)
-
-        loaded = _load_transform_state()
-        assert loaded == state
-
-    def test_load_returns_empty_if_no_file(self, tmp_dir, monkeypatch):
-        state_path = tmp_dir / "nonexistent.json"
-        monkeypatch.setattr("scripts.transform.TRANSFORM_STATE_PATH", state_path)
-        assert _load_transform_state() == {}
-
-    def test_load_returns_empty_for_corrupt_json(self, tmp_dir, monkeypatch):
-        state_path = tmp_dir / "corrupt.json"
-        state_path.write_text("not valid json {{")
-        monkeypatch.setattr("scripts.transform.TRANSFORM_STATE_PATH", state_path)
-        assert _load_transform_state() == {}
-
-    def test_load_returns_empty_for_non_dict_json(self, tmp_dir, monkeypatch):
-        state_path = tmp_dir / "array.json"
-        state_path.write_text("[1, 2, 3]")
-        monkeypatch.setattr("scripts.transform.TRANSFORM_STATE_PATH", state_path)
-        assert _load_transform_state() == {}
-
-
-# =============================================================================
-# Test _estimate_missing_rows
-# =============================================================================
-
-class TestEstimateMissingRows:
-
-    def test_returns_1000_when_no_last_processed(self):
-        result = _estimate_missing_rows("BTCUSDT", None)
-        assert result == 1000
-
-    @patch("scripts.transform.get_last_timestamp", return_value=None)
-    def test_returns_0_when_no_raw_data(self, mock_ts):
-        last = pd.Timestamp("2024-01-01", tz="UTC")
-        result = _estimate_missing_rows("BTCUSDT", last)
-        assert result == 0
-
-    @patch("scripts.transform.get_last_timestamp")
-    def test_estimates_correctly(self, mock_ts):
-        raw_ts_ms = int(pd.Timestamp("2024-01-01 02:00:00", tz="UTC").timestamp() * 1000)
-        mock_ts.return_value = raw_ts_ms
-
-        last_processed = pd.Timestamp("2024-01-01 01:00:00", tz="UTC")
-        result = _estimate_missing_rows("BTCUSDT", last_processed)
-        assert result == 70
-
-    @patch("scripts.transform.get_last_timestamp")
-    def test_returns_at_least_zero(self, mock_ts):
-        raw_ts_ms = int(pd.Timestamp("2024-01-01 00:00:00", tz="UTC").timestamp() * 1000)
-        mock_ts.return_value = raw_ts_ms
-
-        last_processed = pd.Timestamp("2024-01-01 02:00:00", tz="UTC")
-        result = _estimate_missing_rows("BTCUSDT", last_processed)
-        assert result >= 0
 
 
 # =============================================================================
@@ -569,7 +458,7 @@ class TestTransformDataIntegration:
     @patch("scripts.transform._save_transform_state")
     @patch("scripts.transform._parquet_has_data_files", return_value=True)
     @patch("scripts.transform._bootstrap_transform_state_from_features")
-    @patch("scripts.transform._read_symbol_incremental_csv")
+    @patch("scripts.transform._read_symbol_incremental")
     def test_returns_none_when_no_new_data(
         self, mock_read_csv, mock_bootstrap, mock_has_data, mock_save
     ):

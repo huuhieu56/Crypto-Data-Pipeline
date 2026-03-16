@@ -14,9 +14,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from datetime import datetime, timezone
 
-from config.config import RAW_DATA_DIR, MONTHS_BACK, RAW_KLINES_COLUMNS
+from config.config import (
+    RAW_DATA_DIR, MONTHS_BACK, RAW_KLINES_COLUMNS, MINIO_CONFIG,
+    GAP_THRESHOLD_DAYS, GAP_WARNING_DAYS,
+)
 from config.symbols import SYMBOLS, SYMBOLS_STATUS, BREAK_DATES
 from utils.logger import get_logger
 from utils.data_utils import (
@@ -25,13 +30,12 @@ from utils.data_utils import (
     get_months_between,
     get_target_months,
 )
+from utils.storage import storage
 
 logger = get_logger(__name__)
+BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 
-_GAP_THRESHOLD_DAYS = 30
-_GAP_WARNING_DAYS = 1
-
-# Action constants
+# Action type constants
 _BULK = "bulk"
 _BACKFILL = "backfill"
 _API = "api"
@@ -40,9 +44,7 @@ _DONE_BREAK = "done-break"
 _PLACEHOLDER = "placeholder"
 
 
-# ---------------------------------------------------------------------------
-# Classification
-# ---------------------------------------------------------------------------
+# --- Classification ---------------------------------------------------------
 def _classify(symbols: list[str]) -> dict[str, dict]:
     """Classify each symbol → action + metadata."""
     plans: dict[str, dict] = {}
@@ -52,18 +54,18 @@ def _classify(symbols: list[str]) -> dict[str, dict]:
         target_end_ms = int(target_end.timestamp() * 1000)
         is_break = SYMBOLS_STATUS.get(symbol, "TRADING") != "TRADING"
         last_ts = get_last_timestamp(symbol)
-        csv_exists = (RAW_DATA_DIR / f"{symbol}.csv").exists()
+        parquet_exists = storage.object_exists(BUCKET_RAW, f"{symbol}.parquet")
 
         if last_ts is None:
             if is_break:
-                action = _DONE_BREAK if csv_exists else _PLACEHOLDER
+                action = _DONE_BREAK if parquet_exists else _PLACEHOLDER
             else:
                 action = _BULK
         elif last_ts >= target_end_ms:
             action = _DONE_BREAK if is_break else _UP_TO_DATE
         else:
             gap_days = (target_end_ms - last_ts) / 1000 / 86_400
-            action = _API if gap_days < _GAP_THRESHOLD_DAYS else _BACKFILL
+            action = _API if gap_days < GAP_THRESHOLD_DAYS else _BACKFILL
 
         plans[symbol] = {
             "action": action,
@@ -104,9 +106,10 @@ def pre_extract(
     # --- Phase 2: BREAK placeholders ---
     placeholders = [s for s, p in plans.items() if p["action"] == _PLACEHOLDER]
     for sym in placeholders:
-        pd.DataFrame(columns=list(RAW_KLINES_COLUMNS) + ["symbol"]).to_csv(
-            RAW_DATA_DIR / f"{sym}.csv", index=False,
-        )
+        # Write empty Parquet file as placeholder
+        empty_df = pd.DataFrame(columns=list(RAW_KLINES_COLUMNS) + ["symbol"])
+        empty_table = pa.Table.from_pandas(empty_df, preserve_index=False)
+        storage.upload_parquet(BUCKET_RAW, f"{sym}.parquet", empty_table)
         results[sym] = f"placeholder (break_date={BREAK_DATES.get(sym, '?')})"
         logger.info("  %s — placeholder created", sym)
 
@@ -162,7 +165,7 @@ def pre_extract(
         for sym in api_syms:
             if not _is_complete(sym, plans[sym]["target_end_ms"]):
                 gap = (plans[sym]["target_end_ms"] - (get_last_timestamp(sym) or 0)) / 1000 / 86_400
-                if gap >= _GAP_WARNING_DAYS:
+                if gap >= GAP_WARNING_DAYS:
                     logger.warning(
                         "[Pre-Extract] %s — %.0f day(s) gap remains", sym, gap,
                     )
@@ -192,9 +195,7 @@ def run_pre_extract(symbols: list[str] | None = None) -> None:
     logger.info("=== Pre-Extract finished ===")
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+# --- CLI ---------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Pre-extract: gap detection & auto-recovery",

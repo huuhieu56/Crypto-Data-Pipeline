@@ -1,9 +1,8 @@
-# =============================================================================
-# Database Utilities - Crypto Data Pipeline
-# =============================================================================
-# Cac function dung chung de thao tac voi PostgreSQL.
-# Tat ca module can truy cap DB phai dung cac ham o day.
-# =============================================================================
+"""Database utilities for the Crypto Data Pipeline.
+
+Provides SQLAlchemy engine management, upsert helpers, and Spark JDBC
+integration. All modules requiring database access MUST use these helpers.
+"""
 
 from __future__ import annotations
 
@@ -21,30 +20,28 @@ from config.config import (
     JDBC_PROPERTIES,
     SQL_DIR,
     SPARK_CONFIG,
+    MINIO_CONFIG,
 )
 from utils.logger import get_logger
 from utils.exceptions import DatabaseConnectionError, SchemaInitError
 
 logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# SQLAlchemy Engine (Pandas)
-# ---------------------------------------------------------------------------
+# --- SQLAlchemy Engine (Pandas) ----------------------------------------------
 
 _engine: Engine | None = None
 
 
 def get_engine() -> Engine:
-    """Tra ve SQLAlchemy engine (singleton).
+    """Return a singleton SQLAlchemy engine.
 
     Raises:
-        DatabaseConnectionError: Khi khong ket noi duoc.
+        DatabaseConnectionError: If the connection cannot be established.
     """
     global _engine
     if _engine is None:
         try:
             _engine = create_engine(DB_URL, pool_pre_ping=True)
-            # Kiem tra ket noi that su
             with _engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             logger.info("Database connection established: %s", DB_URL.split("@")[-1])
@@ -56,10 +53,10 @@ def get_engine() -> Engine:
 
 
 def init_schema(engine: Engine | None = None) -> None:
-    """Chay file sql/schema.sql de khoi tao cac bang.
+    """Execute sql/schema.sql to initialize database tables.
 
     Raises:
-        SchemaInitError: Khi file khong ton tai hoac SQL loi.
+        SchemaInitError: If the schema file is missing or SQL execution fails.
     """
     engine = engine or get_engine()
     schema_path = SQL_DIR / "schema.sql"
@@ -79,10 +76,9 @@ def init_schema(engine: Engine | None = None) -> None:
         raise SchemaInitError(f"Failed to init schema: {exc}") from exc
 
 
-# ---------------------------------------------------------------------------
-# Upsert helper (dung lam method= cho pandas .to_sql)
-# ---------------------------------------------------------------------------
-# Map ten bang -> danh sach cot primary key de ON CONFLICT
+# --- Upsert Helper (pandas .to_sql method) -----------------------------------
+
+# Table name -> primary key columns for ON CONFLICT
 _PK_MAP: dict[str, list[str]] = {
     "symbols": ["symbol"],
     "klines": ["symbol", "timestamp"],
@@ -102,7 +98,7 @@ def upsert_on_conflict_nothing(table, conn, keys, data_iter):
     index_elements = _PK_MAP.get(table_name)
 
     if not index_elements:
-        # Fallback: lay PK tu metadata
+        # Fallback: extract PK from table metadata
         index_elements = [c.name for c in table.table.primary_key.columns]
 
     if not index_elements:
@@ -113,41 +109,52 @@ def upsert_on_conflict_nothing(table, conn, keys, data_iter):
     conn.execute(stmt)
 
 
-# ---------------------------------------------------------------------------
-# Spark JDBC helpers
-# ---------------------------------------------------------------------------
+# --- Spark JDBC Helpers ------------------------------------------------------
 
 def get_spark_session(app_name: str = "CryptoPipeline") -> SparkSession:
-    """Khoi tao SparkSession voi JDBC driver va Arrow.
+    """Create a SparkSession with JDBC, S3A (MinIO), and Arrow support.
 
-    Cau hinh doc tu config.SPARK_CONFIG.
+    Configuration is read from config.SPARK_CONFIG and config.MINIO_CONFIG.
     """
-    # Dam bao Spark worker dung dung Python interpreter (tranh Windows Store alias)
+    # Ensure Spark workers use the correct Python interpreter
     os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
     os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+
+    packages = ",".join([
+        SPARK_CONFIG["jdbc_package"],
+        "org.apache.hadoop:hadoop-aws:3.3.4",
+        "com.amazonaws:aws-java-sdk-bundle:1.12.262",
+    ])
 
     spark = (
         SparkSession.builder
         .appName(app_name)
         .master("local[*]")
-        .config("spark.jars.packages", SPARK_CONFIG["jdbc_package"])
+        .config("spark.jars.packages", packages)
         .config("spark.driver.memory", SPARK_CONFIG["driver_memory"])
         .config("spark.sql.execution.arrow.pyspark.enabled", SPARK_CONFIG["arrow_enabled"])
         .config("spark.python.worker.faulthandler.enabled", "true")
         .config("spark.sql.execution.arrow.pyspark.fallback.enabled", "true")
+        # S3A / MinIO configuration
+        .config("spark.hadoop.fs.s3a.endpoint", f"http://{MINIO_CONFIG['endpoint']}")
+        .config("spark.hadoop.fs.s3a.access.key", MINIO_CONFIG["access_key"])
+        .config("spark.hadoop.fs.s3a.secret.key", MINIO_CONFIG["secret_key"])
+        .config("spark.hadoop.fs.s3a.path.style.access", "true")
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", str(MINIO_CONFIG["secure"]).lower())
         .getOrCreate()
     )
-    logger.info("SparkSession created: %s", app_name)
+    logger.info("SparkSession created: %s (S3A endpoint: %s)", app_name, MINIO_CONFIG["endpoint"])
     return spark
 
 
 def spark_write_jdbc(df, table: str, mode: str = "append") -> None:
-    """Ghi Spark DataFrame vao PostgreSQL qua JDBC.
+    """Write a Spark DataFrame to PostgreSQL via JDBC.
 
     Args:
-        df: Spark DataFrame.
-        table: Ten bang trong PostgreSQL.
-        mode: 'append' hoac 'overwrite'.
+        df: Spark DataFrame to write.
+        table: Target table name in PostgreSQL.
+        mode: Write mode — 'append' or 'overwrite'.
     """
     logger.info("Writing to table '%s' via JDBC (mode=%s)", table, mode)
     df.write.jdbc(
@@ -164,18 +171,18 @@ def spark_upsert_jdbc(
     table: str,
     conflict_columns: list[str],
 ) -> None:
-    """Spark DataFrame -> PostgreSQL via temp table + ON CONFLICT DO NOTHING.
+    """Upsert a Spark DataFrame into PostgreSQL via temp table.
 
     Steps:
       1. Write to _tmp_{table} (overwrite — no PK constraints)
       2. INSERT INTO {table} SELECT * FROM _tmp ON CONFLICT DO NOTHING
       3. DROP _tmp_{table}
 
-    Safe for re-runs: duplicates are silently skipped instead of raising.
+    Safe for re-runs: duplicates are silently skipped.
     """
     temp_table = f"_tmp_{table}"
 
-    # 1. Spark write to temp table (fast, no PK constraint)
+    # Step 1: write to temp table (fast, no PK constraint)
     logger.info("Writing to temp table '%s' via JDBC", temp_table)
     df.write.jdbc(
         url=JDBC_URL,
@@ -184,7 +191,7 @@ def spark_upsert_jdbc(
         properties=JDBC_PROPERTIES,
     )
 
-    # 2. Upsert from temp -> target
+    # Step 2: upsert from temp -> target
     col_list = ", ".join(df.columns)
     conflict_list = ", ".join(conflict_columns)
     upsert_sql = (
@@ -204,4 +211,3 @@ def spark_upsert_jdbc(
         "Upserted to '%s': %s new rows (duplicates skipped)",
         table, f"{inserted:,}",
     )
-

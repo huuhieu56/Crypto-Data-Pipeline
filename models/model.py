@@ -1,24 +1,15 @@
-# =============================================================================
-# LSTM Model Definition - Crypto 1-min Price Prediction (Per-Coin Weights)
-# =============================================================================
-# Model Architecture:
-#   - Input: (batch_size, 600, 7) - 600 nến 1-min (10h), 7 features/nến
-#   - LSTM: 2 layers, hidden_size=128, dropout=0.2
-#   - Output: (batch_size, 60) - predicted close price cho 60 phút tiếp theo
-#
-# Mỗi coin có weight riêng: lstm_{symbol}_{version}.pth
-#
-# Features (7): trên nến 1 phút
-#   1. open
-#   2. high
-#   3. low
-#   4. close
-#   5. volume
-#   6. rsi_14  (RSI 14 periods = 14 phút — chỉ báo scalping)
-#   7. macd    (MACD 12/26/9 — chỉ báo day trading)
-#
-# Tham số lấy từ config.config.MODEL_CONFIG (single source of truth).
-# =============================================================================
+"""LSTM model for 1-minute crypto price prediction.
+
+Architecture:
+    Input:  (batch, input_window, 7) — 7 OHLCV + indicator features
+    LSTM:   2 layers, hidden_size=128, dropout=0.2
+    Output: (batch, output_window) — predicted close for N minutes ahead
+
+Each coin trains separate weights: lstm_{symbol}_{version}.pth
+
+Features (7): open, high, low, close, volume, rsi_14, macd
+All hyperparameters are read from config.config.MODEL_CONFIG.
+"""
 
 from __future__ import annotations
 
@@ -83,9 +74,55 @@ class LSTMModel(nn.Module):
         return out
 
 
-# ---------------------------------------------------------------------------
-# Save / Load utilities
-# ---------------------------------------------------------------------------
+# --- Custom Loss Function (directional penalty) -----------------------------
+
+class DirectionalLoss(nn.Module):
+    """MSE + directional penalty for time-series prediction.
+
+    Standard MSE on normalized data treats a $100 move on BTC ($71K)
+    as ~0.001 error — essentially zero.  This loss adds a penalty when
+    the model predicts the wrong *direction* of price movement.
+
+    Loss = MSE(pred, target) + weight × DirectionalPenalty
+
+    DirectionalPenalty = fraction of timesteps where
+        sign(pred_{t} - pred_{t-1}) ≠ sign(target_{t} - target_{t-1})
+    """
+
+    def __init__(self, directional_weight: float = 0.3) -> None:
+        super().__init__()
+        self.mse = nn.MSELoss()
+        self.directional_weight = directional_weight
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute combined loss.
+
+        Args:
+            pred: (batch, output_window) predicted values.
+            target: (batch, output_window) ground truth values.
+        """
+        mse_loss = self.mse(pred, target)
+
+        if self.directional_weight <= 0 or pred.shape[1] < 2:
+            return mse_loss
+
+        # Direction: diff along time axis
+        pred_diff = pred[:, 1:] - pred[:, :-1]
+        target_diff = target[:, 1:] - target[:, :-1]
+
+        # Penalty: fraction of wrong direction predictions
+        # sign mismatch → 1, correct → 0
+        wrong_dir = (torch.sign(pred_diff) != torch.sign(target_diff)).float()
+        dir_penalty = wrong_dir.mean()
+
+        return mse_loss + self.directional_weight * dir_penalty
+
+
+# --- Save / Load Utilities ---------------------------------------------------
 
 def save_model(
     model: LSTMModel,

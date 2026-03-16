@@ -132,11 +132,14 @@ def tmp_raw_dir(tmp_path):
 
 
 @pytest.fixture
-def sample_csv(tmp_raw_dir, sample_klines_df):
-    """Tạo CSV mẫu có sẵn dữ liệu cho BTCUSDT."""
-    csv_path = tmp_raw_dir / "BTCUSDT.csv"
-    sample_klines_df.to_csv(csv_path, index=False)
-    return csv_path
+def sample_parquet(tmp_raw_dir, sample_klines_df):
+    """Tạo Parquet mẫu có sẵn dữ liệu cho BTCUSDT."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    parquet_path = tmp_raw_dir / "BTCUSDT.parquet"
+    table = pa.Table.from_pandas(sample_klines_df, preserve_index=False)
+    pq.write_table(table, parquet_path)
+    return parquet_path
 
 
 # ============================================================================
@@ -220,7 +223,7 @@ class TestExtractBulk:
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch):
-        """Setup chung: mock download_data_vision & get_target_months."""
+        """Setup chung: mock download_data_vision, get_target_months, ticker & orderbook."""
         self.mock_dv = MagicMock(return_value=5000)
         self.mock_months = MagicMock(return_value=[(2024, 1)])
         monkeypatch.setattr(
@@ -228,6 +231,13 @@ class TestExtractBulk:
         )
         monkeypatch.setattr(
             "scripts.extract.get_target_months", self.mock_months,
+        )
+        # extract_bulk calls extract_ticker_24h and extract_order_book_snapshot
+        monkeypatch.setattr(
+            "scripts.extract.extract_ticker_24h", MagicMock(),
+        )
+        monkeypatch.setattr(
+            "scripts.extract.extract_order_book_snapshot", MagicMock(),
         )
 
     # --- Happy Path ---
@@ -357,24 +367,25 @@ class TestExtractTicker24h:
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
-        """Setup chung: mock get_ticker_24h, get_book_ticker, RAW_DATA_DIR."""
+        """Setup chung: mock get_ticker_24h, get_book_ticker, storage."""
         self.tmp_path = tmp_path
-        monkeypatch.setattr("scripts.extract.RAW_DATA_DIR", tmp_path)
 
         self.mock_ticker = MagicMock(return_value=SAMPLE_TICKER_24H_RAW)
         self.mock_book = MagicMock(return_value=SAMPLE_BOOK_TICKER_RAW)
+        self.mock_append = MagicMock()
         monkeypatch.setattr(
             "scripts.extract.get_ticker_24h", self.mock_ticker,
         )
         monkeypatch.setattr(
             "scripts.extract.get_book_ticker", self.mock_book,
         )
+        monkeypatch.setattr(
+            "scripts.extract.storage.append_csv_df", self.mock_append,
+        )
 
     # --- Happy Path ---
     def test_happy_path_returns_merged_dataframe(self):
         """API trả về data chuẩn → DataFrame đã merge & tính spread."""
-        (self.tmp_path / "ticker_24h.csv").touch()
-
         result = extract_ticker_24h(TEST_SYMBOLS)
 
         assert result is not None
@@ -391,8 +402,6 @@ class TestExtractTicker24h:
 
     def test_spread_pct_computed_correctly(self):
         """spread_pct = (ask - bid) / ask * 100."""
-        (self.tmp_path / "ticker_24h.csv").touch()
-
         result = extract_ticker_24h(TEST_SYMBOLS)
 
         btc_row = result[result["symbol"] == "BTCUSDT"].iloc[0]
@@ -401,8 +410,6 @@ class TestExtractTicker24h:
 
     def test_numeric_columns_are_float(self):
         """Tất cả numeric columns phải là float sau khi pd.to_numeric."""
-        (self.tmp_path / "ticker_24h.csv").touch()
-
         result = extract_ticker_24h(TEST_SYMBOLS)
 
         float_cols = [
@@ -414,9 +421,6 @@ class TestExtractTicker24h:
 
     def test_filters_only_requested_symbols(self):
         """Chỉ giữ symbols trong danh sách, loại bỏ coins khác."""
-        (self.tmp_path / "ticker_24h.csv").touch()
-
-        # Chỉ request BTCUSDT
         result = extract_ticker_24h(["BTCUSDT"])
 
         assert len(result) == 1
@@ -467,11 +471,9 @@ class TestExtractTicker24h:
 
     def test_symbol_in_ticker_but_missing_in_book(self):
         """Symbol có trong ticker nhưng không match book ticker → NaN cho bid/ask."""
-        # book ticker có data nhưng cho symbol khác → left join = NaN
         self.mock_book.return_value = [
             {"symbol": "XYZUSDT", "bidPrice": "100.00", "askPrice": "101.00"},
         ]
-        (self.tmp_path / "ticker_24h.csv").touch()
 
         result = extract_ticker_24h(TEST_SYMBOLS)
 
@@ -482,16 +484,15 @@ class TestExtractTicker24h:
         assert result["ask_price"].isna().all()
 
     def test_csv_created_with_header_if_not_exists(self):
-        """Nếu file CSV chưa tồn tại → tạo mới với header."""
-        csv_path = self.tmp_path / "ticker_24h.csv"
-        assert not csv_path.exists()
-
+        """storage.append_csv_df is called with correct args."""
         extract_ticker_24h(TEST_SYMBOLS)
 
-        assert csv_path.exists()
-        saved = pd.read_csv(csv_path)
-        assert len(saved) == 2
-        assert "symbol" in saved.columns
+        self.mock_append.assert_called_once()
+        args = self.mock_append.call_args
+        assert args[0][1] == "ticker_24h.csv"  # key argument
+        saved_df = args[0][2]  # the DataFrame
+        assert len(saved_df) == 2
+        assert "symbol" in saved_df.columns
 
 
 # ============================================================================
@@ -502,11 +503,14 @@ class TestExtractOrderBookSnapshot:
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
-        """Setup chung: mock get_order_book, sleep, RAW_DATA_DIR."""
+        """Setup chung: mock get_order_book, sleep, storage."""
         self.tmp_path = tmp_path
-        monkeypatch.setattr("scripts.extract.RAW_DATA_DIR", tmp_path)
         monkeypatch.setattr(
             "scripts.extract.sleep_between_requests", lambda: None,
+        )
+        self.mock_append = MagicMock()
+        monkeypatch.setattr(
+            "scripts.extract.storage.append_csv_df", self.mock_append,
         )
 
         self.mock_ob = MagicMock(return_value=SAMPLE_ORDER_BOOK)
@@ -609,20 +613,19 @@ class TestExtractOrderBookSnapshot:
         assert row["total_ask_volume"] == pytest.approx(2.0)
 
     def test_csv_created_with_header_if_not_exists(self):
-        """Nếu file CSV chưa tồn tại → tạo mới với header."""
-        csv_path = self.tmp_path / "order_book_snapshot.csv"
-        assert not csv_path.exists()
-
+        """storage.append_csv_df is called with correct args."""
         extract_order_book_snapshot(["BTCUSDT"])
 
-        assert csv_path.exists()
-        saved = pd.read_csv(csv_path)
-        assert len(saved) == 1
+        self.mock_append.assert_called_once()
+        args = self.mock_append.call_args
+        assert args[0][1] == "order_book_snapshot.csv"  # key argument
+        saved_df = args[0][2]  # the DataFrame
+        assert len(saved_df) == 1
         expected_cols = {
             "symbol", "timestamp", "total_bid_volume",
             "total_ask_volume", "imbalance",
         }
-        assert set(saved.columns) == expected_cols
+        assert set(saved_df.columns) == expected_cols
 
     def test_get_order_book_called_with_limit(self, monkeypatch):
         """get_order_book phải được gọi với limit=ORDER_BOOK_LIMIT."""

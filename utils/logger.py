@@ -1,10 +1,9 @@
-# =============================================================================
-# Logger - Crypto Data Pipeline
-# =============================================================================
-# Cau hinh logging chuan cho toan bo project.
-# Moi module goi: from utils.logger import get_logger
-#                  logger = get_logger(__name__)
-# =============================================================================
+"""Logging configuration for the Crypto Data Pipeline.
+
+Usage in any module:
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
+"""
 
 import logging
 import sys
@@ -23,11 +22,11 @@ def setup_logging(
     level: str = "INFO",
     log_file: str | None = None,
 ) -> None:
-    """Cau hinh logging mot lan duy nhat cho toan bo process.
+    """Configure logging once for the entire process.
 
     Args:
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
-        log_file: Neu truyen path, se ghi them log ra file.
+        log_file: If provided, logs are also written to this file path.
     """
     global _CONFIGURED
     if _CONFIGURED:
@@ -37,12 +36,12 @@ def setup_logging(
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
-    # --- Console handler ---
+    # Console handler
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
     root.addHandler(console)
 
-    # --- File handler (optional) ---
+    # File handler (optional)
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,16 +49,16 @@ def setup_logging(
         file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
         root.addHandler(file_handler)
 
-    # Giam log cua thu vien ben thu ba
+    # Suppress noisy third-party loggers
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("py4j").setLevel(logging.WARNING)
     logging.getLogger("pyspark").setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Tra ve logger instance cho module.
+    """Return a logger instance for the given module.
 
-    Neu setup_logging() chua duoc goi, se tu dong goi voi gia tri mac dinh.
+    Automatically calls setup_logging() with defaults if not yet configured.
     """
     if not _CONFIGURED:
         import os

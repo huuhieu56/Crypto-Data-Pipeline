@@ -3,6 +3,7 @@
 # =============================================================================
 # Services:
 #   - PostgreSQL: Data Warehouse (port 5432)
+#   - MinIO: Object Storage S3-compatible (port 9000 API, 9001 Console)
 #   - Airflow Webserver: DAG UI (port 8080)
 #   - Airflow Scheduler: Chạy DAGs
 #   - Grafana: Dashboard visualization (port 3000)
@@ -14,7 +15,7 @@
 version: '3.8'
 
 services:
-  # TODO: Cấu hình PostgreSQL
+  # --- PostgreSQL ---
   postgres:
     image: postgres:15
     container_name: crypto_postgres_container
@@ -34,17 +35,60 @@ services:
       timeout: 5s
       retries: 5
 
-  # TODO: Cấu hình Airflow Webserver
+  # --- MinIO Object Storage ---
+  minio:
+    image: minio/minio:latest
+    container_name: crypto_minio_container
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - minio_data:/data
+    networks:
+      - crypto_network
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO init: tao buckets khi khoi dong
+  minio-init:
+    image: minio/mc:latest
+    container_name: crypto_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin123};
+      mc mb --ignore-existing local/$${MINIO_BUCKET_RAW:-crypto-raw};
+      mc mb --ignore-existing local/$${MINIO_BUCKET_PROCESSED:-crypto-processed};
+      echo 'Buckets created successfully';
+      "
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_BUCKET_RAW=${MINIO_BUCKET_RAW:-crypto-raw}
+      - MINIO_BUCKET_PROCESSED=${MINIO_BUCKET_PROCESSED:-crypto-processed}
+    networks:
+      - crypto_network
+
+  # --- Airflow Webserver ---
   airflow-webserver:
     image: apache/airflow:2.8.0
     # ... config
 
-  # TODO: Cấu hình Airflow Scheduler
+  # --- Airflow Scheduler ---
   airflow-scheduler:
     image: apache/airflow:2.8.0
     # ... config
 
-  # TODO: Cấu hình Grafana
+  # --- Grafana ---
   grafana:
     image: grafana/grafana:11.4.0
     container_name: crypto_grafana_container
@@ -72,6 +116,7 @@ services:
 volumes:
   postgres_data:
   grafana_data:
+  minio_data:
 
 networks:
   crypto_network:

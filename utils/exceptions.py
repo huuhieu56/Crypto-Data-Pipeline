@@ -1,24 +1,22 @@
-# =============================================================================
-# Custom Exceptions - Crypto Data Pipeline
-# =============================================================================
-# Dinh nghia cac exception rieng de phan biet loi theo tang (layer).
-# Moi module raise exception cu the thay vi Exception chung.
-# =============================================================================
+"""Custom exception hierarchy for the Crypto Data Pipeline.
+
+Each pipeline layer raises its own exception type for precise error handling.
+All exceptions inherit from PipelineError.
+"""
 
 
 class PipelineError(Exception):
-    """Base exception cho toan bo pipeline."""
+    """Base exception for the entire pipeline."""
 
 
-# ---------------------------------------------------------------------------
-# Extract layer
-# ---------------------------------------------------------------------------
+# --- Extract Layer -----------------------------------------------------------
+
 class ExtractError(PipelineError):
-    """Loi xay ra trong qua trinh thu thap du lieu tu Binance."""
+    """Error during data collection from Binance."""
 
 
 class APIRequestError(ExtractError):
-    """Loi HTTP khi goi Binance API."""
+    """HTTP error when calling the Binance API."""
 
     def __init__(self, endpoint: str, status_code: int | None = None, detail: str = ""):
         self.endpoint = endpoint
@@ -32,34 +30,31 @@ class APIRequestError(ExtractError):
         super().__init__(msg)
 
 
-# ---------------------------------------------------------------------------
-# Transform layer
-# ---------------------------------------------------------------------------
+# --- Transform Layer ---------------------------------------------------------
+
 class TransformError(PipelineError):
-    """Loi xay ra trong qua trinh Transform voi Spark."""
+    """Error during Spark/Pandas transformation."""
 
 
-# ---------------------------------------------------------------------------
-# Load layer
-# ---------------------------------------------------------------------------
+# --- Load Layer --------------------------------------------------------------
+
 class LoadError(PipelineError):
-    """Loi xay ra trong qua trinh Load vao PostgreSQL."""
+    """Error during data loading into PostgreSQL."""
 
 
 class DatabaseConnectionError(LoadError):
-    """Khong ket noi duoc den PostgreSQL."""
+    """Failed to connect to PostgreSQL."""
 
 
 class SchemaInitError(LoadError):
-    """Loi khi khoi tao schema."""
+    """Error during database schema initialization."""
 
 
-# ---------------------------------------------------------------------------
-# Model / Inference layer
-# ---------------------------------------------------------------------------
+# --- Model / Inference Layer -------------------------------------------------
+
 class ModelError(PipelineError):
-    """Loi lien quan den LSTM model."""
+    """Error related to the LSTM model."""
 
 
 class ModelNotFoundError(ModelError):
-    """Khong tim thay file model .pth."""
+    """Model weights file (.pth) not found."""

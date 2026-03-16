@@ -1,13 +1,9 @@
-# =============================================================================
-# Transform Script - Xu ly du lieu voi Apache Spark
-# =============================================================================
-
 import sys
 from pathlib import Path
-import io
 import json
 import argparse
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -23,15 +19,26 @@ from pyspark.sql.types import (
 )
 import pandas as pd
 import numpy as np
+import pyarrow.parquet as pq
 
-from config.config import RAW_DATA_DIR, PROCESSED_DATA_DIR
+from config.config import (
+    RAW_DATA_DIR, PROCESSED_DATA_DIR, MINIO_CONFIG,
+    PARALLELISM, INDICATOR_CONTEXT_ROWS,
+)
 from config.symbols import SYMBOLS
 from utils.logger import get_logger
 from utils.exceptions import TransformError
 from utils.db_utils import get_spark_session
 from utils.data_utils import get_last_timestamp
+from utils.storage import storage
 
 logger = get_logger(__name__)
+
+BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
+BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
+TRANSFORM_MAX_WORKERS = PARALLELISM["transform_max_workers"]
+_S3A_RAW = f"s3a://{BUCKET_RAW}"
+_S3A_PROCESSED = f"s3a://{BUCKET_PROCESSED}"
 
 INPUT_SCHEMA = StructType([
     StructField("open_time", TimestampType(), True),
@@ -42,13 +49,13 @@ INPUT_SCHEMA = StructType([
     StructField("volume", DoubleType(), True),
     StructField("close_time", TimestampType(), True),
     StructField("quote_volume", DoubleType(), True),
-    StructField("trades", LongType(), True),         
+    StructField("trades", LongType(), True),
     StructField("taker_buy_base", DoubleType(), True),
     StructField("taker_buy_quote", DoubleType(), True),
     StructField("symbol", StringType(), True),
 ])
 
-# StructType.add() mutate in-place, phai tao ban copy rieng
+# StructType.add() mutates in-place; must create a separate copy
 OUTPUT_SCHEMA = StructType(list(INPUT_SCHEMA.fields) + [
     StructField("RSI", DoubleType(), True),
     StructField("MACD", DoubleType(), True),
@@ -57,9 +64,11 @@ OUTPUT_SCHEMA = StructType(list(INPUT_SCHEMA.fields) + [
 
 FULL_FEATURES_PATH = PROCESSED_DATA_DIR / "features.parquet"
 DELTA_FEATURES_PATH = PROCESSED_DATA_DIR / "features_delta.parquet"
-TRANSFORM_STATE_PATH = PROCESSED_DATA_DIR / "transform_state.json"
-INDICATOR_CONTEXT_ROWS = 120
-MAX_TAIL_SCAN_BYTES = 8 * 1024 * 1024
+TRANSFORM_STATE_KEY = "transform_state.json"
+
+# S3A paths (Spark reads/writes via S3A protocol)
+S3A_FULL_FEATURES = f"{_S3A_PROCESSED}/features.parquet"
+S3A_DELTA_FEATURES = f"{_S3A_PROCESSED}/features_delta.parquet"
 
 
 def _parquet_has_data_files(parquet_path: Path) -> bool:
@@ -102,25 +111,25 @@ def calculate_indicators_pandas(pdf: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_transform_state() -> dict[str, str]:
-    if not TRANSFORM_STATE_PATH.exists():
-        return {}
+    """Load transform state from MinIO."""
     try:
-        with open(TRANSFORM_STATE_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return {str(k): str(v) for k, v in data.items()}
+        if storage.object_exists(BUCKET_PROCESSED, TRANSFORM_STATE_KEY):
+            data = storage.download_json(BUCKET_PROCESSED, TRANSFORM_STATE_KEY)
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items()}
     except Exception as exc:
-        logger.warning("Cannot read transform state (%s), rebuilding state", exc)
+        logger.warning("Cannot read transform state from MinIO (%s), rebuilding state", exc)
     return {}
 
 
 def _save_transform_state(state: dict[str, str]) -> None:
-    with open(TRANSFORM_STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
+    """Save transform state to MinIO."""
+    storage.upload_json(BUCKET_PROCESSED, TRANSFORM_STATE_KEY, state)
+    logger.debug("Saved transform state to MinIO (%d symbols)", len(state))
 
 
 def _bootstrap_transform_state_from_features(spark: SparkSession) -> dict[str, str]:
-    if TRANSFORM_STATE_PATH.exists():
+    if storage.object_exists(BUCKET_PROCESSED, TRANSFORM_STATE_KEY):
         return _load_transform_state()
 
     if not _parquet_has_data_files(FULL_FEATURES_PATH):
@@ -152,99 +161,55 @@ def _bootstrap_transform_state_from_features(spark: SparkSession) -> dict[str, s
     return state
 
 
-def _tail_csv_rows(csv_path: Path, n_rows: int) -> pd.DataFrame:
-    if n_rows <= 0:
+def _read_symbol_incremental(symbol: str, last_processed: pd.Timestamp | None) -> pd.DataFrame:
+    """Read new rows for a symbol from its Parquet file on MinIO.
+
+    Downloads from MinIO and filters for rows after last_processed,
+    plus INDICATOR_CONTEXT_ROWS for warm-up context.
+    """
+    key = f"{symbol}.parquet"
+    if not storage.object_exists(BUCKET_RAW, key):
         return pd.DataFrame()
-
-    with open(csv_path, "rb") as f:
-        header = f.readline().decode("utf-8").strip()
-        f.seek(0, 2)
-        file_size = f.tell()
-
-        if file_size <= len(header) + 2:
-            return pd.DataFrame(columns=header.split(","))
-
-        step = 64 * 1024
-        buffer = b""
-        pos = file_size
-
-        while pos > 0 and buffer.count(b"\n") <= (n_rows + 1):
-            read_size = min(step, pos)
-            pos -= read_size
-            f.seek(pos)
-            buffer = f.read(read_size) + buffer
-            if len(buffer) >= MAX_TAIL_SCAN_BYTES:
-                break
-
-    tail_lines = buffer.decode("utf-8", errors="ignore").strip().splitlines()
-    if len(tail_lines) > n_rows:
-        tail_lines = tail_lines[-n_rows:]
-
-    csv_text = "\n".join([header] + tail_lines)
-    return pd.read_csv(
-        io.StringIO(csv_text),
-        parse_dates=["open_time", "close_time"],
-    )
-
-
-def _estimate_missing_rows(symbol: str, last_processed: pd.Timestamp | None) -> int:
-    if last_processed is None:
-        return 1000
-
-    raw_last_ms = get_last_timestamp(symbol)
-    if raw_last_ms is None:
-        return 0
-
-    last_raw = pd.Timestamp(raw_last_ms, unit="ms", tz="UTC")
-    processed_utc = last_processed.tz_convert("UTC") if last_processed.tzinfo else last_processed.tz_localize("UTC")
-    delta_minutes = int((last_raw - processed_utc).total_seconds() // 60)
-    return max(delta_minutes + 10, 0)
-
-
-def _read_symbol_incremental_csv(symbol: str, last_processed: pd.Timestamp | None) -> pd.DataFrame:
-    csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-    if not csv_path.exists():
-        return pd.DataFrame()
-
-    missing_rows = _estimate_missing_rows(symbol, last_processed)
-    if missing_rows == 0:
-        return pd.DataFrame()
-
-    n_rows = max(missing_rows + INDICATOR_CONTEXT_ROWS, INDICATOR_CONTEXT_ROWS + 20)
 
     try:
-        if n_rows > 20000:
-            pdf = pd.read_csv(csv_path, parse_dates=["open_time", "close_time"])
-        else:
-            pdf = _tail_csv_rows(csv_path, n_rows)
+        table = storage.download_parquet(BUCKET_RAW, key)
+        pdf = table.to_pandas()
+        pdf["open_time"] = pd.to_datetime(pdf["open_time"], utc=False)
+        pdf = pdf.sort_values("open_time").drop_duplicates(
+            subset=["open_time"], keep="last",
+        )
+
+        if last_processed is not None:
+            newer_mask = pdf["open_time"] > last_processed
+            if not newer_mask.any():
+                return pd.DataFrame()
+
+            first_new_idx = newer_mask.idxmax()
+            start_idx = max(0, first_new_idx - INDICATOR_CONTEXT_ROWS)
+            pdf = pdf.iloc[start_idx:].reset_index(drop=True)
     except Exception as exc:
-        raise TransformError(f"Cannot read incremental CSV for {symbol}: {exc}") from exc
+        raise TransformError(
+            f"Cannot read Parquet from MinIO for {symbol}: {exc}",
+        ) from exc
 
     if pdf.empty:
         return pdf
 
     pdf["symbol"] = symbol
     pdf = pdf.dropna(subset=["open_time"])
-    pdf["open_time"] = pd.to_datetime(pdf["open_time"], utc=False)
-    pdf = pdf.sort_values("open_time").drop_duplicates(subset=["open_time"], keep="last")
     return pdf
 
 
 def _transform_full_rebuild(spark: SparkSession, symbols: list[str]) -> str | None:
-    logger.info("Full transform rebuild: reading all raw CSV files")
+    logger.info("Full transform rebuild: reading all raw Parquet from MinIO")
 
-    csv_paths = [(RAW_DATA_DIR / f"{s}.csv") for s in symbols]
-    existing = [str(p) for p in csv_paths if p.exists()]
+    s3a_paths = [f"{_S3A_RAW}/{s}.parquet" for s in symbols
+                 if storage.object_exists(BUCKET_RAW, f"{s}.parquet")]
 
-    if not existing:
-        raise TransformError(f"No klines CSV files found in {RAW_DATA_DIR}")
+    if not s3a_paths:
+        raise TransformError(f"No klines Parquet files found in MinIO bucket {BUCKET_RAW}")
 
-    df = spark.read.csv(
-        existing,
-        header=True,
-        schema=INPUT_SCHEMA,
-        timestampFormat="yyyy-MM-dd HH:mm:ss",
-    )
+    df = spark.read.parquet(*s3a_paths)
     df = df.filter(col("open_time").isNotNull())
 
     processed_df = df.groupBy("symbol").applyInPandas(
@@ -252,9 +217,8 @@ def _transform_full_rebuild(spark: SparkSession, symbols: list[str]) -> str | No
         schema=OUTPUT_SCHEMA,
     )
 
-    output_path = str(FULL_FEATURES_PATH)
-    processed_df.write.mode("overwrite").partitionBy("symbol").parquet(output_path)
-    processed_df.write.mode("overwrite").partitionBy("symbol").parquet(str(DELTA_FEATURES_PATH))
+    processed_df.write.mode("overwrite").partitionBy("symbol").parquet(S3A_FULL_FEATURES)
+    processed_df.write.mode("overwrite").partitionBy("symbol").parquet(S3A_DELTA_FEATURES)
 
     max_state = (
         processed_df.groupBy("symbol")
@@ -271,7 +235,7 @@ def _transform_full_rebuild(spark: SparkSession, symbols: list[str]) -> str | No
     _save_transform_state(state)
 
     logger.info("Transform complete (full rebuild)")
-    return output_path
+    return S3A_FULL_FEATURES
 
 
 def transform_data(spark: SparkSession, symbols: list[str] | None = None) -> str | None:
@@ -287,26 +251,58 @@ def transform_data(spark: SparkSession, symbols: list[str] | None = None) -> str
         logger.info("No valid transform state/parquet found -> full rebuild")
         return _transform_full_rebuild(spark, symbols)
 
+    # --- Parallel symbol processing (read + indicators) ---
     all_incremental: list[pd.DataFrame] = []
     next_state = dict(state)
+    n_symbols = len(symbols)
 
-    for symbol in symbols:
+    def _process_symbol(symbol: str) -> tuple[str, pd.DataFrame | None]:
+        """Read + compute indicators for one symbol (thread-safe)."""
         raw_state = state.get(symbol)
         last_processed = pd.to_datetime(raw_state) if raw_state else None
 
-        symbol_df = _read_symbol_incremental_csv(symbol, last_processed)
+        symbol_df = _read_symbol_incremental(symbol, last_processed)
         if symbol_df.empty:
-            continue
+            return symbol, None
 
         calculated = calculate_indicators_pandas(symbol_df)
         if last_processed is not None:
             calculated = calculated[calculated["open_time"] > last_processed]
 
         if calculated.empty:
-            continue
+            return symbol, None
 
-        all_incremental.append(calculated)
-        next_state[symbol] = pd.Timestamp(calculated["open_time"].max()).isoformat()
+        return symbol, calculated
+
+    max_workers = min(TRANSFORM_MAX_WORKERS, n_symbols)
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {
+            pool.submit(_process_symbol, sym): sym for sym in symbols
+        }
+        for future in as_completed(future_map):
+            completed += 1
+            sym = future_map[future]
+            try:
+                symbol, calculated = future.result()
+                if calculated is not None:
+                    all_incremental.append(calculated)
+                    next_state[symbol] = pd.Timestamp(calculated["open_time"].max()).isoformat()
+                    logger.info(
+                        "[Transform %d/%d] %s: +%s rows",
+                        completed, n_symbols, symbol, f"{len(calculated):,}",
+                    )
+                else:
+                    logger.debug(
+                        "[Transform %d/%d] %s: no new data",
+                        completed, n_symbols, sym,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "[Transform %d/%d] %s: ERROR — %s",
+                    completed, n_symbols, sym, exc,
+                )
 
     if not all_incremental:
         logger.info("No new rows to transform")
@@ -317,22 +313,22 @@ def transform_data(spark: SparkSession, symbols: list[str] | None = None) -> str
 
     incremental_sdf = spark.createDataFrame(incremental_pdf, schema=OUTPUT_SCHEMA)
 
-    logger.info("Writing transformed delta rows to %s", DELTA_FEATURES_PATH)
-    incremental_sdf.write.mode("overwrite").partitionBy("symbol").parquet(str(DELTA_FEATURES_PATH))
+    logger.info("Writing transformed delta rows to MinIO")
+    incremental_sdf.write.mode("overwrite").partitionBy("symbol").parquet(S3A_DELTA_FEATURES)
 
-    logger.info("Appending transformed rows to %s", FULL_FEATURES_PATH)
-    full_mode = "append" if _parquet_has_data_files(FULL_FEATURES_PATH) else "overwrite"
-    incremental_sdf.write.mode(full_mode).partitionBy("symbol").parquet(str(FULL_FEATURES_PATH))
+    logger.info("Appending transformed rows to MinIO features")
+    # Check if full features exist on MinIO
+    existing_features = len(storage.list_objects(BUCKET_PROCESSED, "features.parquet/")) > 0
+    full_mode = "append" if existing_features else "overwrite"
+    incremental_sdf.write.mode(full_mode).partitionBy("symbol").parquet(S3A_FULL_FEATURES)
 
     _save_transform_state(next_state)
 
     logger.info("Transform complete: %s new rows", f"{len(incremental_pdf):,}")
-    return str(DELTA_FEATURES_PATH)
+    return S3A_DELTA_FEATURES
 
 
-# =============================================================================
-# CLI
-# =============================================================================
+# --- CLI ---------------------------------------------------------------------
 def _build_parser() -> "argparse.ArgumentParser":
 
     parser = argparse.ArgumentParser(

@@ -1,18 +1,15 @@
-# =============================================================================
-# Update Actuals Script - Cập nhật giá thực tế và tính error
-# =============================================================================
-# Chức năng:
-#   1. Lấy predictions chưa có actual_close mà target_time đã qua
-#   2. Query giá close thực tế (nến 1-min) từ bảng klines
-#   3. Cập nhật actual_close và error_pct vào bảng predictions
-#
-# Timing:
-#   - Chạy cuối hourly_inference DAG (sau save_predictions)
-#   - Cập nhật các dự báo cũ có target_time <= now() (phút đã qua)
-#
-# Sử dụng:
-#   python scripts/update_actuals.py
-# =============================================================================
+"""Update actuals — backfill realized prices into prediction rows.
+
+Workflow:
+    1. Find predictions missing actual_close where target_time has passed
+    2. Query actual close prices (1-min candles) from the klines table
+    3. Update actual_close and error_pct in the predictions table
+
+Schedule: runs at the end of hourly_inference DAG.
+
+Usage:
+    python scripts/update_actuals.py
+"""
 
 from __future__ import annotations
 

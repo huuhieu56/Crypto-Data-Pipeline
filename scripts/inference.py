@@ -1,25 +1,17 @@
-# =============================================================================
-# Inference Script - Chạy dự báo giá với model LSTM (Per-Coin Weights)
-# =============================================================================
-# Chức năng:
-#   1. Load model: Đọc file lstm_{symbol}_{version}.pth cho từng coin
-#   2. Get latest data: Lấy 600 nến 1-min gần nhất (10h lookback)
-#   3. Predict: Dự báo giá close 60 nến tiếp theo (1h ahead)
-#   4. Save predictions: Ghi vào bảng predictions
-#
-# Input:
-#   - models/lstm_{symbol}_{version}.pth (per-coin weights)
-#   - 600 nến 1-min gần nhất từ PostgreSQL
-#
-# Output:
-#   - 60 predictions/coin ghi vào bảng predictions
-#
-# Schedule: Đầu mỗi giờ (0 * * * *), trigger bởi hourly_inference DAG
-#
-# Sử dụng:
-#   python scripts/inference.py
-#   python scripts/inference.py --symbols BTCUSDT ETHUSDT
-# =============================================================================
+"""Inference script — run LSTM predictions for the Crypto Data Pipeline.
+
+Workflow:
+    1. Load model weights (lstm_{symbol}_{version}.pth) per coin
+    2. Fetch the most recent candles from PostgreSQL
+    3. Predict close prices for the next output_window minutes
+    4. Save predictions to the database
+
+Schedule: start of each hour (0 * * * *) via hourly_inference DAG.
+
+Usage:
+    python scripts/inference.py
+    python scripts/inference.py --symbols BTCUSDT ETHUSDT
+"""
 
 from __future__ import annotations
 
@@ -37,7 +29,7 @@ import torch
 
 from config.config import MODEL_CONFIG, FEATURE_COLUMNS, MODELS_DIR
 from models.model import load_model
-from utils.data_utils import normalize_data, denormalize_data
+from utils.data_utils import normalize_data, denormalize_data, compute_log_returns, returns_to_price
 from utils.db_utils import get_engine, upsert_on_conflict_nothing
 from utils.logger import get_logger
 
@@ -57,12 +49,19 @@ def get_latest_data(
 ) -> pd.DataFrame | None:
     """Query the last *input_window* klines for a symbol, up to *cutoff_time*.
 
+    When predict_returns=True, fetches extra rows to compensate for
+    the row lost during log-returns computation.
+
     Args:
         cutoff_time: Only use klines with timestamp <= cutoff_time.
                      If None, use all available data.
 
     Returns DataFrame with *feature_cols* or None if insufficient data.
     """
+    # Need extra rows if we'll compute log-returns (drops 1 row)
+    predict_returns = MODEL_CONFIG.get("predict_returns", False)
+    n_rows = input_window + (1 if predict_returns else 0)
+
     feature_str = ", ".join(feature_cols)
     time_filter = f"AND timestamp <= '{cutoff_time}'" if cutoff_time else ""
     query = (
@@ -71,14 +70,14 @@ def get_latest_data(
         f"  AND rsi_14 IS NOT NULL AND macd IS NOT NULL "
         f"  {time_filter} "
         f"ORDER BY timestamp DESC "
-        f"LIMIT {input_window}"
+        f"LIMIT {n_rows}"
     )
     df = pd.read_sql(query, engine)
 
-    if len(df) < input_window:
+    if len(df) < n_rows:
         logger.warning(
             "%s: only %d/%d klines available (cutoff=%s) — skipping",
-            symbol, len(df), input_window, cutoff_time,
+            symbol, len(df), n_rows, cutoff_time,
         )
         return None
 
@@ -86,9 +85,7 @@ def get_latest_data(
     return df.iloc[::-1].reset_index(drop=True)
 
 
-# ---------------------------------------------------------------------------
-# Prediction
-# ---------------------------------------------------------------------------
+# --- Prediction --------------------------------------------------------------
 
 def predict_symbol(
     model: torch.nn.Module,
@@ -96,19 +93,27 @@ def predict_symbol(
     data: pd.DataFrame,
     feature_cols: list[str],
     device: torch.device,
+    predict_returns: bool = False,
+    last_close_price: float | None = None,
 ) -> np.ndarray:
     """Run inference for one symbol.
 
     Args:
         model: Loaded LSTMModel (eval mode).
-        scaler: Fitted MinMaxScaler from training.
+        scaler: Fitted scaler from training.
         data: DataFrame with *feature_cols* (input_window rows).
         feature_cols: Column names matching the scaler.
         device: Torch device.
+        predict_returns: If True, model predicts log-returns.
+        last_close_price: Last known close price (anchor for returns→price).
 
     Returns:
         1-D array of *output_window* denormalized predicted close prices.
     """
+    # Phase 1: Convert to log-returns if needed
+    if predict_returns:
+        data = compute_log_returns(data, price_cols=["open", "high", "low", "close"])
+
     # Normalize using training scaler
     scaled_df, _ = normalize_data(data, feature_cols, scaler=scaler)
 
@@ -122,15 +127,20 @@ def predict_symbol(
     with torch.no_grad():
         pred_scaled = model(x).cpu().numpy().flatten()
 
-    # Denormalize predictions (close is the target column)
+    # Denormalize predictions
     close_idx = feature_cols.index("close")
-    pred_prices = denormalize_data(pred_scaled, scaler, close_idx)
+    pred_values = denormalize_data(pred_scaled, scaler, close_idx)
+
+    # Phase 1: Convert log-returns → absolute prices
+    if predict_returns and last_close_price is not None:
+        pred_prices = returns_to_price(pred_values, last_close_price)
+    else:
+        pred_prices = pred_values
+
     return pred_prices
 
 
-# ---------------------------------------------------------------------------
-# Save Predictions
-# ---------------------------------------------------------------------------
+# --- Save Predictions --------------------------------------------------------
 
 def save_predictions(
     engine,
@@ -190,10 +200,16 @@ def infer_one_hour(
         if data is None:
             continue
 
+        # Phase 1: Get the last close price for returns→price conversion
+        predict_returns = metadata.get("predict_returns", False)
+        last_close_price = float(data["close"].iloc[-1]) if predict_returns else None
+
         # 3. Predict
         try:
             pred_prices = predict_symbol(
                 model, scaler, data, FEATURE_COLUMNS, device,
+                predict_returns=predict_returns,
+                last_close_price=last_close_price,
             )
         except Exception as exc:
             logger.error("  [%d/%d] %s: prediction failed: %s", idx, len(symbols), symbol, exc)

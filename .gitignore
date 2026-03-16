@@ -11,6 +11,7 @@ env/
 # Data files (quá lớn để commit)
 data/raw/
 data/processed/
+data/processed/
 
 # Model files
 models/*.pth

@@ -18,10 +18,13 @@ import pandas as pd
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from config.config import RAW_DATA_DIR, ORDER_BOOK_LIMIT, MONTHS_BACK
+from config.config import (
+    RAW_DATA_DIR, ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM,
+)
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
 from utils.exceptions import ExtractError
+from utils.storage import storage
 from utils.binance_utils import (
     get_ticker_24h,
     get_book_ticker,
@@ -38,42 +41,81 @@ from utils.data_utils import (
 )
 
 logger = get_logger(__name__)
-KLINES_MAX_WORKERS = 8
-ORDERBOOK_MAX_WORKERS = 8
+KLINES_MAX_WORKERS = PARALLELISM["klines_max_workers"]
+ORDERBOOK_MAX_WORKERS = PARALLELISM["orderbook_max_workers"]
+BULK_DOWNLOAD_WORKERS = PARALLELISM["bulk_download_workers"]
+BULK_SYMBOL_WORKERS = PARALLELISM["bulk_symbol_workers"]
+BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 
 
-# ---------------------------------------------------------------------------
-# Data Vision (bulk download)
-# ---------------------------------------------------------------------------
+# --- Data Vision (parallel bulk download) ------------------------------------
 def download_data_vision(
     symbol: str,
     months: list[tuple[int, int]],
 ) -> int | None:
-    """Download klines from Data Vision month-by-month, append to CSV.
+    """Download klines from Data Vision with parallel month downloads.
 
-    Months are processed in chronological order so each write uses
-    the fast append path (no re-read of entire CSV).  Peak memory =
-    1 month (~44K rows) instead of all months concatenated (~1.58M).
+    1. Download all months concurrently using ThreadPoolExecutor (I/O-bound)
+    2. Collect DataFrames in memory
+    3. Sort chronologically and batch merge into a single Parquet file
 
     Returns total record count, or None if no data was downloaded.
     """
-    csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-    months_ok = 0
-    total = 0
-
-    for year, month in sorted(months):
-        df = download_klines_month(symbol, year, month)
-        if df is not None:
-            total = merge_and_save_klines(csv_path, df)
-            months_ok += 1
-            logger.debug("%s %d-%02d: %d records", symbol, year, month, len(df))
-
-    if months_ok == 0:
+    sorted_months = sorted(months)
+    n_months = len(sorted_months)
+    if n_months == 0:
         return None
 
+    # --- Phase 1: parallel download ---
+    downloaded: dict[tuple[int, int], pd.DataFrame] = {}
+    max_workers = min(BULK_DOWNLOAD_WORKERS, n_months)
+    completed = 0
+
+    def _download_one(ym: tuple[int, int]) -> tuple[tuple[int, int], pd.DataFrame | None]:
+        y, m = ym
+        return ym, download_klines_month(symbol, y, m)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {pool.submit(_download_one, ym): ym for ym in sorted_months}
+        for future in as_completed(future_map):
+            completed += 1
+            pct = completed / n_months * 100
+            try:
+                ym, df = future.result()
+                if df is not None:
+                    downloaded[ym] = df
+                    logger.info(
+                        "[%s] download %d/%d (%5.1f%%) — %d-%02d: %s rows",
+                        symbol, completed, n_months, pct,
+                        ym[0], ym[1], f"{len(df):,}",
+                    )
+                else:
+                    logger.warning(
+                        "[%s] download %d/%d (%5.1f%%) — %d-%02d: FAILED",
+                        symbol, completed, n_months, pct, ym[0], ym[1],
+                    )
+            except Exception as exc:
+                ym = future_map[future]
+                logger.error(
+                    "[%s] download %d/%d — %d-%02d: ERROR %s",
+                    symbol, completed, n_months, ym[0], ym[1], exc,
+                )
+
+    if not downloaded:
+        return None
+
+    # --- Phase 2: batch merge (sorted chronologically) ---
+    logger.info("[%s] Merging %d months into Parquet...", symbol, len(downloaded))
+    object_key = f"{symbol}.parquet"
+    total = 0
+
+    for ym in sorted_months:
+        if ym in downloaded:
+            total = merge_and_save_klines(object_key, downloaded[ym])
+
     logger.info(
-        "%s: %d/%d months OK, %s total records",
-        symbol, months_ok, len(months), f"{total:,}",
+        "[%s] Bulk complete: %d/%d months OK, %s total records",
+        symbol, len(downloaded), n_months, f"{total:,}",
     )
     return total
 
@@ -82,35 +124,62 @@ def extract_bulk(
     symbols: list[str] | None = None,
     months_back: int = MONTHS_BACK,
 ) -> dict[str, int]:
-    """Force re-download all symbols from Data Vision.
+    """Force re-download all symbols from Data Vision (parallel).
 
-    Returns {symbol: record_count} instead of DataFrames to avoid
-    holding ~78M rows in memory simultaneously.
+    Each symbol writes to its own Parquet file on MinIO, so multiple
+    symbols can be processed concurrently without conflict.
+
+    Returns {symbol: record_count}.
     """
     symbols = symbols or SYMBOLS
     target_months = get_target_months(months_back)
     results: dict[str, int] = {}
+    n_symbols = len(symbols)
 
     logger.info(
-        "=== Bulk Extract: %d symbols, %d months ===",
-        len(symbols), months_back,
+        "=== Bulk Extract: %d symbols × %d months (workers=%d) ===",
+        n_symbols, months_back, min(BULK_SYMBOL_WORKERS, n_symbols),
     )
 
-    for idx, symbol in enumerate(symbols, 1):
-        logger.info("[%d/%d] Bulk downloading %s", idx, len(symbols), symbol)
-        total = download_data_vision(symbol, target_months)
-        if total is not None:
-            results[symbol] = total
-        else:
-            logger.error("No Data Vision data for %s", symbol)
+    def _bulk_one(symbol: str) -> tuple[str, int | None]:
+        return symbol, download_data_vision(symbol, target_months)
+
+    completed = 0
+    max_workers = min(BULK_SYMBOL_WORKERS, n_symbols)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {
+            pool.submit(_bulk_one, sym): sym for sym in symbols
+        }
+        for future in as_completed(future_map):
+            completed += 1
+            symbol = future_map[future]
+            try:
+                sym, total = future.result()
+                if total is not None:
+                    results[sym] = total
+                    logger.info(
+                        "=== [%d/%d] %s: %s records ===",
+                        completed, n_symbols, sym, f"{total:,}",
+                    )
+                else:
+                    logger.error(
+                        "=== [%d/%d] %s: No Data Vision data ===",
+                        completed, n_symbols, sym,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "=== [%d/%d] %s: FAILED — %s ===",
+                    completed, n_symbols, symbol, exc,
+                )
 
     grand_total = sum(results.values())
     logger.info(
         "=== Bulk Extract complete: %d/%d symbols, %s records ===",
-        len(results), len(symbols), f"{grand_total:,}",
+        len(results), n_symbols, f"{grand_total:,}",
     )
 
-    # Keep snapshot data in sync with klines extract
+    # Keep snapshot data in sync
     trading = [
         s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"
     ]
@@ -124,9 +193,7 @@ def extract_bulk(
     return results
 
 
-# ---------------------------------------------------------------------------
-# REST API (incremental)
-# ---------------------------------------------------------------------------
+# --- REST API (incremental) --------------------------------------------------
 def extract_recent_klines(
     symbols: list[str],
     end_times: dict[str, int] | None = None,
@@ -162,8 +229,8 @@ def extract_recent_klines(
         if new_df is None or new_df.empty:
             return symbol, None, None
 
-        csv_path = RAW_DATA_DIR / f"{symbol}.csv"
-        total = merge_and_save_klines(csv_path, new_df)
+        object_key = f"{symbol}.parquet"
+        total = merge_and_save_klines(object_key, new_df)
         return symbol, new_df, total
 
     max_workers = min(KLINES_MAX_WORKERS, len(symbols))
@@ -193,9 +260,7 @@ def extract_recent_klines(
     return results
 
 
-# ---------------------------------------------------------------------------
-# Ticker 24h & Order Book
-# ---------------------------------------------------------------------------
+# --- Ticker 24h & Order Book -------------------------------------------------
 def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
     """Fetch ticker/24hr + bookTicker, append to CSV."""
     if not symbols:
@@ -258,10 +323,8 @@ def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
         "trade_count", "bid_price", "ask_price", "spread_pct",
     ]]
 
-    output_path = RAW_DATA_DIR / "ticker_24h.csv"
-    write_header = not output_path.exists()
-    merged.to_csv(output_path, mode="a", header=write_header, index=False)
-    logger.info("Saved ticker_24h (+%d records)", len(merged))
+    storage.append_csv_df(BUCKET_RAW, "ticker_24h.csv", merged)
+    logger.info("Saved ticker_24h to MinIO (+%d records)", len(merged))
     return merged
 
 
@@ -316,7 +379,7 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
             except Exception as exc:
                 logger.error("Order book future failed for %s: %s", symbol, exc)
 
-    # Small sleep after concurrent burst to stay polite with API limits
+    # Brief sleep to respect API rate limits
     sleep_between_requests()
 
     if not records:
@@ -324,16 +387,12 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
         return None
 
     df = pd.DataFrame(records)
-    output_path = RAW_DATA_DIR / "order_book_snapshot.csv"
-    write_header = not output_path.exists()
-    df.to_csv(output_path, mode="a", header=write_header, index=False)
-    logger.info("Saved order_book_snapshot (+%d records)", len(df))
+    storage.append_csv_df(BUCKET_RAW, "order_book_snapshot.csv", df)
+    logger.info("Saved order_book_snapshot to MinIO (+%d records)", len(df))
     return df
 
 
-# ---------------------------------------------------------------------------
-# Entry Points
-# ---------------------------------------------------------------------------
+# --- Entry Points ------------------------------------------------------------
 def extract_daily(
     symbols: list[str] | None = None,
 ) -> None:
@@ -349,7 +408,7 @@ def extract_daily(
         len(symbols), len(trading), len(non_trading),
     )
 
-    # REST API incremental klines (all symbols including BREAK)
+    # REST API incremental klines (all symbols)
     recent = extract_recent_klines(symbols)
     if recent:
         total = sum(len(df) for df in recent.values())
@@ -358,15 +417,13 @@ def extract_daily(
             len(recent), len(symbols), f"{total:,}",
         )
 
-    # Ticker & order book for same TRADING symbols as extract scope
+    # Ticker & order book for TRADING symbols
     extract_ticker_24h(trading)
     extract_order_book_snapshot(trading)
     logger.info("=== Daily Extract finished ===")
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+# --- CLI ---------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Extract data from Binance (bulk Data Vision or daily REST API)",

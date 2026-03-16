@@ -1,25 +1,17 @@
-# =============================================================================
-# Train Script - Huấn luyện model LSTM với PyTorch (Per-Coin Weights)
-# =============================================================================
-# Chức năng:
-#   1. Chuẩn bị dữ liệu: Query N nến gần nhất từ PostgreSQL (cho 1 symbol)
-#   2. Xây dựng model: LSTM 2 layers, hidden_size=128, dropout=0.2
-#   3. Training: Adam optimizer, MSE loss, early stopping (patience=10)
-#   4. Evaluation: Tính MAE, RMSE, MAPE trên test set
-#   5. Lưu model: Xuất file .pth riêng cho mỗi coin
-#
-# Model Architecture:
-#   - Input: (batch_size, 600, 7) — 600 nến 1-min (10h), 7 features
-#   - LSTM: 2 layers, hidden_size=128, dropout=0.2
-#   - Output: (batch_size, 60) — predicted close price 60 phút tiếp theo
-#
-# Mỗi coin có weight riêng: lstm_{symbol}_{version}.pth
-# Mặc định chỉ train BTCUSDT, override qua --symbols.
-#
-# Sử dụng:
-#   python scripts/train.py --epochs 50 --batch-size 32
-#   python scripts/train.py --symbols BTCUSDT ETHUSDT
-# =============================================================================
+"""LSTM training script for the Crypto Data Pipeline.
+
+Workflow:
+    1. Query the N most recent candles from PostgreSQL (per symbol)
+    2. Normalize features with StandardScaler
+    3. Create sliding-window sequences (input_window -> output_window)
+    4. Train LSTM with early stopping and directional loss
+    5. Evaluate on test set (MAE, RMSE, MAPE)
+    6. Save model weights (.pth) and scaler per coin
+
+Usage:
+    python scripts/train.py --epochs 50 --batch-size 32
+    python scripts/train.py --symbols BTCUSDT ETHUSDT
+"""
 
 from __future__ import annotations
 
@@ -38,11 +30,12 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from config.config import MODEL_CONFIG, FEATURE_COLUMNS, MODELS_DIR
-from models.model import LSTMModel, save_model
+from models.model import LSTMModel, DirectionalLoss, save_model
 from utils.data_utils import (
     validate_data,
     normalize_data,
     create_sequences,
+    compute_log_returns,
 )
 from utils.db_utils import get_engine
 from utils.logger import get_logger
@@ -68,9 +61,7 @@ class CryptoDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 
-# ---------------------------------------------------------------------------
-# Data Preparation — chỉ load N nến gần nhất cho 1 symbol
-# ---------------------------------------------------------------------------
+# --- Data Preparation --------------------------------------------------------
 
 def prepare_data_for_symbol(
     symbol: str,
@@ -85,7 +76,7 @@ def prepare_data_for_symbol(
     engine = get_engine()
     feature_str = ", ".join(FEATURE_COLUMNS)
 
-    # Chỉ load n_candles nến gần nhất — tránh load toàn bộ lịch sử
+    # Only load the most recent n_candles to avoid full history scan
     query = (
         f"SELECT symbol, timestamp, {feature_str} "
         f"FROM klines "
@@ -110,6 +101,12 @@ def prepare_data_for_symbol(
     df = validate_data(df, FEATURE_COLUMNS)
     if len(df) == 0:
         raise ValueError(f"[{symbol}] No valid data after validation")
+
+    # Phase 1: Convert to log-returns before normalization
+    if MODEL_CONFIG.get("predict_returns", False):
+        logger.info("[%s] Converting to log-returns (predict_returns=True)", symbol)
+        df = compute_log_returns(df, price_cols=["open", "high", "low", "close"])
+        logger.info("[%s] After log-returns: %s rows", symbol, f"{len(df):,}")
 
     # Normalize features
     scaled_df, scaler = normalize_data(df, FEATURE_COLUMNS)
@@ -162,8 +159,9 @@ def train_one_epoch(
     criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    grad_clip: float = MODEL_CONFIG.get("grad_clip_max_norm", 1.0),
 ) -> float:
-    """Run one training epoch. Returns average loss."""
+    """Run one training epoch with gradient clipping. Returns average loss."""
     model.train()
     total_loss = 0.0
     n_batches = 0
@@ -176,6 +174,10 @@ def train_one_epoch(
         predictions = model(X_batch)
         loss = criterion(predictions, y_batch)
         loss.backward()
+
+        # Gradient clipping to prevent exploding gradients
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
         optimizer.step()
 
         total_loss += loss.item()
@@ -190,7 +192,7 @@ def evaluate(
     criterion: nn.Module,
     device: torch.device,
 ) -> dict[str, float]:
-    """Evaluate model on a dataset. Returns dict with loss, MAE, RMSE, MAPE."""
+    """Evaluate model. Returns dict with loss, MAE, RMSE, MAPE, direction_accuracy."""
     model.eval()
     total_loss = 0.0
     all_preds, all_targets = [], []
@@ -217,11 +219,21 @@ def evaluate(
     mask = np.abs(targets) > 1e-8
     mape = float(np.mean(np.abs((preds[mask] - targets[mask]) / targets[mask])) * 100) if mask.any() else 0.0
 
+    # Direction accuracy: % of timesteps where predicted direction matches actual
+    if preds.shape[1] >= 2:
+        pred_diff = np.diff(preds, axis=1)
+        target_diff = np.diff(targets, axis=1)
+        correct_dir = (np.sign(pred_diff) == np.sign(target_diff))
+        dir_acc = float(correct_dir.mean() * 100)
+    else:
+        dir_acc = 0.0
+
     return {
         "loss": total_loss / n_batches,
         "mae": mae,
         "rmse": rmse,
         "mape": mape,
+        "direction_accuracy": dir_acc,
     }
 
 
@@ -250,8 +262,18 @@ def train_symbol(
 
     # Initialize model
     model = LSTMModel().to(device)
-    criterion = nn.MSELoss()
+
+    # Phase 1: Use DirectionalLoss instead of plain MSE
+    dir_weight = MODEL_CONFIG.get("directional_loss_weight", 0.3)
+    criterion = DirectionalLoss(directional_weight=dir_weight)
+    logger.info("[%s] Using DirectionalLoss (weight=%.2f)", symbol, dir_weight)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+    # Learning rate scheduler: reduce LR when validation plateaus
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=5,
+    )
 
     total_params = sum(p.numel() for p in model.parameters())
     logger.info("[%s] Model params: %s", symbol, f"{total_params:,}")
@@ -272,11 +294,17 @@ def train_symbol(
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_metrics = evaluate(model, val_loader, criterion, device)
 
+        # Step LR scheduler
+        scheduler.step(val_metrics["loss"])
+        current_lr = optimizer.param_groups[0]["lr"]
+
         logger.info(
-            "[%s] Epoch %d/%d | train_loss=%.6f | val_loss=%.6f | MAE=%.6f | RMSE=%.6f | MAPE=%.4f%%",
+            "[%s] Epoch %d/%d | train=%.6f | val=%.6f | MAE=%.6f | RMSE=%.6f "
+            "| DirAcc=%.1f%% | lr=%.2e",
             symbol, epoch, args.epochs, train_loss,
             val_metrics["loss"], val_metrics["mae"],
-            val_metrics["rmse"], val_metrics["mape"],
+            val_metrics["rmse"], val_metrics["direction_accuracy"],
+            current_lr,
         )
 
         # Early stopping check
@@ -292,11 +320,12 @@ def train_symbol(
                 metadata={
                     "symbol": symbol,
                     "model_version": args.model_version,
+                    "predict_returns": MODEL_CONFIG.get("predict_returns", False),
                     "epoch": epoch,
                     "val_loss": val_metrics["loss"],
                     "val_mae": val_metrics["mae"],
                     "val_rmse": val_metrics["rmse"],
-                    "val_mape": val_metrics["mape"],
+                    "val_direction_accuracy": val_metrics["direction_accuracy"],
                 },
             )
         else:
@@ -314,9 +343,9 @@ def train_symbol(
     # Evaluate on test set
     test_metrics = evaluate(model, test_loader, criterion, device)
     logger.info(
-        "[%s] Test Results: loss=%.6f | MAE=%.6f | RMSE=%.6f | MAPE=%.4f%%",
+        "[%s] Test: loss=%.6f | MAE=%.6f | RMSE=%.6f | DirAcc=%.1f%%",
         symbol, test_metrics["loss"], test_metrics["mae"],
-        test_metrics["rmse"], test_metrics["mape"],
+        test_metrics["rmse"], test_metrics["direction_accuracy"],
     )
 
     return test_metrics
@@ -359,9 +388,9 @@ def main() -> None:
     logger.info("=" * 60)
     for symbol, metrics in results.items():
         logger.info(
-            "%s: loss=%.6f | MAE=%.6f | RMSE=%.6f | MAPE=%.4f%%",
+            "%s: loss=%.6f | MAE=%.6f | RMSE=%.6f | DirAcc=%.1f%%",
             symbol, metrics["loss"], metrics["mae"],
-            metrics["rmse"], metrics["mape"],
+            metrics["rmse"], metrics["direction_accuracy"],
         )
 
     failed = set(args.symbols) - set(results.keys())

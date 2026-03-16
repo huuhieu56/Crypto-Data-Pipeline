@@ -1,6 +1,8 @@
-# =============================================================================
-# Binance API Utilities - Crypto Data Pipeline
-# =============================================================================
+"""Binance API utilities for the Crypto Data Pipeline.
+
+Provides HTTP request helpers, endpoint wrappers, klines parsing,
+Data Vision bulk downloads, and paginated REST API fetching.
+"""
 
 from __future__ import annotations
 
@@ -26,9 +28,7 @@ from utils.exceptions import APIRequestError
 
 logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Core request helper
-# ---------------------------------------------------------------------------
+# --- Core Request Helper -----------------------------------------------------
 
 _DEFAULT_MAX_RETRIES = 3
 _RETRY_BACKOFF = 2  # seconds, doubles after each retry
@@ -94,9 +94,7 @@ def make_request_raw(
     return _request_with_retry(url, params, timeout, max_retries).content
 
 
-# ---------------------------------------------------------------------------
-# Endpoint wrappers
-# ---------------------------------------------------------------------------
+# --- Endpoint Wrappers -------------------------------------------------------
 
 def get_klines(symbol: str, interval: str = "1m", **kwargs) -> list:
     """Fetch candlestick data from /api/v3/klines."""
@@ -125,9 +123,7 @@ def sleep_between_requests() -> None:
     time.sleep(API_SLEEP)
 
 
-# ---------------------------------------------------------------------------
-# Klines parsing
-# ---------------------------------------------------------------------------
+# --- Klines Parsing ----------------------------------------------------------
 
 
 def parse_klines_df(raw_data: list[list], symbol: str):
@@ -144,9 +140,7 @@ def parse_klines_df(raw_data: list[list], symbol: str):
     return df
 
 
-# ---------------------------------------------------------------------------
-# Data Vision (bulk download 1 month)
-# ---------------------------------------------------------------------------
+# --- Data Vision (monthly bulk download) ------------------------------------
 
 def download_klines_month(symbol: str, year: int, month: int):
     """Download 1-month klines ZIP from Data Vision. Returns DataFrame or None."""
@@ -174,7 +168,7 @@ def download_klines_month(symbol: str, year: int, month: int):
             )
 
     raw_ts = df["open_time"].astype("int64")
-    # Data Vision may provide microsecond (>1e15) or millisecond timestamps
+    # Data Vision may use microsecond (>1e15) or millisecond timestamps
     divisor = 1000 if raw_ts.iloc[0] > 1e15 else 1
 
     df["open_time"] = pd.to_datetime(raw_ts // divisor, unit="ms")
@@ -185,9 +179,7 @@ def download_klines_month(symbol: str, year: int, month: int):
     return df
 
 
-# ---------------------------------------------------------------------------
-# REST API — paginated klines fetch
-# ---------------------------------------------------------------------------
+# --- REST API (paginated klines fetch) --------------------------------------
 
 def fetch_klines_paginated(
     symbol: str,
