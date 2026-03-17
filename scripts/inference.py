@@ -2,7 +2,7 @@
 
 Workflow:
     1. Load model weights (lstm_{symbol}_{version}.pth) per coin
-    2. Fetch the most recent candles from PostgreSQL
+    2. Fetch the most recent candles from ClickHouse
     3. Predict close prices for the next output_window minutes
     4. Save predictions to the database
 
@@ -29,8 +29,8 @@ import torch
 
 from config.config import MODEL_CONFIG, FEATURE_COLUMNS, MODELS_DIR
 from models.model import load_model
-from utils.data_utils import normalize_data, denormalize_data, compute_log_returns, returns_to_price
-from utils.db_utils import get_engine, upsert_on_conflict_nothing
+from utils.ml_utils import normalize_data, denormalize_data, compute_log_returns, returns_to_price
+from utils.db_utils import get_ch_client, ch_query_df, ch_insert_df
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -41,7 +41,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 def get_latest_data(
-    engine,
     symbol: str,
     cutoff_time: datetime | None = None,
     input_window: int = MODEL_CONFIG["input_window"],
@@ -72,7 +71,7 @@ def get_latest_data(
         f"ORDER BY timestamp DESC "
         f"LIMIT {n_rows}"
     )
-    df = pd.read_sql(query, engine)
+    df = ch_query_df(query)
 
     if len(df) < n_rows:
         logger.warning(
@@ -142,19 +141,10 @@ def predict_symbol(
 
 # --- Save Predictions --------------------------------------------------------
 
-def save_predictions(
-    engine,
-    predictions_df: pd.DataFrame,
-) -> None:
-    """Insert predictions into PostgreSQL using pandas upsert."""
-    predictions_df.to_sql(
-        "predictions",
-        engine,
-        if_exists="append",
-        index=False,
-        method=upsert_on_conflict_nothing,
-    )
-    logger.info("Saved %d prediction rows", len(predictions_df))
+def save_predictions(predictions_df: pd.DataFrame) -> None:
+    """Insert predictions into ClickHouse."""
+    inserted = ch_insert_df("predictions", predictions_df)
+    logger.info("Saved %d prediction rows", inserted)
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +152,6 @@ def save_predictions(
 # ---------------------------------------------------------------------------
 
 def infer_one_hour(
-    engine,
     predicted_at: datetime,
     symbols: list[str],
     model_version: str,
@@ -196,7 +185,7 @@ def infer_one_hour(
             continue
 
         # 2. Get data up to the hour boundary
-        data = get_latest_data(engine, symbol, cutoff_time=predicted_at)
+        data = get_latest_data(symbol, cutoff_time=predicted_at)
         if data is None:
             continue
 
@@ -263,12 +252,10 @@ def main() -> None:
     logger.info("Device: %s", device)
 
     symbols = args.symbols
-    engine = get_engine()
 
     # Lấy latest kline → snap to hour
-    anchor_row = pd.read_sql(
-        "SELECT MAX(timestamp) AS latest FROM klines WHERE symbol = 'BTCUSDT'",
-        engine,
+    anchor_row = ch_query_df(
+        "SELECT max(timestamp) AS latest FROM klines WHERE symbol = 'BTCUSDT'"
     )
     if anchor_row.empty or pd.isna(anchor_row["latest"].iloc[0]):
         logger.error("No klines data found — cannot determine anchor time")
@@ -282,12 +269,11 @@ def main() -> None:
     slots = [current_hour - timedelta(hours=h) for h in range(args.backfill_hours - 1, -1, -1)]
 
     # Check which slots already have predictions
-    existing = pd.read_sql(
+    existing = ch_query_df(
         f"SELECT DISTINCT predicted_at FROM predictions "
         f"WHERE symbol = '{symbols[0]}' "
         f"  AND predicted_at >= '{slots[0]}' "
-        f"  AND predicted_at <= '{slots[-1]}'",
-        engine,
+        f"  AND predicted_at <= '{slots[-1]}'"
     )
     existing_set = set(pd.to_datetime(existing["predicted_at"]).dt.to_pydatetime())
 
@@ -311,13 +297,13 @@ def main() -> None:
             slot.strftime("%H"),
             (slot + timedelta(hours=1)).strftime("%H"),
         )
-        rows = infer_one_hour(engine, slot, symbols, args.model_version, device)
+        rows = infer_one_hour(slot, symbols, args.model_version, device)
         all_rows.extend(rows)
 
     # Save all predictions
     if all_rows:
         predictions_df = pd.DataFrame(all_rows)
-        save_predictions(engine, predictions_df)
+        save_predictions(predictions_df)
         logger.info(
             "=== Inference complete: %d slots × %d symbols = %d predictions ===",
             len(missing_slots), len(symbols), len(all_rows),

@@ -1,35 +1,36 @@
+"""Transform raw klines → features with technical indicators.
+
+Reads daily partitions from MinIO, computes RSI(14) and MACD(12,26,9)
+using ClickHouse context for warm-up, outputs with DB column names.
+
+Usage:
+    python scripts/transform.py
+    python scripts/transform.py --symbols BTCUSDT ETHUSDT
+    python scripts/transform.py --full-rebuild
+"""
+
 import sys
 from pathlib import Path
-import json
 import argparse
-import shutil
+import gc
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
-from pyspark.sql.types import (
-    DoubleType,
-    LongType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
 import pandas as pd
 import numpy as np
-import pyarrow.parquet as pq
+import pyarrow as pa
 
 from config.config import (
-    RAW_DATA_DIR, PROCESSED_DATA_DIR, MINIO_CONFIG,
-    PARALLELISM, INDICATOR_CONTEXT_ROWS,
+    MINIO_CONFIG, PARALLELISM, INDICATOR_CONTEXT_ROWS,
+    PARTITION_DATE_FORMAT, KLINES_COLUMNS,
 )
 from config.symbols import SYMBOLS
 from utils.logger import get_logger
 from utils.exceptions import TransformError
-from utils.db_utils import get_spark_session
-from utils.data_utils import get_last_timestamp
+from utils.data_utils import partition_key, delta_key
+from utils.db_utils import ch_query_df, get_last_timestamps
 from utils.storage import storage
 
 logger = get_logger(__name__)
@@ -37,57 +38,16 @@ logger = get_logger(__name__)
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
 TRANSFORM_MAX_WORKERS = PARALLELISM["transform_max_workers"]
-_S3A_RAW = f"s3a://{BUCKET_RAW}"
-_S3A_PROCESSED = f"s3a://{BUCKET_PROCESSED}"
 
-INPUT_SCHEMA = StructType([
-    StructField("open_time", TimestampType(), True),
-    StructField("open", DoubleType(), True),
-    StructField("high", DoubleType(), True),
-    StructField("low", DoubleType(), True),
-    StructField("close", DoubleType(), True),
-    StructField("volume", DoubleType(), True),
-    StructField("close_time", TimestampType(), True),
-    StructField("quote_volume", DoubleType(), True),
-    StructField("trades", LongType(), True),
-    StructField("taker_buy_base", DoubleType(), True),
-    StructField("taker_buy_quote", DoubleType(), True),
-    StructField("symbol", StringType(), True),
-])
-
-# StructType.add() mutates in-place; must create a separate copy
-OUTPUT_SCHEMA = StructType(list(INPUT_SCHEMA.fields) + [
-    StructField("RSI", DoubleType(), True),
-    StructField("MACD", DoubleType(), True),
-    StructField("MACD_signal", DoubleType(), True),
-])
-
-FULL_FEATURES_PATH = PROCESSED_DATA_DIR / "features.parquet"
-DELTA_FEATURES_PATH = PROCESSED_DATA_DIR / "features_delta.parquet"
-TRANSFORM_STATE_KEY = "transform_state.json"
-
-# S3A paths (Spark reads/writes via S3A protocol)
-S3A_FULL_FEATURES = f"{_S3A_PROCESSED}/features.parquet"
-S3A_DELTA_FEATURES = f"{_S3A_PROCESSED}/features_delta.parquet"
+# Output columns — already in DB column names
+OUTPUT_COLUMNS = [
+    "symbol", "timestamp", "open", "high", "low", "close",
+    "volume", "quote_volume", "trades", "rsi_14", "macd", "macd_signal",
+]
 
 
-def _parquet_has_data_files(parquet_path: Path) -> bool:
-    if not parquet_path.exists() or not parquet_path.is_dir():
-        return False
-    for p in parquet_path.rglob("*"):
-        if p.is_file() and (p.name.startswith("part-") or p.suffix == ".parquet"):
-            return True
-    return False
-
-
-def _cleanup_empty_parquet_dir(parquet_path: Path) -> None:
-    if parquet_path.exists() and parquet_path.is_dir() and not _parquet_has_data_files(parquet_path):
-        logger.warning("Removing empty parquet directory: %s", parquet_path)
-        shutil.rmtree(parquet_path, ignore_errors=True)
-
-
-def calculate_indicators_pandas(pdf: pd.DataFrame) -> pd.DataFrame:
-    """Tinh RSI(14) va MACD(12,26,9) cho mot group symbol."""
+def calculate_indicators(pdf: pd.DataFrame) -> pd.DataFrame:
+    """Compute RSI(14) and MACD(12,26,9). Output uses DB column names."""
     pdf = pdf.sort_values("open_time")
     close = pdf["close"]
 
@@ -97,264 +57,257 @@ def calculate_indicators_pandas(pdf: pd.DataFrame) -> pd.DataFrame:
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     loss = loss.replace(0, np.nan)
     rs = gain / loss
-    pdf["RSI"] = 100 - (100 / (1 + rs))
+    pdf["rsi_14"] = 100 - (100 / (1 + rs))
 
     # MACD (12, 26, 9)
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
-    pdf["MACD"] = ema12 - ema26
-    pdf["MACD_signal"] = pdf["MACD"].ewm(span=9, adjust=False).mean()
+    pdf["macd"] = ema12 - ema26
+    pdf["macd_signal"] = pdf["macd"].ewm(span=9, adjust=False).mean()
 
     # Fill NaN
     pdf = pdf.ffill().bfill().fillna(0)
     return pdf
 
 
-def _load_transform_state() -> dict[str, str]:
-    """Load transform state from MinIO."""
-    try:
-        if storage.object_exists(BUCKET_PROCESSED, TRANSFORM_STATE_KEY):
-            data = storage.download_json(BUCKET_PROCESSED, TRANSFORM_STATE_KEY)
-            if isinstance(data, dict):
-                return {str(k): str(v) for k, v in data.items()}
-    except Exception as exc:
-        logger.warning("Cannot read transform state from MinIO (%s), rebuilding state", exc)
-    return {}
+def _get_ch_context(symbol: str, n_rows: int = INDICATOR_CONTEXT_ROWS) -> pd.DataFrame:
+    """Query the last n_rows klines from ClickHouse for indicator warm-up.
 
-
-def _save_transform_state(state: dict[str, str]) -> None:
-    """Save transform state to MinIO."""
-    storage.upload_json(BUCKET_PROCESSED, TRANSFORM_STATE_KEY, state)
-    logger.debug("Saved transform state to MinIO (%d symbols)", len(state))
-
-
-def _bootstrap_transform_state_from_features(spark: SparkSession) -> dict[str, str]:
-    if storage.object_exists(BUCKET_PROCESSED, TRANSFORM_STATE_KEY):
-        return _load_transform_state()
-
-    if not _parquet_has_data_files(FULL_FEATURES_PATH):
-        _cleanup_empty_parquet_dir(FULL_FEATURES_PATH)
-        return {}
-
-    logger.info("Bootstrapping transform state from existing features.parquet")
-    try:
-        state_df = (
-            spark.read.parquet(str(FULL_FEATURES_PATH))
-            .groupBy("symbol")
-            .max("open_time")
-            .toPandas()
-        )
-    except Exception as exc:
-        logger.warning("Cannot bootstrap state from features.parquet (%s)", exc)
-        return {}
-
-    state: dict[str, str] = {}
-    if not state_df.empty:
-        for _, row in state_df.iterrows():
-            symbol = row["symbol"]
-            ts_val = row["max(open_time)"]
-            if pd.notna(symbol) and pd.notna(ts_val):
-                state[str(symbol)] = pd.Timestamp(ts_val).isoformat()
-
-    if state:
-        _save_transform_state(state)
-    return state
-
-
-def _read_symbol_incremental(symbol: str, last_processed: pd.Timestamp | None) -> pd.DataFrame:
-    """Read new rows for a symbol from its Parquet file on MinIO.
-
-    Downloads from MinIO and filters for rows after last_processed,
-    plus INDICATOR_CONTEXT_ROWS for warm-up context.
+    Returns DataFrame with raw column names (open_time as timestamp alias).
     """
-    key = f"{symbol}.parquet"
+    try:
+        df = ch_query_df(
+            f"SELECT timestamp AS open_time, open, high, low, close, volume, "
+            f"quote_volume, trades "
+            f"FROM klines "
+            f"WHERE symbol = '{symbol}' "
+            f"ORDER BY timestamp DESC "
+            f"LIMIT {n_rows}"
+        )
+        if df.empty:
+            return df
+        df["open_time"] = pd.to_datetime(df["open_time"])
+        return df.sort_values("open_time").reset_index(drop=True)
+    except Exception as exc:
+        logger.debug("ClickHouse context unavailable for %s: %s", symbol, exc)
+        return pd.DataFrame()
+
+
+def _read_today_partition(symbol: str, date_str: str) -> pd.DataFrame:
+    """Read today's raw partition from MinIO."""
+    key = partition_key(symbol, date_str)
     if not storage.object_exists(BUCKET_RAW, key):
         return pd.DataFrame()
 
-    try:
-        table = storage.download_parquet(BUCKET_RAW, key)
-        pdf = table.to_pandas()
-        pdf["open_time"] = pd.to_datetime(pdf["open_time"], utc=False)
-        pdf = pdf.sort_values("open_time").drop_duplicates(
-            subset=["open_time"], keep="last",
-        )
-
-        if last_processed is not None:
-            newer_mask = pdf["open_time"] > last_processed
-            if not newer_mask.any():
-                return pd.DataFrame()
-
-            first_new_idx = newer_mask.idxmax()
-            start_idx = max(0, first_new_idx - INDICATOR_CONTEXT_ROWS)
-            pdf = pdf.iloc[start_idx:].reset_index(drop=True)
-    except Exception as exc:
-        raise TransformError(
-            f"Cannot read Parquet from MinIO for {symbol}: {exc}",
-        ) from exc
-
-    if pdf.empty:
-        return pdf
-
-    pdf["symbol"] = symbol
-    pdf = pdf.dropna(subset=["open_time"])
-    return pdf
+    table = storage.download_parquet(BUCKET_RAW, key)
+    pdf = table.to_pandas()
+    del table
+    pdf["open_time"] = pd.to_datetime(pdf["open_time"], utc=False)
+    return pdf.sort_values("open_time").reset_index(drop=True)
 
 
-def _transform_full_rebuild(spark: SparkSession, symbols: list[str]) -> str | None:
-    logger.info("Full transform rebuild: reading all raw Parquet from MinIO")
+def _process_symbol(
+    symbol: str,
+    date_str: str,
+    last_loaded_ts: pd.Timestamp | None,
+) -> pd.DataFrame | None:
+    """Read raw partition + CH context, compute indicators, return new rows only."""
 
-    s3a_paths = [f"{_S3A_RAW}/{s}.parquet" for s in symbols
-                 if storage.object_exists(BUCKET_RAW, f"{s}.parquet")]
+    # 1. Read today's partition
+    raw_df = _read_today_partition(symbol, date_str)
+    if raw_df.empty:
+        return None
 
-    if not s3a_paths:
-        raise TransformError(f"No klines Parquet files found in MinIO bucket {BUCKET_RAW}")
+    # 2. Filter to only rows after last loaded timestamp
+    if last_loaded_ts is not None:
+        # Normalize tz: last_loaded_ts is tz-aware (UTC), open_time may be tz-naive
+        cmp_ts = last_loaded_ts.tz_localize(None) if last_loaded_ts.tzinfo else last_loaded_ts
+        new_mask = raw_df["open_time"] > cmp_ts
+        if not new_mask.any():
+            return None
 
-    df = spark.read.parquet(*s3a_paths)
-    df = df.filter(col("open_time").isNotNull())
+    # 3. Get context from ClickHouse for indicator warm-up
+    ctx_df = _get_ch_context(symbol)
 
-    processed_df = df.groupBy("symbol").applyInPandas(
-        calculate_indicators_pandas,
-        schema=OUTPUT_SCHEMA,
-    )
+    # 4. Concat context + raw for indicator calculation
+    raw_cols = list(raw_df.columns)
+    if not ctx_df.empty:
+        ctx_trimmed = ctx_df[[c for c in raw_cols if c in ctx_df.columns]].copy()
+        combined = pd.concat([ctx_trimmed, raw_df], ignore_index=True)
+    else:
+        combined = raw_df.copy()
 
-    processed_df.write.mode("overwrite").partitionBy("symbol").parquet(S3A_FULL_FEATURES)
-    processed_df.write.mode("overwrite").partitionBy("symbol").parquet(S3A_DELTA_FEATURES)
+    combined = combined.sort_values("open_time").drop_duplicates(
+        subset=["open_time"], keep="last"
+    ).reset_index(drop=True)
+    combined["symbol"] = symbol
 
-    max_state = (
-        processed_df.groupBy("symbol")
-        .max("open_time")
-        .toPandas()
-    )
-    state: dict[str, str] = {}
-    if not max_state.empty:
-        for _, row in max_state.iterrows():
-            symbol = row["symbol"]
-            ts_val = row["max(open_time)"]
-            if pd.notna(symbol) and pd.notna(ts_val):
-                state[str(symbol)] = pd.Timestamp(ts_val).isoformat()
-    _save_transform_state(state)
+    # 5. Calculate indicators
+    combined = calculate_indicators(combined)
 
-    logger.info("Transform complete (full rebuild)")
-    return S3A_FULL_FEATURES
+    # 6. Keep only new rows (after last loaded)
+    if last_loaded_ts is not None:
+        cmp_ts = last_loaded_ts.tz_localize(None) if last_loaded_ts.tzinfo else last_loaded_ts
+        combined = combined[combined["open_time"] > cmp_ts]
+
+    if combined.empty:
+        return None
+
+    # 7. Rename to DB column names and select output columns
+    combined = combined.rename(columns={"open_time": "timestamp"})
+
+    out_cols = [c for c in OUTPUT_COLUMNS if c in combined.columns]
+    return combined[out_cols].copy()
 
 
-def transform_data(spark: SparkSession, symbols: list[str] | None = None) -> str | None:
-    """Incremental transform: chi tinh indicator cho phan du lieu moi."""
+def _upload_delta(symbol: str, pdf: pd.DataFrame, date_str: str) -> None:
+    """Upload processed delta to MinIO."""
+    key = delta_key(symbol, date_str)
+
+    for c in pdf.columns:
+        if pd.api.types.is_datetime64_any_dtype(pdf[c]):
+            pdf[c] = pdf[c].dt.as_unit("us")
+
+    table = pa.Table.from_pandas(pdf, preserve_index=False)
+    storage.upload_parquet(BUCKET_PROCESSED, key, table)
+
+
+# --- Main Entry Points -------------------------------------------------------
+
+def transform_data(
+    symbols: list[str] | None = None,
+    date_str: str | None = None,
+) -> str | None:
+    """Incremental transform: compute indicators for new data only."""
     symbols = symbols or SYMBOLS
-    logger.info("Incremental transform started for %d symbols", len(symbols))
+    date_str = date_str or datetime.now(timezone.utc).strftime(PARTITION_DATE_FORMAT)
 
-    state = _bootstrap_transform_state_from_features(spark)
-    if not state and _parquet_has_data_files(FULL_FEATURES_PATH):
-        state = _load_transform_state()
+    logger.info("Transform started: %d symbols, date=%s", len(symbols), date_str)
 
-    if not state and not _parquet_has_data_files(FULL_FEATURES_PATH):
-        logger.info("No valid transform state/parquet found -> full rebuild")
-        return _transform_full_rebuild(spark, symbols)
+    # Batch query: get last loaded timestamps from ClickHouse
+    last_ts_map = get_last_timestamps(symbols)
 
-    # --- Parallel symbol processing (read + indicators) ---
-    all_incremental: list[pd.DataFrame] = []
-    next_state = dict(state)
+    total_new_rows = 0
+    symbols_updated = 0
     n_symbols = len(symbols)
-
-    def _process_symbol(symbol: str) -> tuple[str, pd.DataFrame | None]:
-        """Read + compute indicators for one symbol (thread-safe)."""
-        raw_state = state.get(symbol)
-        last_processed = pd.to_datetime(raw_state) if raw_state else None
-
-        symbol_df = _read_symbol_incremental(symbol, last_processed)
-        if symbol_df.empty:
-            return symbol, None
-
-        calculated = calculate_indicators_pandas(symbol_df)
-        if last_processed is not None:
-            calculated = calculated[calculated["open_time"] > last_processed]
-
-        if calculated.empty:
-            return symbol, None
-
-        return symbol, calculated
-
     max_workers = min(TRANSFORM_MAX_WORKERS, n_symbols)
-    completed = 0
+
+    def _do_symbol(symbol: str) -> tuple[str, pd.DataFrame | None]:
+        raw_ts = last_ts_map.get(symbol)
+        last_loaded = pd.to_datetime(raw_ts, unit="ms", utc=True) if raw_ts else None
+        return symbol, _process_symbol(symbol, date_str, last_loaded)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {
-            pool.submit(_process_symbol, sym): sym for sym in symbols
-        }
+        future_map = {pool.submit(_do_symbol, sym): sym for sym in symbols}
         for future in as_completed(future_map):
-            completed += 1
             sym = future_map[future]
             try:
-                symbol, calculated = future.result()
-                if calculated is not None:
-                    all_incremental.append(calculated)
-                    next_state[symbol] = pd.Timestamp(calculated["open_time"].max()).isoformat()
-                    logger.info(
-                        "[Transform %d/%d] %s: +%s rows",
-                        completed, n_symbols, symbol, f"{len(calculated):,}",
-                    )
-                else:
-                    logger.debug(
-                        "[Transform %d/%d] %s: no new data",
-                        completed, n_symbols, sym,
-                    )
+                symbol, result_df = future.result()
+                if result_df is not None and not result_df.empty:
+                    _upload_delta(symbol, result_df, date_str)
+                    symbols_updated += 1
+                    n_rows = len(result_df)
+                    total_new_rows += n_rows
+                    logger.info("[Transform] %s: +%s rows", symbol, f"{n_rows:,}")
+                    del result_df
             except Exception as exc:
-                logger.error(
-                    "[Transform %d/%d] %s: ERROR — %s",
-                    completed, n_symbols, sym, exc,
-                )
+                logger.error("[Transform] %s: ERROR — %s", sym, exc)
 
-    if not all_incremental:
+    if total_new_rows == 0:
         logger.info("No new rows to transform")
         return None
 
-    incremental_pdf = pd.concat(all_incremental, ignore_index=True)
-    incremental_pdf = incremental_pdf[[f.name for f in OUTPUT_SCHEMA.fields]]
+    logger.info(
+        "Transform complete: %s new rows across %d symbols",
+        f"{total_new_rows:,}", symbols_updated,
+    )
+    return "features_delta/"
 
-    incremental_sdf = spark.createDataFrame(incremental_pdf, schema=OUTPUT_SCHEMA)
 
-    logger.info("Writing transformed delta rows to MinIO")
-    incremental_sdf.write.mode("overwrite").partitionBy("symbol").parquet(S3A_DELTA_FEATURES)
+def transform_full_rebuild(symbols: list[str] | None = None) -> str | None:
+    """Full rebuild: re-process all symbols from all raw partitions."""
+    symbols = symbols or SYMBOLS
+    logger.info("Full transform rebuild: %d symbols", len(symbols))
 
-    logger.info("Appending transformed rows to MinIO features")
-    # Check if full features exist on MinIO
-    existing_features = len(storage.list_objects(BUCKET_PROCESSED, "features.parquet/")) > 0
-    full_mode = "append" if existing_features else "overwrite"
-    incremental_sdf.write.mode(full_mode).partitionBy("symbol").parquet(S3A_FULL_FEATURES)
+    total_rows = 0
+    for idx, symbol in enumerate(symbols, 1):
+        # List all partition files for this symbol
+        prefix = f"klines/{symbol}/"
+        keys = storage.list_objects(BUCKET_RAW, prefix)
+        parquet_keys = sorted(k for k in keys if k.endswith(".parquet"))
 
-    _save_transform_state(next_state)
+        if not parquet_keys:
+            continue
 
-    logger.info("Transform complete: %s new rows", f"{len(incremental_pdf):,}")
-    return S3A_DELTA_FEATURES
+        # Read and concat all partitions
+        dfs = []
+        for key in parquet_keys:
+            try:
+                table = storage.download_parquet(BUCKET_RAW, key)
+                dfs.append(table.to_pandas())
+                del table
+            except Exception as exc:
+                logger.error("[Rebuild] %s/%s: %s", symbol, key, exc)
+
+        if not dfs:
+            continue
+
+        pdf = pd.concat(dfs, ignore_index=True)
+        del dfs
+
+        pdf["open_time"] = pd.to_datetime(pdf["open_time"], utc=False)
+        pdf = pdf.sort_values("open_time").drop_duplicates(
+            subset=["open_time"], keep="last"
+        ).reset_index(drop=True)
+        pdf["symbol"] = symbol
+
+        # Calculate indicators
+        pdf = calculate_indicators(pdf)
+
+        # Rename and select output columns
+        pdf = pdf.rename(columns={"open_time": "timestamp"})
+        out_cols = [c for c in OUTPUT_COLUMNS if c in pdf.columns]
+        pdf = pdf[out_cols]
+
+        # Upload as single features file (for full rebuild)
+        for c in pdf.columns:
+            if pd.api.types.is_datetime64_any_dtype(pdf[c]):
+                pdf[c] = pdf[c].dt.as_unit("us")
+
+        table = pa.Table.from_pandas(pdf, preserve_index=False)
+        storage.upload_parquet(BUCKET_PROCESSED, f"features/{symbol}.parquet", table)
+
+        rows = len(pdf)
+        total_rows += rows
+        logger.info("[Rebuild %d/%d] %s: %s rows", idx, len(symbols), symbol, f"{rows:,}")
+
+        del pdf
+        gc.collect()
+
+    if total_rows == 0:
+        raise TransformError("No raw data found for rebuild")
+
+    logger.info("Transform complete (full rebuild): %s total rows", f"{total_rows:,}")
+    return "features/"
 
 
 # --- CLI ---------------------------------------------------------------------
-def _build_parser() -> "argparse.ArgumentParser":
 
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Transform raw klines CSV → features Parquet",
+        description="Transform raw klines → features Parquet",
     )
     parser.add_argument(
-        "--symbols",
-        nargs="+",
-        metavar="SYM",
-        default=None,
-        help="process only these symbols (default: all in SYMBOLS list)",
+        "--symbols", nargs="+", metavar="SYM", default=None,
+        help="process only these symbols",
     )
     parser.add_argument(
-        "--verify",
-        action="store_true",
-        help="run verification query after transform (disabled by default for speed)",
+        "--full-rebuild", action="store_true",
+        help="force full rebuild from all raw data",
     )
     parser.add_argument(
-        "--no-verify",
-        action="store_true",
-        help="deprecated: kept for backward compatibility; verification is already off by default",
-    )
-    parser.add_argument(
-        "--full-rebuild",
-        action="store_true",
-        help="force full rebuild of features.parquet from all raw CSV files",
+        "--date", type=str, default=None,
+        help="process specific date (YYYY-MM-DD, default: today)",
     )
     return parser
 
@@ -365,30 +318,17 @@ if __name__ == "__main__":
 
     logger.info("Transform started — symbols=%d", len(active_symbols))
 
-    spark = get_spark_session("CryptoTransform")
     exit_code = 0
     try:
         if args.full_rebuild:
-            out_file = _transform_full_rebuild(spark, symbols=active_symbols)
+            out_path = transform_full_rebuild(symbols=active_symbols)
         else:
-            out_file = transform_data(spark, symbols=active_symbols)
-
-        should_verify = args.verify and not args.no_verify
-        if out_file and should_verify:
-            logger.info("--- Verifying result ---")
-            res = spark.read.parquet(out_file)
-            display_cols = ["open_time", "symbol", "close", "trades", "RSI", "MACD", "MACD_signal"]
-            res.select(display_cols).show(5)
-            logger.info("Total records: %s", f"{res.count():,}")
-
+            out_path = transform_data(symbols=active_symbols, date_str=args.date)
     except TransformError as exc:
         logger.error("Transform failed: %s", exc)
         exit_code = 1
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
         exit_code = 1
-    finally:
-        spark.stop()
-        logger.info("SparkSession stopped")
 
     raise SystemExit(exit_code)

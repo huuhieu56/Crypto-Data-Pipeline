@@ -31,13 +31,13 @@ from torch.utils.data import Dataset, DataLoader
 
 from config.config import MODEL_CONFIG, FEATURE_COLUMNS, MODELS_DIR
 from models.model import LSTMModel, DirectionalLoss, save_model
-from utils.data_utils import (
+from utils.ml_utils import (
     validate_data,
     normalize_data,
     create_sequences,
     compute_log_returns,
 )
-from utils.db_utils import get_engine
+from utils.db_utils import ch_query_df
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -68,12 +68,11 @@ def prepare_data_for_symbol(
     batch_size: int = MODEL_CONFIG["batch_size"],
     n_candles: int = MODEL_CONFIG["n_candles_to_load"],
 ) -> tuple[DataLoader, DataLoader, DataLoader, object]:
-    """Query N nến gần nhất từ PostgreSQL cho 1 symbol, build DataLoaders.
+    """Query N nến gần nhất từ ClickHouse cho 1 symbol, build DataLoaders.
 
     Returns:
         (train_loader, val_loader, test_loader, scaler)
     """
-    engine = get_engine()
     feature_str = ", ".join(FEATURE_COLUMNS)
 
     # Only load the most recent n_candles to avoid full history scan
@@ -88,7 +87,7 @@ def prepare_data_for_symbol(
     )
 
     logger.info("[%s] Querying %d latest candles...", symbol, n_candles)
-    df = pd.read_sql(query, engine)
+    df = ch_query_df(query)
 
     if len(df) == 0:
         raise ValueError(f"[{symbol}] No data returned from query")

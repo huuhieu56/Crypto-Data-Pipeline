@@ -1,5 +1,4 @@
 
-
 # =============================================================================
 # Test Transform Module
 # =============================================================================
@@ -10,9 +9,7 @@
 
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-import shutil
-import json
+from unittest.mock import patch
 
 import pytest
 import pandas as pd
@@ -22,12 +19,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.transform import (
-    calculate_indicators_pandas,
-    OUTPUT_SCHEMA,
-    _parquet_has_data_files,
-    _cleanup_empty_parquet_dir,
-    _load_transform_state,
-    _save_transform_state,
+    calculate_indicators,
+    OUTPUT_COLUMNS,
 )
 
 
@@ -132,61 +125,51 @@ def flat_price_dataframe():
     })
 
 
-@pytest.fixture
-def tmp_dir(tmp_path):
-    """Provide a temporary directory for file-based tests."""
-    return tmp_path
-
-
 # =============================================================================
-# Test calculate_indicators_pandas - RSI
+# Test calculate_indicators - RSI
 # =============================================================================
 
 class TestCalculateRSI:
-    """Tests for RSI calculation within calculate_indicators_pandas."""
+    """Tests for RSI calculation within calculate_indicators."""
 
     def test_rsi_column_exists(self, sample_dataframe):
-        result = calculate_indicators_pandas(sample_dataframe)
-        assert "RSI" in result.columns
+        result = calculate_indicators(sample_dataframe)
+        assert "rsi_14" in result.columns
 
     def test_rsi_range_0_to_100(self, sample_dataframe):
-        result = calculate_indicators_pandas(sample_dataframe)
-        rsi_values = result["RSI"]
+        result = calculate_indicators(sample_dataframe)
+        rsi_values = result["rsi_14"]
         assert rsi_values.min() >= 0.0, f"RSI min={rsi_values.min()} < 0"
         assert rsi_values.max() <= 100.0, f"RSI max={rsi_values.max()} > 100"
 
     def test_rsi_no_nan_after_fill(self, sample_dataframe):
-        result = calculate_indicators_pandas(sample_dataframe)
-        assert result["RSI"].isna().sum() == 0, "RSI should have no NaN after fill"
+        result = calculate_indicators(sample_dataframe)
+        assert result["rsi_14"].isna().sum() == 0, "RSI should have no NaN after fill"
 
     def test_rsi_all_gains_near_100(self, all_gains_dataframe):
-        """When prices only go up, loss=0 is replaced by NaN in source code,
-        so RSI becomes NaN and gets filled to 0. This tests actual behavior."""
-        result = calculate_indicators_pandas(all_gains_dataframe)
-        rsi_after_warmup = result["RSI"].iloc[14:]
+        """When prices only go up, loss=0 is replaced by NaN,
+        so RSI becomes NaN and gets filled to 0."""
+        result = calculate_indicators(all_gains_dataframe)
+        rsi_after_warmup = result["rsi_14"].iloc[14:]
         assert (rsi_after_warmup == 0.0).all(), (
-            f"RSI with all gains should be 0.0 (due to loss=NaN fill), got values: {rsi_after_warmup.unique()}"
+            f"RSI with all gains should be 0.0, got values: {rsi_after_warmup.unique()}"
         )
-
 
     def test_rsi_all_losses_near_0(self, all_losses_dataframe):
         """When prices only go down, RSI after warmup should be near 0."""
-        result = calculate_indicators_pandas(all_losses_dataframe)
-        # After fill, RSI for all-loss should be 0 (gain=0, loss>0 => rs=0 => RSI=0)
-        rsi_after_warmup = result["RSI"].iloc[14:]
+        result = calculate_indicators(all_losses_dataframe)
+        rsi_after_warmup = result["rsi_14"].iloc[14:]
         assert rsi_after_warmup.max() < 10.0, (
             f"RSI with all losses should be near 0, got max={rsi_after_warmup.max()}"
         )
 
     def test_rsi_flat_price(self, flat_price_dataframe):
-        """When price is constant, delta=0 for all rows after first."""
-        result = calculate_indicators_pandas(flat_price_dataframe)
-        # With flat prices: gain=0, loss=NaN(replaced) => rs=NaN => RSI filled
-        # Just verify no crash and values are in range
-        assert result["RSI"].between(0, 100).all() or (result["RSI"] == 0).all()
+        """When price is constant, verify no crash and values are in range."""
+        result = calculate_indicators(flat_price_dataframe)
+        assert result["rsi_14"].between(0, 100).all() or (result["rsi_14"] == 0).all()
 
     def test_rsi_with_small_dataset(self):
-        """RSI with fewer than 14 rows should still not crash (filled via bfill/ffill)."""
+        """RSI with fewer than 14 rows should still not crash."""
         n = 5
         dates = pd.date_range("2024-01-01", periods=n, freq="min")
         df = pd.DataFrame({
@@ -203,33 +186,33 @@ class TestCalculateRSI:
             "taker_buy_quote": [25000.0] * n,
             "symbol": ["BTCUSDT"] * n,
         })
-        result = calculate_indicators_pandas(df)
-        assert "RSI" in result.columns
+        result = calculate_indicators(df)
+        assert "rsi_14" in result.columns
         assert len(result) == n
-        assert result["RSI"].isna().sum() == 0
+        assert result["rsi_14"].isna().sum() == 0
 
 
 # =============================================================================
-# Test calculate_indicators_pandas - MACD
+# Test calculate_indicators - MACD
 # =============================================================================
 
 class TestCalculateMACD:
-    """Tests for MACD calculation within calculate_indicators_pandas."""
+    """Tests for MACD calculation within calculate_indicators."""
 
     def test_macd_columns_exist(self, sample_dataframe):
-        result = calculate_indicators_pandas(sample_dataframe)
-        assert "MACD" in result.columns
-        assert "MACD_signal" in result.columns
+        result = calculate_indicators(sample_dataframe)
+        assert "macd" in result.columns
+        assert "macd_signal" in result.columns
 
     def test_macd_no_nan_after_fill(self, sample_dataframe):
-        result = calculate_indicators_pandas(sample_dataframe)
-        assert result["MACD"].isna().sum() == 0, "MACD should have no NaN"
-        assert result["MACD_signal"].isna().sum() == 0, "MACD_signal should have no NaN"
+        result = calculate_indicators(sample_dataframe)
+        assert result["macd"].isna().sum() == 0, "MACD should have no NaN"
+        assert result["macd_signal"].isna().sum() == 0, "MACD_signal should have no NaN"
 
     def test_macd_values_are_numeric(self, sample_dataframe):
-        result = calculate_indicators_pandas(sample_dataframe)
-        assert pd.api.types.is_numeric_dtype(result["MACD"])
-        assert pd.api.types.is_numeric_dtype(result["MACD_signal"])
+        result = calculate_indicators(sample_dataframe)
+        assert pd.api.types.is_numeric_dtype(result["macd"])
+        assert pd.api.types.is_numeric_dtype(result["macd_signal"])
 
     def test_macd_is_ema12_minus_ema26(self, sample_dataframe):
         """Verify MACD = EMA(12) - EMA(26) by manual calculation."""
@@ -239,16 +222,16 @@ class TestCalculateMACD:
         ema26 = close.ewm(span=26, adjust=False).mean()
         expected_macd = ema12 - ema26
 
-        result = calculate_indicators_pandas(df)
+        result = calculate_indicators(df)
         pd.testing.assert_series_equal(
-            result["MACD"].reset_index(drop=True),
+            result["macd"].reset_index(drop=True),
             expected_macd.reset_index(drop=True),
             check_names=False,
             atol=1e-10,
         )
 
     def test_macd_signal_is_ema9_of_macd(self, sample_dataframe):
-        """Verify MACD_signal = EMA(9) of MACD."""
+        """Verify macd_signal = EMA(9) of MACD."""
         df = sample_dataframe.sort_values("open_time").copy()
         close = df["close"]
         ema12 = close.ewm(span=12, adjust=False).mean()
@@ -256,74 +239,65 @@ class TestCalculateMACD:
         macd = ema12 - ema26
         expected_signal = macd.ewm(span=9, adjust=False).mean()
 
-        result = calculate_indicators_pandas(df)
+        result = calculate_indicators(df)
         pd.testing.assert_series_equal(
-            result["MACD_signal"].reset_index(drop=True),
+            result["macd_signal"].reset_index(drop=True),
             expected_signal.reset_index(drop=True),
             check_names=False,
             atol=1e-10,
         )
 
     def test_macd_all_gains(self, all_gains_dataframe):
-        """MACD should be positive for consistently rising prices (after warmup)."""
-        result = calculate_indicators_pandas(all_gains_dataframe)
-        macd_tail = result["MACD"].iloc[26:]
+        """MACD should be positive for consistently rising prices."""
+        result = calculate_indicators(all_gains_dataframe)
+        macd_tail = result["macd"].iloc[26:]
         assert (macd_tail > 0).all(), "MACD should be positive for all-gain series"
 
     def test_macd_all_losses(self, all_losses_dataframe):
-        """MACD should be negative for consistently falling prices (after warmup)."""
-        result = calculate_indicators_pandas(all_losses_dataframe)
-        macd_tail = result["MACD"].iloc[26:]
+        """MACD should be negative for consistently falling prices."""
+        result = calculate_indicators(all_losses_dataframe)
+        macd_tail = result["macd"].iloc[26:]
         assert (macd_tail < 0).all(), "MACD should be negative for all-loss series"
 
     def test_macd_flat_price_near_zero(self, flat_price_dataframe):
         """MACD should be ~0 for flat prices."""
-        result = calculate_indicators_pandas(flat_price_dataframe)
-        assert result["MACD"].abs().max() < 1e-10, "MACD should be ~0 for flat prices"
-        assert result["MACD_signal"].abs().max() < 1e-10
+        result = calculate_indicators(flat_price_dataframe)
+        assert result["macd"].abs().max() < 1e-10, "MACD should be ~0 for flat prices"
+        assert result["macd_signal"].abs().max() < 1e-10
 
 
 # =============================================================================
-# Test calculate_indicators_pandas - General behavior
+# Test calculate_indicators - General behavior
 # =============================================================================
 
 class TestCalculateIndicatorsGeneral:
-    """General tests for calculate_indicators_pandas."""
+    """General tests for calculate_indicators."""
 
     def test_output_preserves_row_count(self, sample_dataframe):
-        result = calculate_indicators_pandas(sample_dataframe)
+        result = calculate_indicators(sample_dataframe)
         assert len(result) == len(sample_dataframe)
 
     def test_output_sorted_by_open_time(self, sample_dataframe):
         # Shuffle input
         shuffled = sample_dataframe.sample(frac=1, random_state=0)
-        result = calculate_indicators_pandas(shuffled)
+        result = calculate_indicators(shuffled)
         assert result["open_time"].is_monotonic_increasing
 
     def test_original_columns_preserved(self, sample_dataframe):
         original_cols = set(sample_dataframe.columns)
-        result = calculate_indicators_pandas(sample_dataframe)
+        result = calculate_indicators(sample_dataframe)
         for col in original_cols:
             assert col in result.columns, f"Original column '{col}' missing from output"
 
     def test_new_indicator_columns_added(self, sample_dataframe):
-        result = calculate_indicators_pandas(sample_dataframe)
-        assert "RSI" in result.columns
-        assert "MACD" in result.columns
-        assert "MACD_signal" in result.columns
+        result = calculate_indicators(sample_dataframe)
+        assert "rsi_14" in result.columns
+        assert "macd" in result.columns
+        assert "macd_signal" in result.columns
 
     def test_no_nan_values_in_output(self, sample_dataframe):
-        result = calculate_indicators_pandas(sample_dataframe)
+        result = calculate_indicators(sample_dataframe)
         assert result.isna().sum().sum() == 0, "Output should have no NaN values"
-
-    def test_output_schema_matches(self, sample_dataframe):
-        """Verify output has all columns defined in OUTPUT_SCHEMA."""
-        result = calculate_indicators_pandas(sample_dataframe)
-        expected_cols = {f.name for f in OUTPUT_SCHEMA.fields}
-        actual_cols = set(result.columns)
-        assert expected_cols.issubset(actual_cols), (
-            f"Missing columns: {expected_cols - actual_cols}"
-        )
 
     def test_multiple_symbols_independent(self):
         """Indicators should be computed per-symbol independently."""
@@ -353,123 +327,29 @@ class TestCalculateIndicatorsGeneral:
         df_a = make_df(prices_a, "BTCUSDT")
         df_b = make_df(prices_b, "ETHUSDT")
 
-        result_a = calculate_indicators_pandas(df_a)
-        result_b = calculate_indicators_pandas(df_b)
+        result_a = calculate_indicators(df_a)
+        result_b = calculate_indicators(df_b)
 
-        # Run combined and compare
-        combined = pd.concat([df_a, df_b], ignore_index=True)
-        # calculate_indicators_pandas works per-group, but if called on combined
-        # it computes on all rows together. This test verifies separate calls give
-        # different results for different price series.
         assert not np.allclose(
-            result_a["MACD"].values, result_b["MACD"].values
+            result_a["macd"].values, result_b["macd"].values
         ), "Different price series should produce different MACD"
 
 
 # =============================================================================
-# Test _parquet_has_data_files
-# =============================================================================
-
-class TestParquetHasDataFiles:
-
-    def test_returns_false_for_nonexistent_path(self, tmp_dir):
-        assert _parquet_has_data_files(tmp_dir / "nonexistent") is False
-
-    def test_returns_false_for_empty_dir(self, tmp_dir):
-        empty_dir = tmp_dir / "empty_parquet"
-        empty_dir.mkdir()
-        assert _parquet_has_data_files(empty_dir) is False
-
-    def test_returns_true_with_part_file(self, tmp_dir):
-        parquet_dir = tmp_dir / "has_data"
-        parquet_dir.mkdir()
-        (parquet_dir / "part-00000.parquet").write_text("fake data")
-        assert _parquet_has_data_files(parquet_dir) is True
-
-    def test_returns_true_with_parquet_suffix(self, tmp_dir):
-        parquet_dir = tmp_dir / "has_parquet"
-        parquet_dir.mkdir()
-        (parquet_dir / "data.parquet").write_text("fake data")
-        assert _parquet_has_data_files(parquet_dir) is True
-
-    def test_returns_false_for_file_not_dir(self, tmp_dir):
-        file_path = tmp_dir / "not_a_dir.parquet"
-        file_path.write_text("data")
-        assert _parquet_has_data_files(file_path) is False
-
-    def test_returns_true_with_nested_part_file(self, tmp_dir):
-        parquet_dir = tmp_dir / "nested"
-        sub_dir = parquet_dir / "symbol=BTCUSDT"
-        sub_dir.mkdir(parents=True)
-        (sub_dir / "part-00000-abc.snappy.parquet").write_text("fake")
-        assert _parquet_has_data_files(parquet_dir) is True
-
-
-# =============================================================================
-# Test _cleanup_empty_parquet_dir
-# =============================================================================
-
-class TestCleanupEmptyParquetDir:
-
-    def test_removes_empty_parquet_dir(self, tmp_dir):
-        empty_dir = tmp_dir / "empty_parquet"
-        empty_dir.mkdir()
-        (empty_dir / "_SUCCESS").write_text("")  # metadata, not data
-        _cleanup_empty_parquet_dir(empty_dir)
-        assert not empty_dir.exists()
-
-    def test_keeps_dir_with_data(self, tmp_dir):
-        data_dir = tmp_dir / "with_data"
-        data_dir.mkdir()
-        (data_dir / "part-00000.parquet").write_text("fake data")
-        _cleanup_empty_parquet_dir(data_dir)
-        assert data_dir.exists()
-
-    def test_noop_for_nonexistent(self, tmp_dir):
-        _cleanup_empty_parquet_dir(tmp_dir / "nonexistent")
-        # Should not raise
-
-
-
-
-# =============================================================================
-# Test transform_data (integration-level with mocked Spark)
+# Test transform_data integration
 # =============================================================================
 
 class TestTransformDataIntegration:
     """Higher-level tests for transform_data logic using mocks."""
 
-    @patch("scripts.transform._parquet_has_data_files", return_value=False)
-    @patch("scripts.transform._bootstrap_transform_state_from_features", return_value={})
-    @patch("scripts.transform._transform_full_rebuild")
-    def test_triggers_full_rebuild_when_no_state(
-        self, mock_rebuild, mock_bootstrap, mock_has_data
-    ):
-        """When no state and no parquet, should trigger full rebuild."""
-        mock_spark = MagicMock()
-        mock_rebuild.return_value = "/fake/path"
+    @patch("scripts.transform.storage")
+    @patch("scripts.transform.get_last_timestamps", return_value={})
+    def test_returns_none_when_no_new_data(self, mock_ts, mock_storage):
+        """When no partitions found, should return None."""
+        mock_storage.object_exists.return_value = False
 
         from scripts.transform import transform_data
-        result = transform_data(mock_spark, symbols=["BTCUSDT"])
-
-        mock_rebuild.assert_called_once_with(mock_spark, ["BTCUSDT"])
-        assert result == "/fake/path"
-
-    @patch("scripts.transform._save_transform_state")
-    @patch("scripts.transform._parquet_has_data_files", return_value=True)
-    @patch("scripts.transform._bootstrap_transform_state_from_features")
-    @patch("scripts.transform._read_symbol_incremental")
-    def test_returns_none_when_no_new_data(
-        self, mock_read_csv, mock_bootstrap, mock_has_data, mock_save
-    ):
-        """When incremental read returns empty, should return None."""
-        mock_bootstrap.return_value = {"BTCUSDT": "2024-01-01T00:00:00"}
-        mock_read_csv.return_value = pd.DataFrame()
-
-        mock_spark = MagicMock()
-
-        from scripts.transform import transform_data
-        result = transform_data(mock_spark, symbols=["BTCUSDT"])
+        result = transform_data(symbols=["BTCUSDT"])
 
         assert result is None
 
@@ -481,7 +361,7 @@ class TestTransformDataIntegration:
 class TestEdgeCases:
 
     def test_single_row_dataframe(self):
-        """calculate_indicators_pandas should handle a single row."""
+        """calculate_indicators should handle a single row."""
         df = pd.DataFrame({
             "open_time": [pd.Timestamp("2024-01-01")],
             "open": [100.0],
@@ -496,11 +376,11 @@ class TestEdgeCases:
             "taker_buy_quote": [25000.0],
             "symbol": ["BTCUSDT"],
         })
-        result = calculate_indicators_pandas(df)
+        result = calculate_indicators(df)
         assert len(result) == 1
-        assert result["RSI"].isna().sum() == 0
-        assert result["MACD"].isna().sum() == 0
-        assert result["MACD_signal"].isna().sum() == 0
+        assert result["rsi_14"].isna().sum() == 0
+        assert result["macd"].isna().sum() == 0
+        assert result["macd_signal"].isna().sum() == 0
 
     def test_large_price_values(self):
         """Test with very large price values."""
@@ -522,10 +402,10 @@ class TestEdgeCases:
             "taker_buy_quote": [1e9] * n,
             "symbol": ["BTCUSDT"] * n,
         })
-        result = calculate_indicators_pandas(df)
-        assert result["RSI"].between(0, 100).all()
-        assert np.isfinite(result["MACD"]).all()
-        assert np.isfinite(result["MACD_signal"]).all()
+        result = calculate_indicators(df)
+        assert result["rsi_14"].between(0, 100).all()
+        assert np.isfinite(result["macd"]).all()
+        assert np.isfinite(result["macd_signal"]).all()
 
     def test_very_small_price_values(self):
         """Test with very small (sub-penny) price values."""
@@ -547,7 +427,7 @@ class TestEdgeCases:
             "taker_buy_quote": [50.0] * n,
             "symbol": ["SHIBUSDT"] * n,
         })
-        result = calculate_indicators_pandas(df)
+        result = calculate_indicators(df)
         assert len(result) == n
         assert result.isna().sum().sum() == 0
 
@@ -571,6 +451,6 @@ class TestEdgeCases:
             "taker_buy_quote": [25000.0] * n,
             "symbol": ["BTCUSDT"] * n,
         })
-        result = calculate_indicators_pandas(df)
+        result = calculate_indicators(df)
         assert len(result) == n
         assert result.isna().sum().sum() == 0

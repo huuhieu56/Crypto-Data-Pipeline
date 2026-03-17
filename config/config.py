@@ -23,31 +23,14 @@ RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- Database (PostgreSQL) ---------------------------------------------------
+# --- Database (ClickHouse) ---------------------------------------------------
 
-DB_CONFIG = {
-    "user": os.getenv("POSTGRES_USER", "crypto123az"),
-    "password": os.getenv("POSTGRES_PASSWORD", "crypto123"),
-    "host": os.getenv("POSTGRES_HOST", "localhost"),
-    "port": os.getenv("POSTGRES_PORT", "5432"),
-    "dbname": os.getenv("POSTGRES_DB", "crypto_db"),
-}
-
-DB_URL = (
-    f"postgresql+psycopg2://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
-    f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
-)
-
-JDBC_URL = (
-    f"jdbc:postgresql://{DB_CONFIG['host']}:{DB_CONFIG['port']}"
-    f"/{DB_CONFIG['dbname']}"
-)
-
-JDBC_PROPERTIES = {
-    "user": DB_CONFIG["user"],
-    "password": DB_CONFIG["password"],
-    "driver": "org.postgresql.Driver",
-    "batchsize": "10000",
+CH_CONFIG = {
+    "host": os.getenv("CLICKHOUSE_HOST", "localhost"),
+    "port": int(os.getenv("CLICKHOUSE_HTTP_PORT", "8123")),
+    "user": os.getenv("CLICKHOUSE_USER", "default"),
+    "password": os.getenv("CLICKHOUSE_PASSWORD", "crypto123"),
+    "database": os.getenv("CLICKHOUSE_DB", "crypto_db"),
 }
 
 # --- Binance API -------------------------------------------------------------
@@ -71,14 +54,6 @@ ORDER_BOOK_LIMIT = 100    # depth levels for order book
 API_TIMEOUT = 30          # seconds
 API_SLEEP = 0.1           # seconds between API calls
 MONTHS_BACK = 36          # 3-year historical window
-
-# --- Apache Spark -------------------------------------------------------------
-
-SPARK_CONFIG = {
-    "driver_memory": os.getenv("SPARK_DRIVER_MEMORY", "6g"),
-    "jdbc_package": "org.postgresql:postgresql:42.6.0",
-    "arrow_enabled": "true",
-}
 
 # --- MinIO Object Storage ----------------------------------------------------
 
@@ -106,6 +81,7 @@ PARALLELISM = {
 INDICATOR_CONTEXT_ROWS = 120        # warm-up rows for indicator calculation
 GAP_THRESHOLD_DAYS = 30             # pre_extract: gap → backfill threshold
 GAP_WARNING_DAYS = 1                # pre_extract: gap warning threshold
+PARTITION_DATE_FORMAT = "%Y-%m-%d"  # daily partition key format
 
 # --- Model Hyperparameters (LSTM) --------------------------------------------
 

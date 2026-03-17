@@ -15,16 +15,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
 import pandas as pd
+import pyarrow as pa
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.config import (
-    RAW_DATA_DIR, ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM,
+    ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM,
 )
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
 from utils.exceptions import ExtractError
 from utils.storage import storage
+from utils.db_utils import get_last_timestamps
+from utils.data_utils import partition_key, get_target_end, get_target_months
 from utils.binance_utils import (
     get_ticker_24h,
     get_book_ticker,
@@ -32,12 +35,6 @@ from utils.binance_utils import (
     fetch_klines_paginated,
     download_klines_month,
     sleep_between_requests,
-)
-from utils.data_utils import (
-    get_last_timestamp,
-    get_target_end,
-    get_target_months,
-    merge_and_save_klines,
 )
 
 logger = get_logger(__name__)
@@ -48,28 +45,43 @@ BULK_SYMBOL_WORKERS = PARALLELISM["bulk_symbol_workers"]
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 
 
+# --- Partition I/O -----------------------------------------------------------
+
+def _write_to_partition(symbol: str, new_df: pd.DataFrame) -> None:
+    """Append rows to today's daily partition on MinIO.
+
+    Daily partition is small (~1,440 rows max = ~100KB),
+    so download+concat+upload is fast.
+    """
+    key = partition_key(symbol)
+    new_table = pa.Table.from_pandas(new_df, preserve_index=False)
+
+    if storage.object_exists(BUCKET_RAW, key):
+        existing = storage.download_parquet(BUCKET_RAW, key)
+        table = pa.concat_tables([existing, new_table])
+    else:
+        table = new_table
+
+    storage.upload_parquet(BUCKET_RAW, key, table)
+
+
 # --- Data Vision (parallel bulk download) ------------------------------------
+
 def download_data_vision(
     symbol: str,
     months: list[tuple[int, int]],
 ) -> int | None:
     """Download klines from Data Vision with parallel month downloads.
 
-    1. Download all months concurrently using ThreadPoolExecutor (I/O-bound)
-    2. Collect DataFrames in memory
-    3. Sort chronologically and batch merge into a single Parquet file
-
+    Writes each month as a separate partition: klines/{SYMBOL}/{YYYY-MM}.parquet
     Returns total record count, or None if no data was downloaded.
     """
     sorted_months = sorted(months)
-    n_months = len(sorted_months)
-    if n_months == 0:
+    if not sorted_months:
         return None
 
-    # --- Phase 1: parallel download ---
     downloaded: dict[tuple[int, int], pd.DataFrame] = {}
-    max_workers = min(BULK_DOWNLOAD_WORKERS, n_months)
-    completed = 0
+    max_workers = min(BULK_DOWNLOAD_WORKERS, len(sorted_months))
 
     def _download_one(ym: tuple[int, int]) -> tuple[tuple[int, int], pd.DataFrame | None]:
         y, m = ym
@@ -78,44 +90,38 @@ def download_data_vision(
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         future_map = {pool.submit(_download_one, ym): ym for ym in sorted_months}
         for future in as_completed(future_map):
-            completed += 1
-            pct = completed / n_months * 100
+            ym = future_map[future]
             try:
                 ym, df = future.result()
                 if df is not None:
                     downloaded[ym] = df
                     logger.info(
-                        "[%s] download %d/%d (%5.1f%%) — %d-%02d: %s rows",
-                        symbol, completed, n_months, pct,
-                        ym[0], ym[1], f"{len(df):,}",
-                    )
-                else:
-                    logger.warning(
-                        "[%s] download %d/%d (%5.1f%%) — %d-%02d: FAILED",
-                        symbol, completed, n_months, pct, ym[0], ym[1],
+                        "[%s] %d-%02d: %s rows",
+                        symbol, ym[0], ym[1], f"{len(df):,}",
                     )
             except Exception as exc:
-                ym = future_map[future]
                 logger.error(
-                    "[%s] download %d/%d — %d-%02d: ERROR %s",
-                    symbol, completed, n_months, ym[0], ym[1], exc,
+                    "[%s] %d-%02d: ERROR %s",
+                    symbol, ym[0], ym[1], exc,
                 )
 
     if not downloaded:
         return None
 
-    # --- Phase 2: batch merge (sorted chronologically) ---
-    logger.info("[%s] Merging %d months into Parquet...", symbol, len(downloaded))
-    object_key = f"{symbol}.parquet"
+    # Write each month as a partition
     total = 0
-
     for ym in sorted_months:
-        if ym in downloaded:
-            total = merge_and_save_klines(object_key, downloaded[ym])
+        if ym not in downloaded:
+            continue
+        df = downloaded[ym]
+        key = f"klines/{symbol}/{ym[0]}-{ym[1]:02d}.parquet"
+        table = pa.Table.from_pandas(df, preserve_index=False)
+        storage.upload_parquet(BUCKET_RAW, key, table)
+        total += len(df)
 
     logger.info(
-        "[%s] Bulk complete: %d/%d months OK, %s total records",
-        symbol, len(downloaded), n_months, f"{total:,}",
+        "[%s] Bulk complete: %d/%d months, %s records",
+        symbol, len(downloaded), len(sorted_months), f"{total:,}",
     )
     return total
 
@@ -124,86 +130,50 @@ def extract_bulk(
     symbols: list[str] | None = None,
     months_back: int = MONTHS_BACK,
 ) -> dict[str, int]:
-    """Force re-download all symbols from Data Vision (parallel).
-
-    Each symbol writes to its own Parquet file on MinIO, so multiple
-    symbols can be processed concurrently without conflict.
-
-    Returns {symbol: record_count}.
-    """
+    """Force re-download all symbols from Data Vision (parallel)."""
     symbols = symbols or SYMBOLS
     target_months = get_target_months(months_back)
     results: dict[str, int] = {}
-    n_symbols = len(symbols)
 
     logger.info(
-        "=== Bulk Extract: %d symbols × %d months (workers=%d) ===",
-        n_symbols, months_back, min(BULK_SYMBOL_WORKERS, n_symbols),
+        "=== Bulk Extract: %d symbols × %d months ===",
+        len(symbols), months_back,
     )
 
     def _bulk_one(symbol: str) -> tuple[str, int | None]:
         return symbol, download_data_vision(symbol, target_months)
 
-    completed = 0
-    max_workers = min(BULK_SYMBOL_WORKERS, n_symbols)
-
+    max_workers = min(BULK_SYMBOL_WORKERS, len(symbols))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {
-            pool.submit(_bulk_one, sym): sym for sym in symbols
-        }
+        future_map = {pool.submit(_bulk_one, sym): sym for sym in symbols}
         for future in as_completed(future_map):
-            completed += 1
             symbol = future_map[future]
             try:
                 sym, total = future.result()
                 if total is not None:
                     results[sym] = total
-                    logger.info(
-                        "=== [%d/%d] %s: %s records ===",
-                        completed, n_symbols, sym, f"{total:,}",
-                    )
-                else:
-                    logger.error(
-                        "=== [%d/%d] %s: No Data Vision data ===",
-                        completed, n_symbols, sym,
-                    )
+                    logger.info("[%s] %s records", sym, f"{total:,}")
             except Exception as exc:
-                logger.error(
-                    "=== [%d/%d] %s: FAILED — %s ===",
-                    completed, n_symbols, symbol, exc,
-                )
+                logger.error("[%s] FAILED — %s", symbol, exc)
 
-    grand_total = sum(results.values())
-    logger.info(
-        "=== Bulk Extract complete: %d/%d symbols, %s records ===",
-        len(results), n_symbols, f"{grand_total:,}",
-    )
-
-    # Keep snapshot data in sync
-    trading = [
-        s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"
-    ]
+    # Snapshot data
+    trading = [s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"]
     extract_ticker_24h(trading)
     extract_order_book_snapshot(trading)
-    logger.info(
-        "Bulk snapshot complete — ticker/order_book for %d TRADING symbols",
-        len(trading),
-    )
 
     return results
 
 
 # --- REST API (incremental) --------------------------------------------------
+
 def extract_recent_klines(
     symbols: list[str],
     end_times: dict[str, int] | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Incremental klines update via REST API (target: now or break_date).
+    """Incremental klines update via REST API.
 
-    Args:
-        symbols: List of symbols to update.
-        end_times: Optional per-symbol end-time overrides (ms).
-                   If not given, each symbol uses get_target_end().
+    Uses batch ClickHouse query for last timestamps (1 query for all symbols).
+    Writes new rows to daily partitions on MinIO.
     """
     if not symbols:
         return {}
@@ -211,10 +181,13 @@ def extract_recent_klines(
     end_times = end_times or {}
     results: dict[str, pd.DataFrame] = {}
 
-    def _extract_one(symbol: str) -> tuple[str, pd.DataFrame | None, int | None]:
-        last_ts = get_last_timestamp(symbol)
+    # 1 batch query for all symbols instead of N file downloads
+    last_timestamps = get_last_timestamps(symbols)
+
+    def _extract_one(symbol: str) -> tuple[str, pd.DataFrame | None]:
+        last_ts = last_timestamps.get(symbol)
         if last_ts is None:
-            return symbol, None, None
+            return symbol, None
 
         if symbol in end_times:
             end_time = end_times[symbol]
@@ -223,15 +196,14 @@ def extract_recent_klines(
             end_time = int(target_end.timestamp() * 1000)
 
         if last_ts >= end_time:
-            return symbol, None, None
+            return symbol, None
 
         new_df = fetch_klines_paginated(symbol, last_ts, end_time)
         if new_df is None or new_df.empty:
-            return symbol, None, None
+            return symbol, None
 
-        object_key = f"{symbol}.parquet"
-        total = merge_and_save_klines(object_key, new_df)
-        return symbol, new_df, total
+        _write_to_partition(symbol, new_df)
+        return symbol, new_df
 
     max_workers = min(KLINES_MAX_WORKERS, len(symbols))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -242,25 +214,21 @@ def extract_recent_klines(
         for future in as_completed(future_map):
             idx, symbol = future_map[future]
             try:
-                symbol, new_df, total = future.result()
+                symbol, new_df = future.result()
+                if new_df is not None:
+                    results[symbol] = new_df
+                    logger.info(
+                        "[%d/%d] %s: +%d rows",
+                        idx, len(symbols), symbol, len(new_df),
+                    )
             except Exception as exc:
-                logger.error("[%d/%d] %s: extract failed: %s", idx, len(symbols), symbol, exc)
-                continue
-
-            if new_df is None or total is None:
-                logger.debug("[%d/%d] %s: no new klines", idx, len(symbols), symbol)
-                continue
-
-            logger.info(
-                "[%d/%d] %s: +%d new (%s total)",
-                idx, len(symbols), symbol, len(new_df), f"{total:,}",
-            )
-            results[symbol] = new_df
+                logger.error("[%d/%d] %s: %s", idx, len(symbols), symbol, exc)
 
     return results
 
 
 # --- Ticker 24h & Order Book -------------------------------------------------
+
 def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
     """Fetch ticker/24hr + bookTicker, append to CSV."""
     if not symbols:
@@ -324,7 +292,7 @@ def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
     ]]
 
     storage.append_csv_df(BUCKET_RAW, "ticker_24h.csv", merged)
-    logger.info("Saved ticker_24h to MinIO (+%d records)", len(merged))
+    logger.info("Saved ticker_24h (+%d records)", len(merged))
     return merged
 
 
@@ -340,20 +308,14 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
         try:
             data = get_order_book(symbol, limit=ORDER_BOOK_LIMIT)
 
-            bid_vol = 0.0
-            for b in data.get("bids", []):
-                try:
-                    bid_vol += float(b[1])
-                except (ValueError, IndexError):
-                    pass
-
-            ask_vol = 0.0
-            for a in data.get("asks", []):
-                try:
-                    ask_vol += float(a[1])
-                except (ValueError, IndexError):
-                    pass
-
+            bid_vol = sum(
+                float(b[1]) for b in data.get("bids", [])
+                if len(b) > 1 and _is_float(b[1])
+            )
+            ask_vol = sum(
+                float(a[1]) for a in data.get("asks", [])
+                if len(a) > 1 and _is_float(a[1])
+            )
             total = bid_vol + ask_vol
 
             return {
@@ -369,17 +331,15 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
 
     max_workers = min(ORDERBOOK_MAX_WORKERS, len(symbols))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {pool.submit(_extract_one, symbol): symbol for symbol in symbols}
+        future_map = {pool.submit(_extract_one, s): s for s in symbols}
         for future in as_completed(future_map):
-            symbol = future_map[future]
             try:
                 rec = future.result()
                 if rec is not None:
                     records.append(rec)
             except Exception as exc:
-                logger.error("Order book future failed for %s: %s", symbol, exc)
+                logger.error("Order book future failed: %s", exc)
 
-    # Brief sleep to respect API rate limits
     sleep_between_requests()
 
     if not records:
@@ -388,63 +348,56 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
 
     df = pd.DataFrame(records)
     storage.append_csv_df(BUCKET_RAW, "order_book_snapshot.csv", df)
-    logger.info("Saved order_book_snapshot to MinIO (+%d records)", len(df))
+    logger.info("Saved order_book_snapshot (+%d records)", len(df))
     return df
 
 
+def _is_float(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 # --- Entry Points ------------------------------------------------------------
-def extract_daily(
-    symbols: list[str] | None = None,
-) -> None:
+
+def extract_daily(symbols: list[str] | None = None) -> None:
     """Daily extract: REST API klines + ticker + order book."""
     symbols = symbols or SYMBOLS
-    trading = [
-        s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"
-    ]
-    non_trading = [s for s in symbols if s not in set(trading)]
+    trading = [s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"]
 
     logger.info(
-        "=== Daily Extract: %d symbols (%d TRADING, %d BREAK) ===",
-        len(symbols), len(trading), len(non_trading),
+        "=== Daily Extract: %d symbols (%d TRADING) ===",
+        len(symbols), len(trading),
     )
 
-    # REST API incremental klines (all symbols)
     recent = extract_recent_klines(symbols)
     if recent:
         total = sum(len(df) for df in recent.values())
-        logger.info(
-            "REST API complete — %d/%d symbols updated, %s new records",
-            len(recent), len(symbols), f"{total:,}",
-        )
+        logger.info("REST API: %d symbols updated, %s new records", len(recent), f"{total:,}")
 
-    # Ticker & order book for TRADING symbols
     extract_ticker_24h(trading)
     extract_order_book_snapshot(trading)
     logger.info("=== Daily Extract finished ===")
 
 
 # --- CLI ---------------------------------------------------------------------
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Extract data from Binance (bulk Data Vision or daily REST API)",
+        description="Extract data from Binance (bulk or daily)",
     )
     parser.add_argument(
-        "--mode",
-        choices=["daily", "bulk"],
-        default="daily",
-        help="daily = incremental REST API, bulk = full Data Vision (default: daily)",
+        "--mode", choices=["daily", "bulk"], default="daily",
+        help="daily = incremental REST API, bulk = full Data Vision",
     )
     parser.add_argument(
-        "--symbols",
-        nargs="+",
-        metavar="SYM",
-        default=None,
-        help="override symbols for klines + ticker + orderbook (e.g. --symbols BTCUSDT ETHUSDT)",
+        "--symbols", nargs="+", metavar="SYM", default=None,
+        help="override symbols list",
     )
     parser.add_argument(
-        "--months",
-        type=int,
-        default=MONTHS_BACK,
+        "--months", type=int, default=MONTHS_BACK,
         help=f"months of history for bulk mode (default: {MONTHS_BACK})",
     )
     return parser
@@ -454,11 +407,7 @@ def main() -> None:
     args = _build_parser().parse_args()
     symbols = args.symbols or SYMBOLS
 
-    logger.info(
-        "Extract started | mode=%s | symbols=%d",
-        args.mode,
-        len(symbols),
-    )
+    logger.info("Extract started | mode=%s | symbols=%d", args.mode, len(symbols))
 
     if args.mode == "bulk":
         extract_bulk(symbols, months_back=args.months)

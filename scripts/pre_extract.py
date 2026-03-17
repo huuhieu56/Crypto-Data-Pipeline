@@ -19,17 +19,17 @@ import pyarrow.parquet as pq
 from datetime import datetime, timezone
 
 from config.config import (
-    RAW_DATA_DIR, MONTHS_BACK, RAW_KLINES_COLUMNS, MINIO_CONFIG,
+    MONTHS_BACK, RAW_KLINES_COLUMNS, MINIO_CONFIG,
     GAP_THRESHOLD_DAYS, GAP_WARNING_DAYS,
 )
 from config.symbols import SYMBOLS, SYMBOLS_STATUS, BREAK_DATES
 from utils.logger import get_logger
 from utils.data_utils import (
-    get_last_timestamp,
     get_target_end,
     get_months_between,
     get_target_months,
 )
+from utils.db_utils import get_last_timestamps
 from utils.storage import storage
 
 logger = get_logger(__name__)
@@ -49,18 +49,17 @@ def _classify(symbols: list[str]) -> dict[str, dict]:
     """Classify each symbol → action + metadata."""
     plans: dict[str, dict] = {}
 
+    # Batch query: 1 ClickHouse call for all symbols
+    last_ts_map = get_last_timestamps(symbols)
+
     for symbol in symbols:
         target_end = get_target_end(symbol)
         target_end_ms = int(target_end.timestamp() * 1000)
         is_break = SYMBOLS_STATUS.get(symbol, "TRADING") != "TRADING"
-        last_ts = get_last_timestamp(symbol)
-        parquet_exists = storage.object_exists(BUCKET_RAW, f"{symbol}.parquet")
+        last_ts = last_ts_map.get(symbol)
 
         if last_ts is None:
-            if is_break:
-                action = _DONE_BREAK if parquet_exists else _PLACEHOLDER
-            else:
-                action = _BULK
+            action = _DONE_BREAK if is_break else _BULK
         elif last_ts >= target_end_ms:
             action = _DONE_BREAK if is_break else _UP_TO_DATE
         else:
@@ -79,7 +78,8 @@ def _classify(symbols: list[str]) -> dict[str, dict]:
 
 def _is_complete(symbol: str, target_end_ms: int) -> bool:
     """Check if symbol's data reaches target."""
-    last_ts = get_last_timestamp(symbol)
+    ts_map = get_last_timestamps([symbol])
+    last_ts = ts_map.get(symbol)
     return last_ts is not None and last_ts >= target_end_ms
 
 
@@ -103,15 +103,8 @@ def pre_extract(
         elif p["action"] == _DONE_BREAK:
             results[sym] = "done (BREAK)"
 
-    # --- Phase 2: BREAK placeholders ---
-    placeholders = [s for s, p in plans.items() if p["action"] == _PLACEHOLDER]
-    for sym in placeholders:
-        # Write empty Parquet file as placeholder
-        empty_df = pd.DataFrame(columns=list(RAW_KLINES_COLUMNS) + ["symbol"])
-        empty_table = pa.Table.from_pandas(empty_df, preserve_index=False)
-        storage.upload_parquet(BUCKET_RAW, f"{sym}.parquet", empty_table)
-        results[sym] = f"placeholder (break_date={BREAK_DATES.get(sym, '?')})"
-        logger.info("  %s — placeholder created", sym)
+    # --- Phase 2: Symbols with no data and not BREAK ---
+    # (BREAK symbols without data are already handled as _DONE_BREAK)
 
     # --- Phase 3: bulk (no CSV, TRADING) ---
     bulk_syms = [s for s, p in plans.items() if p["action"] == _BULK]
@@ -162,9 +155,11 @@ def pre_extract(
                 len(recent), f"{total:,}",
             )
 
+        updated_ts = get_last_timestamps(api_syms)
         for sym in api_syms:
-            if not _is_complete(sym, plans[sym]["target_end_ms"]):
-                gap = (plans[sym]["target_end_ms"] - (get_last_timestamp(sym) or 0)) / 1000 / 86_400
+            last = updated_ts.get(sym, 0)
+            if last < plans[sym]["target_end_ms"]:
+                gap = (plans[sym]["target_end_ms"] - last) / 1000 / 86_400
                 if gap >= GAP_WARNING_DAYS:
                     logger.warning(
                         "[Pre-Extract] %s — %.0f day(s) gap remains", sym, gap,

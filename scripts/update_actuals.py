@@ -18,9 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import text
-
-from utils.db_utils import get_engine
+from utils.db_utils import ch_command, ch_query_df
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,39 +28,65 @@ logger = get_logger(__name__)
 # Core logic
 # ---------------------------------------------------------------------------
 
-def update_actuals(engine) -> int:
+def update_actuals() -> int:
     """Update actual_close and error_pct for past predictions.
 
-    Uses a single SQL UPDATE ... FROM join between predictions and klines:
+    Uses ClickHouse ALTER TABLE ... UPDATE with a subquery join:
       - Matches on (symbol, target_time = timestamp)
-      - Only updates rows where actual_close IS NULL and target_time <= NOW()
+      - Only updates rows where actual_close IS NULL and target_time <= now()
       - error_pct = ABS(actual - predicted) / actual * 100
 
     Returns number of rows updated.
     """
-    update_sql = text("""
-        UPDATE predictions p
-        SET
-            actual_close = k.close,
-            error_pct    = CASE
-                WHEN k.close > 0
-                THEN ABS(k.close - p.predicted_close) / k.close * 100
-                ELSE NULL
-            END
-        FROM klines k
-        WHERE p.symbol      = k.symbol
-          AND p.target_time  = k.timestamp
-          AND p.actual_close IS NULL
-          AND p.target_time  <= NOW()
+    # First, find how many rows need updating
+    count_result = ch_query_df("""
+        SELECT count() AS cnt
+        FROM predictions p
+        WHERE p.actual_close IS NULL
+          AND p.target_time <= now()
+          AND EXISTS (
+              SELECT 1 FROM klines k
+              WHERE k.symbol = p.symbol AND k.timestamp = p.target_time
+          )
+    """)
+    to_update = int(count_result["cnt"].iloc[0]) if not count_result.empty else 0
+
+    if to_update == 0:
+        logger.info("No predictions to update")
+        return 0
+
+    # ClickHouse ALTER TABLE UPDATE
+    ch_command("""
+        ALTER TABLE predictions
+        UPDATE
+            actual_close = (
+                SELECT k.close FROM klines k
+                WHERE k.symbol = predictions.symbol
+                  AND k.timestamp = predictions.target_time
+                LIMIT 1
+            ),
+            error_pct = (
+                SELECT
+                    CASE WHEN k.close > 0
+                         THEN abs(k.close - predictions.predicted_close) / k.close * 100
+                         ELSE NULL
+                    END
+                FROM klines k
+                WHERE k.symbol = predictions.symbol
+                  AND k.timestamp = predictions.target_time
+                LIMIT 1
+            )
+        WHERE actual_close IS NULL
+          AND target_time <= now()
+          AND EXISTS (
+              SELECT 1 FROM klines k
+              WHERE k.symbol = predictions.symbol
+                AND k.timestamp = predictions.target_time
+          )
     """)
 
-    with engine.connect() as conn:
-        result = conn.execute(update_sql)
-        updated = result.rowcount
-        conn.commit()
-
-    logger.info("Updated %d predictions with actual prices", updated)
-    return updated
+    logger.info("Updated %d predictions with actual prices", to_update)
+    return to_update
 
 
 # ---------------------------------------------------------------------------
@@ -70,8 +94,7 @@ def update_actuals(engine) -> int:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    engine = get_engine()
-    updated = update_actuals(engine)
+    updated = update_actuals()
     logger.info("=== Update actuals complete: %d rows ===", updated)
 
 

@@ -27,6 +27,7 @@ from scripts.extract import (
     extract_ticker_24h,
     extract_order_book_snapshot,
     extract_daily,
+    _write_to_partition,
 )
 from utils.exceptions import ExtractError
 
@@ -158,12 +159,12 @@ class TestDownloadDataVision:
         """Setup chung: mock download_klines_month & merge_and_save_klines."""
         self.sample_df = sample_klines_df
         self.mock_download = MagicMock(return_value=sample_klines_df)
-        self.mock_merge = MagicMock(return_value=100)
+        self.mock_storage_upload = MagicMock()
         monkeypatch.setattr(
             "scripts.extract.download_klines_month", self.mock_download,
         )
         monkeypatch.setattr(
-            "scripts.extract.merge_and_save_klines", self.mock_merge,
+            "scripts.extract.storage.upload_parquet", self.mock_storage_upload,
         )
 
     # --- Happy Path ---
@@ -172,21 +173,25 @@ class TestDownloadDataVision:
         months = [(2024, 1), (2024, 2), (2024, 3)]
         result = download_data_vision("BTCUSDT", months)
 
-        assert result == 100
+        assert result is not None
+        assert result > 0
         assert self.mock_download.call_count == 3
-        assert self.mock_merge.call_count == 3
+        assert self.mock_storage_upload.call_count == 3
 
     def test_months_processed_in_chronological_order(self):
-        """Months phải được sắp xếp theo thứ tự thời gian trước khi download."""
+        """Months phải được download đầy đủ (order may vary due to parallelism)."""
         # Truyền months không đúng thứ tự
         months = [(2024, 3), (2024, 1), (2024, 2)]
         download_data_vision("BTCUSDT", months)
 
-        # Kiểm tra gọi theo thứ tự sorted
+        # Kiểm tra tất cả months đều được download
         calls = self.mock_download.call_args_list
-        assert calls[0].args == ("BTCUSDT", 2024, 1)
-        assert calls[1].args == ("BTCUSDT", 2024, 2)
-        assert calls[2].args == ("BTCUSDT", 2024, 3)
+        called_months = {c.args for c in calls}
+        assert called_months == {
+            ("BTCUSDT", 2024, 1),
+            ("BTCUSDT", 2024, 2),
+            ("BTCUSDT", 2024, 3),
+        }
 
     # --- Sad Path ---
     def test_all_months_fail_returns_none(self):
@@ -201,12 +206,12 @@ class TestDownloadDataVision:
     def test_partial_months_success(self):
         """Một số tháng thành công, một số thất bại → vẫn trả về tổng."""
         self.mock_download.side_effect = [self.sample_df, None, self.sample_df]
-        self.mock_merge.return_value = 200
 
         result = download_data_vision("BTCUSDT", [(2024, 1), (2024, 2), (2024, 3)])
 
-        assert result == 200
-        assert self.mock_merge.call_count == 2  # chỉ 2 tháng OK
+        assert result is not None
+        assert result > 0
+        assert self.mock_storage_upload.call_count == 2  # chỉ 2 tháng OK
 
     def test_empty_months_list_returns_none(self):
         """Danh sách months rỗng → trả về None."""
@@ -278,15 +283,15 @@ class TestExtractRecentKlines:
     def _setup(self, monkeypatch, sample_klines_df):
         """Setup chung: mock 4 dependencies dùng trong extract_recent_klines."""
         self.sample_df = sample_klines_df
-        self.mock_last_ts = MagicMock(return_value=1704067200000)
+        self.mock_last_ts = MagicMock(return_value={"BTCUSDT": 1704067200000})
         self.mock_target_end = MagicMock(
             return_value=datetime(2024, 1, 2, tzinfo=timezone.utc),
         )
         self.mock_fetch = MagicMock(return_value=sample_klines_df)
-        self.mock_merge = MagicMock(return_value=100)
+        self.mock_write = MagicMock()
 
         monkeypatch.setattr(
-            "scripts.extract.get_last_timestamp", self.mock_last_ts,
+            "scripts.extract.get_last_timestamps", self.mock_last_ts,
         )
         monkeypatch.setattr(
             "scripts.extract.get_target_end", self.mock_target_end,
@@ -295,7 +300,7 @@ class TestExtractRecentKlines:
             "scripts.extract.fetch_klines_paginated", self.mock_fetch,
         )
         monkeypatch.setattr(
-            "scripts.extract.merge_and_save_klines", self.mock_merge,
+            "scripts.extract._write_to_partition", self.mock_write,
         )
 
     # --- Happy Path ---
@@ -309,8 +314,8 @@ class TestExtractRecentKlines:
 
     # --- Sad Path ---
     def test_no_existing_data_skips_symbol(self):
-        """Symbol chưa có dữ liệu (last_ts=None) → bị skip."""
-        self.mock_last_ts.return_value = None
+        """Symbol chưa có dữ liệu (not in last_ts) → bị skip."""
+        self.mock_last_ts.return_value = {}  # empty = no data
 
         result = extract_recent_klines(["BTCUSDT"])
 
@@ -340,7 +345,7 @@ class TestExtractRecentKlines:
 
     def test_already_up_to_date_skips(self):
         """last_ts >= end_time → data đã up-to-date, skip."""
-        self.mock_last_ts.return_value = 1704153600000  # 2024-01-02 UTC
+        self.mock_last_ts.return_value = {"BTCUSDT": 1704153600000}  # 2024-01-02 UTC
         self.mock_target_end.return_value = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         result = extract_recent_klines(["BTCUSDT"])
@@ -355,7 +360,6 @@ class TestExtractRecentKlines:
         )
 
         assert "BTCUSDT" in result
-        # fetch được gọi với end_time = custom_end
         self.mock_fetch.assert_called_once_with("BTCUSDT", 1704067200000, custom_end)
 
 

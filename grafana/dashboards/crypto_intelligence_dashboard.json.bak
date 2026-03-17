@@ -24,8 +24,8 @@
   "panels": [
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -72,14 +72,31 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 0,
+          "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS coin,\n  round(t.quote_volume_24h / 1000000000, 2) AS volume_billion_usd\nFROM ticker_24h t\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT max(snapshot_time) FROM ticker_24h)\nORDER BY t.quote_volume_24h DESC\nLIMIT 10",
-          "refId": "A"
+          "rawSql": "SELECT\n  s.base_asset AS coin,\n  ROUND((t.quote_volume_24h::numeric / 1000000000), 2) AS volume_billion_usd\nFROM ticker_24h t\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h)\nORDER BY t.quote_volume_24h DESC\nLIMIT 10",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "title": "Top 10 Volume 24h (Billion USD)",
@@ -87,8 +104,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -138,13 +155,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 1,
+          "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  close AS price\nFROM klines\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
+          "rawSql": "SELECT\n  (timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  close AS price\nFROM klines\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
           "refId": "A"
         }
       ],
@@ -153,8 +170,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -225,11 +242,11 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 0,
+          "format": "table",
           "rawQuery": true,
           "rawSql": "SELECT\n  s.base_asset AS coin,\n  t.price_change_pct,\n  t.quote_volume_24h\nFROM ticker_24h t\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h)\n  AND t.price_change_pct > 0\nORDER BY t.price_change_pct DESC\nLIMIT 5",
           "refId": "A"
@@ -240,8 +257,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -312,11 +329,11 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 0,
+          "format": "table",
           "rawQuery": true,
           "rawSql": "SELECT\n  s.base_asset AS coin,\n  t.price_change_pct,\n  t.quote_volume_24h\nFROM ticker_24h t\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h)\n  AND t.price_change_pct < 0\nORDER BY t.price_change_pct ASC\nLIMIT 5",
           "refId": "A"
@@ -327,8 +344,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -372,13 +389,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 0,
+          "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  round(avg(abs(actual_close - predicted_close)), 4) AS mae\nFROM predictions\nWHERE symbol = '${symbol}'\n  AND actual_close IS NOT NULL\n  AND $__timeFilter(target_time)",
+          "rawSql": "SELECT\n  ROUND(AVG(ABS(actual_close - predicted_close))::numeric, 4) AS mae\nFROM predictions\nWHERE symbol = '${symbol}'\n  AND actual_close IS NOT NULL\n  AND $__timeFilter(target_time)",
           "refId": "A"
         }
       ],
@@ -387,8 +404,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -432,13 +449,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 0,
+          "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  round(avg(abs(actual_close - predicted_close) / nullIf(actual_close, 0) * 100), 4) AS mape\nFROM predictions\nWHERE symbol = '${symbol}'\n  AND actual_close IS NOT NULL\n  AND $__timeFilter(target_time)",
+          "rawSql": "SELECT\n  ROUND(AVG(ABS(actual_close - predicted_close) / NULLIF(actual_close, 0) * 100)::numeric, 4) AS mape\nFROM predictions\nWHERE symbol = '${symbol}'\n  AND actual_close IS NOT NULL\n  AND $__timeFilter(target_time)",
           "refId": "A"
         }
       ],
@@ -447,8 +464,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -500,13 +517,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 0,
+          "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH directional AS (\n  SELECT\n    step_index,\n    actual_close - lagInFrame(actual_close) OVER (ORDER BY step_index) AS actual_dir,\n    predicted_close - lagInFrame(predicted_close) OVER (ORDER BY step_index) AS pred_dir\n  FROM predictions\n  WHERE symbol = '${symbol}'\n    AND actual_close IS NOT NULL\n    AND $__timeFilter(target_time)\n)\nSELECT round(\n  countIf(sign(actual_dir) = sign(pred_dir)) * 100.0\n  / nullIf(count(), 0)\n, 2) AS direction_accuracy\nFROM directional\nWHERE actual_dir IS NOT NULL",
+          "rawSql": "WITH directional AS (\n  SELECT\n    step_index,\n    actual_close - LAG(actual_close) OVER (ORDER BY step_index) AS actual_dir,\n    predicted_close - LAG(predicted_close) OVER (ORDER BY step_index) AS pred_dir\n  FROM predictions\n  WHERE symbol = '${symbol}'\n    AND actual_close IS NOT NULL\n    AND $__timeFilter(target_time)\n)\nSELECT ROUND(\n  COUNT(*) FILTER (WHERE SIGN(actual_dir) = SIGN(pred_dir)) * 100.0\n  / NULLIF(COUNT(*), 0)\n, 2) AS direction_accuracy\nFROM directional\nWHERE actual_dir IS NOT NULL",
           "refId": "A"
         }
       ],
@@ -515,8 +532,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -560,13 +577,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 0,
+          "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  round(sqrt(avg(pow(actual_close - predicted_close, 2))), 4) AS rmse\nFROM predictions\nWHERE symbol = '${symbol}'\n  AND actual_close IS NOT NULL\n  AND $__timeFilter(target_time)",
+          "rawSql": "SELECT\n  ROUND(SQRT(AVG(POWER(actual_close - predicted_close, 2)))::numeric, 4) AS rmse\nFROM predictions\nWHERE symbol = '${symbol}'\n  AND actual_close IS NOT NULL\n  AND $__timeFilter(target_time)",
           "refId": "A"
         }
       ],
@@ -575,8 +592,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -627,13 +644,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 1,
+          "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  imbalance\nFROM order_book_snapshot\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
+          "rawSql": "SELECT\n  (timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  imbalance\nFROM order_book_snapshot\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
           "refId": "A"
         }
       ],
@@ -642,8 +659,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -720,24 +737,24 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 1,
+          "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  k.timestamp AS time,\n  k.close AS actual_close\nFROM klines k\nWHERE k.symbol = '${symbol}'\n  AND k.timestamp >= (\n    SELECT min(predicted_at)\n    FROM predictions WHERE symbol = '${symbol}'\n      AND predicted_at >= (SELECT max(predicted_at) - INTERVAL 24 HOUR FROM predictions WHERE symbol = '${symbol}')\n  )\n  AND k.timestamp <= (\n    SELECT max(predicted_at) + INTERVAL 1 HOUR\n    FROM predictions WHERE symbol = '${symbol}'\n  )\nORDER BY k.timestamp",
+          "rawSql": "SELECT\n  (k.timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  k.close AS actual_close\nFROM klines k\nWHERE k.symbol = '${symbol}'\n  AND k.timestamp >= (\n    SELECT MIN(predicted_at)\n    FROM predictions WHERE symbol = '${symbol}'\n      AND predicted_at >= (SELECT MAX(predicted_at) - INTERVAL '24 hours' FROM predictions WHERE symbol = '${symbol}')\n  )\n  AND k.timestamp <= (\n    SELECT MAX(predicted_at) + INTERVAL '1 hour'\n    FROM predictions WHERE symbol = '${symbol}'\n  )\nORDER BY k.timestamp",
           "refId": "A"
         },
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 1,
+          "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  p.target_time AS time,\n  p.predicted_close\nFROM predictions p\nWHERE p.symbol = '${symbol}'\n  AND p.predicted_at >= (\n    SELECT max(predicted_at) - INTERVAL 24 HOUR\n    FROM predictions WHERE symbol = '${symbol}'\n  )\nORDER BY p.target_time",
+          "rawSql": "SELECT\n  (p.target_time AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Ho_Chi_Minh' AS time,\n  p.predicted_close\nFROM predictions p\nWHERE p.symbol = '${symbol}'\n  AND p.predicted_at >= (\n    SELECT MAX(predicted_at) - INTERVAL '24 hours'\n    FROM predictions WHERE symbol = '${symbol}'\n  )\nORDER BY p.target_time",
           "refId": "B"
         }
       ],
@@ -747,8 +764,8 @@
     },
     {
       "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres_ds"
       },
       "fieldConfig": {
         "defaults": {
@@ -807,13 +824,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres_ds"
           },
           "editorMode": "code",
-          "format": 0,
+          "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS coin,\n  k.rsi_14\nFROM symbols s\nJOIN (\n  SELECT symbol, argMax(rsi_14, timestamp) AS rsi_14\n  FROM klines\n  GROUP BY symbol\n) k ON k.symbol = s.symbol\nORDER BY k.rsi_14 DESC",
+          "rawSql": "SELECT\n  s.base_asset AS coin,\n  k.rsi_14\nFROM symbols s\nJOIN LATERAL (\n  SELECT rsi_14\n  FROM klines k\n  WHERE k.symbol = s.symbol\n  ORDER BY timestamp DESC\n  LIMIT 1\n) k ON true\nORDER BY k.rsi_14 DESC",
           "refId": "A"
         }
       ],
@@ -838,8 +855,8 @@
           "value": "BTCUSDT"
         },
         "datasource": {
-          "type": "grafana-clickhouse-datasource",
-          "uid": "clickhouse_ds"
+          "type": "grafana-postgresql-datasource",
+          "uid": "postgres_ds"
         },
         "definition": "SELECT symbol FROM symbols ORDER BY symbol",
         "hide": 0,

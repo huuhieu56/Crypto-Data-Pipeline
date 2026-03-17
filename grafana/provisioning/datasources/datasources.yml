@@ -1,29 +1,24 @@
 # =============================================================================
 # Grafana Datasources Configuration
 # =============================================================================
-# Cấu hình tự động kết nối Grafana với PostgreSQL
+# Cấu hình tự động kết nối Grafana với ClickHouse
 # File này sẽ được mount vào container Grafana
 # =============================================================================
 
 apiVersion: 1
 
 datasources:
-  - name: PostgreSQL
-    uid: postgres_ds
-    type: postgres
+  - name: ClickHouse
+    uid: clickhouse_ds
+    type: grafana-clickhouse-datasource
     access: proxy
-    url: postgres:5432
-    database: crypto_db
-    user: ${POSTGRES_USER}
-    secureJsonData:
-      password: ${POSTGRES_PASSWORD}
     jsonData:
-      sslmode: disable
-      postgresVersion: 1500
-      timescaledb: false
-      maxOpenConns: 20
-      maxIdleConns: 5
-      connMaxLifetime: 14400
-      connMaxIdleTime: 14400
+      host: clickhouse
+      port: 9000
+      protocol: native
+      defaultDatabase: crypto_db
+      username: default
+    secureJsonData:
+      password: crypto123
     isDefault: true
     editable: true
