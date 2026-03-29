@@ -82,7 +82,7 @@ PARALLELISM = {
 INDICATOR_CONTEXT_ROWS = 120        # warm-up rows for indicator calculation
 GAP_THRESHOLD_DAYS = 30             # pre_extract: gap → backfill threshold
 GAP_WARNING_DAYS = 1                # pre_extract: gap warning threshold
-PARTITION_DATE_FORMAT = "%d-%m-%y"  # daily partition key format
+PARTITION_DATE_FORMAT = "%Y-%m-%d"  # daily partition key format
 
 # --- Model Hyperparameters (LSTM) --------------------------------------------
 

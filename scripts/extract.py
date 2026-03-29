@@ -73,7 +73,7 @@ def download_data_vision(
 ) -> int | None:
     """Download klines from Data Vision with parallel month downloads.
 
-    Writes daily partitions only: klines/{SYMBOL}/{dd-mm-yy}.parquet
+    Writes daily partitions only: klines/{SYMBOL}/{YYYY-MM-DD}.parquet
     Returns total record count, or None if no data was downloaded.
     """
     sorted_months = sorted(months)

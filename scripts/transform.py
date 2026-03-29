@@ -307,7 +307,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--date", type=str, default=None,
-        help="process specific date (dd-mm-yy, default: today)",
+        help="process specific date (YYYY-MM-DD, default: today)",
     )
     return parser
 
