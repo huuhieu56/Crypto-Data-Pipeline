@@ -58,12 +58,13 @@ MONTHS_BACK = 36          # 3-year historical window
 # --- MinIO Object Storage ----------------------------------------------------
 
 MINIO_CONFIG = {
+    "enabled": os.getenv("USE_MINIO", "true").lower() == "true",
     "endpoint": os.getenv("MINIO_ENDPOINT", "localhost:9000"),
     "access_key": os.getenv("MINIO_ROOT_USER", "minioadmin"),
     "secret_key": os.getenv("MINIO_ROOT_PASSWORD", "minioadmin123"),
     "secure": os.getenv("MINIO_SECURE", "false").lower() == "true",
-    "bucket_raw": os.getenv("MINIO_BUCKET_RAW", "crypto-raw"),
-    "bucket_processed": os.getenv("MINIO_BUCKET_PROCESSED", "crypto-processed"),
+    "bucket_raw": os.getenv("MINIO_BUCKET_RAW") or os.getenv("MINIO_RAW_BUCKET", "crypto-raw"),
+    "bucket_processed": os.getenv("MINIO_BUCKET_PROCESSED") or os.getenv("MINIO_PROCESSED_BUCKET", "crypto-processed"),
 }
 
 # --- Parallelism (ThreadPoolExecutor) ----------------------------------------
@@ -81,7 +82,7 @@ PARALLELISM = {
 INDICATOR_CONTEXT_ROWS = 120        # warm-up rows for indicator calculation
 GAP_THRESHOLD_DAYS = 30             # pre_extract: gap → backfill threshold
 GAP_WARNING_DAYS = 1                # pre_extract: gap warning threshold
-PARTITION_DATE_FORMAT = "%Y-%m-%d"  # daily partition key format
+PARTITION_DATE_FORMAT = "%d-%m-%y"  # daily partition key format
 
 # --- Model Hyperparameters (LSTM) --------------------------------------------
 

@@ -32,7 +32,7 @@ def get_target_end(symbol: str) -> datetime:
 # --- Partition Key Helpers ---------------------------------------------------
 
 def partition_key(symbol: str, dt: datetime | str | None = None) -> str:
-    """MinIO key for a daily partition: klines/{SYMBOL}/{YYYY-MM-DD}.parquet"""
+    """MinIO key for a daily partition: klines/{SYMBOL}/{dd-mm-yy}.parquet"""
     if dt is None:
         date_str = datetime.now(timezone.utc).strftime(PARTITION_DATE_FORMAT)
     elif isinstance(dt, str):
@@ -43,7 +43,7 @@ def partition_key(symbol: str, dt: datetime | str | None = None) -> str:
 
 
 def delta_key(symbol: str, dt: datetime | str | None = None) -> str:
-    """MinIO key for a processed delta: features_delta/{SYMBOL}/{YYYY-MM-DD}.parquet"""
+    """MinIO key for a processed delta: features_delta/{SYMBOL}/{dd-mm-yy}.parquet"""
     if dt is None:
         date_str = datetime.now(timezone.utc).strftime(PARTITION_DATE_FORMAT)
     elif isinstance(dt, str):
