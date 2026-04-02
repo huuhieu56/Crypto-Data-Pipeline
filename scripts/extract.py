@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.config import (
-    ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM,
+    ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM, PARTITION_DATE_FORMAT,
 )
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
@@ -73,7 +73,7 @@ def download_data_vision(
 ) -> int | None:
     """Download klines from Data Vision with parallel month downloads.
 
-    Writes each month as a separate partition: klines/{SYMBOL}/{YYYY-MM}.parquet
+    Writes daily partitions only: klines/{SYMBOL}/{YYYY-MM-DD}.parquet
     Returns total record count, or None if no data was downloaded.
     """
     sorted_months = sorted(months)
@@ -108,16 +108,30 @@ def download_data_vision(
     if not downloaded:
         return None
 
-    # Write each month as a partition
+    # Write daily partitions (consistent with incremental path)
     total = 0
     for ym in sorted_months:
         if ym not in downloaded:
             continue
         df = downloaded[ym]
-        key = f"klines/{symbol}/{ym[0]}-{ym[1]:02d}.parquet"
-        table = pa.Table.from_pandas(df, preserve_index=False)
-        storage.upload_parquet(BUCKET_RAW, key, table)
-        total += len(df)
+        if df.empty:
+            continue
+
+        open_time = pd.to_datetime(df["open_time"], utc=True, errors="coerce")
+        if open_time.isna().all():
+            open_time = pd.to_datetime(df["open_time"], errors="coerce")
+
+        daily_df = df.assign(_dt=open_time).dropna(subset=["_dt"])
+        if daily_df.empty:
+            continue
+
+        for date_val, one_day in daily_df.groupby(daily_df["_dt"].dt.date):
+            day_str = date_val.strftime(PARTITION_DATE_FORMAT)
+            key = partition_key(symbol, day_str)
+            day_out = one_day.drop(columns=["_dt"]).sort_values("open_time")
+            table = pa.Table.from_pandas(day_out, preserve_index=False)
+            storage.upload_parquet(BUCKET_RAW, key, table)
+            total += len(day_out)
 
     logger.info(
         "[%s] Bulk complete: %d/%d months, %s records",

@@ -58,12 +58,13 @@ MONTHS_BACK = 36          # 3-year historical window
 # --- MinIO Object Storage ----------------------------------------------------
 
 MINIO_CONFIG = {
+    "enabled": os.getenv("USE_MINIO", "true").lower() == "true",
     "endpoint": os.getenv("MINIO_ENDPOINT", "localhost:9000"),
     "access_key": os.getenv("MINIO_ROOT_USER", "minioadmin"),
     "secret_key": os.getenv("MINIO_ROOT_PASSWORD", "minioadmin123"),
     "secure": os.getenv("MINIO_SECURE", "false").lower() == "true",
-    "bucket_raw": os.getenv("MINIO_BUCKET_RAW", "crypto-raw"),
-    "bucket_processed": os.getenv("MINIO_BUCKET_PROCESSED", "crypto-processed"),
+    "bucket_raw": os.getenv("MINIO_BUCKET_RAW") or os.getenv("MINIO_RAW_BUCKET", "crypto-raw"),
+    "bucket_processed": os.getenv("MINIO_BUCKET_PROCESSED") or os.getenv("MINIO_PROCESSED_BUCKET", "crypto-processed"),
 }
 
 # --- Parallelism (ThreadPoolExecutor) ----------------------------------------

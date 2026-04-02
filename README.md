@@ -103,7 +103,7 @@ Crypto-Data-Pipeline/
 docker compose up -d
 
 # 2. Install Python dependencies
-pip install -r requirements.txt
+pip install -r requirements.txt 
 
 # 3. Run pre-extract (self-healing: detect gaps)
 python scripts/pre_extract.py
