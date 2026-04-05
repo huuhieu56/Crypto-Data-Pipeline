@@ -19,20 +19,63 @@
 #   - ticker_24h extract chạy riêng (daily snapshot)
 # =============================================================================
 
-# TODO: Import Airflow libraries
+from datetime import datetime, timedelta
 
-# TODO: Define default_args
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+import pendulum
 
-# TODO: Define DAG
-# - dag_id='minutely_extract'
-# - schedule='* * * * *'    # Mỗi phút
-# - catchup=False
-# - max_active_runs=1       # Tránh overlap nếu job trước chưa xong
 
-# TODO: Define tasks
-# - extract_klines_task (GET /klines?limit=1 cho 50 coins → 50 API calls)
-# - transform_task (Spark: tính RSI-14, MACD trên window dữ liệu)
-# - load_klines_task (Spark JDBC upsert vào bảng klines)
+LOCAL_TZ = pendulum.timezone("Asia/Ho_Chi_Minh")
 
-# TODO: Set task dependencies
-# extract_klines >> transform >> load_klines
+
+# ---------------------------------------------------------------------------
+# Default arguments
+# ---------------------------------------------------------------------------
+default_args = {
+	"owner": "crypto-pipeline",
+	"depends_on_past": False,
+	"email_on_failure": False,
+	"email_on_retry": False,
+	"retries": 0,
+	"execution_timeout": timedelta(minutes=3),
+}
+
+
+# ---------------------------------------------------------------------------
+# DAG definition
+# ---------------------------------------------------------------------------
+with DAG(
+	dag_id="minutely_extract",
+	default_args=default_args,
+	description="Incremental minutely ETL for klines features and load",
+	schedule="* * * * *",
+	start_date=pendulum.datetime(2024, 1, 1, tz=LOCAL_TZ),
+	catchup=False,
+	max_active_runs=1,
+	tags=["etl", "extract", "minutely"],
+) as dag:
+
+	project_root = "{{ var.value.get('project_root', '/opt/project') }}"
+
+	extract_klines_task = BashOperator(
+		task_id="extract_klines",
+		bash_command=(
+			f"cd {project_root} && "
+			"python -c \"from config.symbols import SYMBOLS; "
+			"from scripts.extract import extract_recent_klines; "
+			"extract_recent_klines(SYMBOLS)\""
+		),
+	)
+
+	transform_task = BashOperator(
+		task_id="transform",
+		bash_command=f"cd {project_root} && python scripts/transform.py",
+	)
+
+	load_klines_task = BashOperator(
+		task_id="load_klines",
+		bash_command=f"cd {project_root} && python scripts/load.py --only klines",
+	)
+
+	extract_klines_task >> transform_task >> load_klines_task

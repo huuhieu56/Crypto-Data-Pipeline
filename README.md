@@ -14,7 +14,7 @@ sử dụng Apache Spark, Apache Airflow, PostgreSQL, PyTorch LSTM và Grafana.
 
 ```
 Crypto-Data-Pipeline/
-├── .env                                # Biến môi trường (không commit)
+├── .env                                # Biến môi trường 
 ├── .env.example                        # Mẫu biến môi trường
 ├── .gitignore                          # Git ignore rules
 ├── README.md                           # Tài liệu dự án
@@ -121,5 +121,6 @@ python scripts/train.py --symbols BTCUSDT
 ```
 
 ## Tài liệu chi tiết
+
 
 Xem [docs/ProjectOverview.md](docs/ProjectOverview.md)

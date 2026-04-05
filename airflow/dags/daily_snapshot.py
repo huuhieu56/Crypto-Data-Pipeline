@@ -21,21 +21,77 @@
 #   - Cả 2 API chỉ cần 1-2 requests (trả về tất cả 50 coins cùng lúc)
 # =============================================================================
 
-# TODO: Import Airflow libraries
+from datetime import datetime, timedelta
 
-# TODO: Define default_args
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+import pendulum
 
-# TODO: Define DAG
-# - dag_id='daily_snapshot'
-# - schedule='0 0 * * *'    # Midnight daily
-# - catchup=False
 
-# TODO: Define tasks
-# - extract_ticker_task (GET /ticker/24hr + /ticker/bookTicker → CSV)
-# - extract_order_book_task (GET /depth cho 50 coins → CSV)
-# - load_ticker_task (Spark JDBC → bảng ticker_24h)
-# - load_order_book_task (Spark JDBC → bảng order_book_snapshot)
+LOCAL_TZ = pendulum.timezone("Asia/Ho_Chi_Minh")
 
-# TODO: Set task dependencies
-# extract_ticker >> load_ticker
-# extract_order_book >> load_order_book
+
+# ---------------------------------------------------------------------------
+# Default arguments
+# ---------------------------------------------------------------------------
+default_args = {
+	"owner": "crypto-pipeline",
+	"depends_on_past": False,
+	"email_on_failure": False,
+	"email_on_retry": False,
+	"retries": 2,
+	"retry_delay": timedelta(minutes=3),
+	"execution_timeout": timedelta(minutes=15),
+}
+
+
+# ---------------------------------------------------------------------------
+# DAG definition
+# ---------------------------------------------------------------------------
+with DAG(
+	dag_id="daily_snapshot",
+	default_args=default_args,
+	description="Daily market snapshots: ticker_24h and order_book_snapshot",
+	schedule="0 0 * * *",
+	start_date=pendulum.datetime(2024, 1, 1, tz=LOCAL_TZ),
+	catchup=False,
+	max_active_runs=1,
+	tags=["extract", "snapshot", "daily"],
+) as dag:
+
+	project_root = "{{ var.value.get('project_root', '/opt/project') }}"
+
+	extract_ticker_task = BashOperator(
+		task_id="extract_ticker",
+		bash_command=(
+			f"cd {project_root} && "
+			"python -c \"from config.symbols import SYMBOLS, SYMBOLS_STATUS; "
+			"from scripts.extract import extract_ticker_24h; "
+			"trading=[s for s in SYMBOLS if SYMBOLS_STATUS.get(s, 'TRADING')=='TRADING']; "
+			"extract_ticker_24h(trading)\""
+		),
+	)
+
+	extract_order_book_task = BashOperator(
+		task_id="extract_order_book",
+		bash_command=(
+			f"cd {project_root} && "
+			"python -c \"from config.symbols import SYMBOLS, SYMBOLS_STATUS; "
+			"from scripts.extract import extract_order_book_snapshot; "
+			"trading=[s for s in SYMBOLS if SYMBOLS_STATUS.get(s, 'TRADING')=='TRADING']; "
+			"extract_order_book_snapshot(trading)\""
+		),
+	)
+
+	load_ticker_task = BashOperator(
+		task_id="load_ticker",
+		bash_command=f"cd {project_root} && python scripts/load.py --only ticker",
+	)
+
+	load_order_book_task = BashOperator(
+		task_id="load_order_book",
+		bash_command=f"cd {project_root} && python scripts/load.py --only orderbook",
+	)
+
+	extract_ticker_task >> load_ticker_task
+	extract_order_book_task >> load_order_book_task

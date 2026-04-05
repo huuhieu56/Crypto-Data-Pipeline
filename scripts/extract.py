@@ -8,6 +8,8 @@ Bulk mode is used by pre_extract.py for first-time / backfill downloads.
 Daily mode runs after pre_extract.py for ongoing incremental updates.
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
@@ -47,6 +49,19 @@ BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 
 # --- Partition I/O -----------------------------------------------------------
 
+
+def _normalize_timestamp_unit(table: pa.Table, unit: str = "us") -> pa.Table:
+    """Normalize timestamp columns to a consistent Arrow unit for safe concat."""
+    fields = []
+    for field in table.schema:
+        if pa.types.is_timestamp(field.type):
+            fields.append(pa.field(field.name, pa.timestamp(unit, tz=field.type.tz), nullable=field.nullable))
+        else:
+            fields.append(field)
+    target_schema = pa.schema(fields)
+    return table.cast(target_schema, safe=False)
+
+
 def _write_to_partition(symbol: str, new_df: pd.DataFrame) -> None:
     """Append rows to today's daily partition on MinIO.
 
@@ -54,10 +69,18 @@ def _write_to_partition(symbol: str, new_df: pd.DataFrame) -> None:
     so download+concat+upload is fast.
     """
     key = partition_key(symbol)
+
+    # Keep Arrow schema stable across runs (timestamp[us]) to prevent concat errors.
+    for c in new_df.columns:
+        if pd.api.types.is_datetime64_any_dtype(new_df[c]):
+            new_df[c] = new_df[c].dt.as_unit("us")
+
     new_table = pa.Table.from_pandas(new_df, preserve_index=False)
+    new_table = _normalize_timestamp_unit(new_table, unit="us")
 
     if storage.object_exists(BUCKET_RAW, key):
         existing = storage.download_parquet(BUCKET_RAW, key)
+        existing = _normalize_timestamp_unit(existing, unit="us")
         table = pa.concat_tables([existing, new_table])
     else:
         table = new_table

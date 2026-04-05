@@ -22,6 +22,10 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+import pendulum
+
+
+LOCAL_TZ = pendulum.timezone("Asia/Ho_Chi_Minh")
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +50,7 @@ with DAG(
     default_args=default_args,
     description="Dự báo giá 60 phút mỗi giờ cho 50 coins",
     schedule="0 * * * *",  # Every hour
-    start_date=datetime(2024, 1, 1),
+    start_date=pendulum.datetime(2024, 1, 1, tz=LOCAL_TZ),
     catchup=False,
     max_active_runs=1,
     tags=["ml", "inference", "hourly"],

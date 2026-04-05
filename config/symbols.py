@@ -8,6 +8,8 @@ Derived views (SYMBOLS, SYMBOLS_STATUS, etc.) are generated automatically.
 To add/remove a coin, edit SYMBOL_REGISTRY only.
 """
 
+from __future__ import annotations
+
 # --- Symbol Registry ---------------------------------------------------------
 # Format: { symbol: { status, break_date? } }
 #   status     : "TRADING" | "BREAK"

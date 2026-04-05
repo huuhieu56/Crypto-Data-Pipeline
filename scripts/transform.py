@@ -9,6 +9,8 @@ Usage:
     python scripts/transform.py --full-rebuild
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 import argparse
@@ -186,6 +188,14 @@ def transform_data(
 
     # Batch query: get last loaded timestamps from ClickHouse
     last_ts_map = get_last_timestamps(symbols)
+
+    # Bootstrap mode: if klines table is empty, transform full history once.
+    if not last_ts_map:
+        logger.warning(
+            "ClickHouse has no klines data for selected symbols; "
+            "switching to full history transform"
+        )
+        return transform_full_rebuild(symbols=symbols)
 
     total_new_rows = 0
     symbols_updated = 0
