@@ -31,7 +31,7 @@ services:
     networks:
       - crypto_network
     healthcheck:
-      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      test: [ "CMD", "clickhouse-client", "--query", "SELECT 1" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -52,7 +52,7 @@ services:
       - crypto_network
     command: server /data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -65,12 +65,7 @@ services:
       minio:
         condition: service_healthy
     entrypoint: >
-      /bin/sh -c "
-      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin123};
-      mc mb --ignore-existing local/$${MINIO_BUCKET_RAW:-crypto-raw};
-      mc mb --ignore-existing local/$${MINIO_BUCKET_PROCESSED:-crypto-processed};
-      echo 'Buckets created successfully';
-      "
+      /bin/sh -c " mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin123}; mc mb --ignore-existing local/$${MINIO_BUCKET_RAW:-crypto-raw}; mc mb --ignore-existing local/$${MINIO_BUCKET_PROCESSED:-crypto-processed}; echo 'Buckets created successfully'; "
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin123}
@@ -79,15 +74,119 @@ services:
     networks:
       - crypto_network
 
+  # --- Airflow Metadata DB ---
+  airflow-postgres:
+    image: postgres:15
+    container_name: crypto_airflow_postgres_container
+    environment:
+      - POSTGRES_USER=${AIRFLOW_DB_USER:-airflow}
+      - POSTGRES_PASSWORD=${AIRFLOW_DB_PASSWORD:-airflow}
+      - POSTGRES_DB=${AIRFLOW_DB_NAME:-airflow}
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+    networks:
+      - crypto_network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER:-airflow} -d ${AIRFLOW_DB_NAME:-airflow}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Airflow Init (DB migrate + admin user) ---
+  airflow-init:
+    image: apache/airflow:2.8.0-python3.11
+    container_name: crypto_airflow_init_container
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command: >
+      -c "airflow db migrate && airflow users create --username ${AIRFLOW_ADMIN_USER:-admin} --password ${AIRFLOW_ADMIN_PASSWORD:-admin} --firstname Admin --lastname User --role Admin --email admin@example.com || true"
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__DEFAULT_TIMEZONE=Asia/Ho_Chi_Minh
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/project/airflow/dags
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres:5432/${AIRFLOW_DB_NAME:-airflow}
+      - _PIP_ADDITIONAL_REQUIREMENTS=clickhouse-connect minio
+      - CLICKHOUSE_HOST=clickhouse
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_SECURE=false
+      - TZ=Asia/Ho_Chi_Minh
+    user: "${AIRFLOW_UID:-50000}:0"
+    volumes:
+      - ./:/opt/project
+      - airflow_logs:/opt/airflow/logs
+    networks:
+      - crypto_network
+
   # --- Airflow Webserver ---
   airflow-webserver:
-    image: apache/airflow:2.8.0
-    # ... config
+    image: apache/airflow:2.8.0-python3.11
+    container_name: crypto_airflow_webserver_container
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    command: webserver
+    ports:
+      - "${AIRFLOW_WEBSERVER_PORT:-8080}:8080"
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__DEFAULT_TIMEZONE=Asia/Ho_Chi_Minh
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/project/airflow/dags
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres:5432/${AIRFLOW_DB_NAME:-airflow}
+      - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
+      - AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE=Asia/Ho_Chi_Minh
+      - _PIP_ADDITIONAL_REQUIREMENTS=clickhouse-connect minio
+      - CLICKHOUSE_HOST=clickhouse
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_SECURE=false
+      - TZ=Asia/Ho_Chi_Minh
+    user: "${AIRFLOW_UID:-50000}:0"
+    volumes:
+      - ./:/opt/project
+      - airflow_logs:/opt/airflow/logs
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:8080/health" ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - crypto_network
 
   # --- Airflow Scheduler ---
   airflow-scheduler:
-    image: apache/airflow:2.8.0
-    # ... config
+    image: apache/airflow:2.8.0-python3.11
+    container_name: crypto_airflow_scheduler_container
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    command: scheduler
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__DEFAULT_TIMEZONE=Asia/Ho_Chi_Minh
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/project/airflow/dags
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres:5432/${AIRFLOW_DB_NAME:-airflow}
+      - _PIP_ADDITIONAL_REQUIREMENTS=clickhouse-connect minio
+      - CLICKHOUSE_HOST=clickhouse
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_SECURE=false
+      - TZ=Asia/Ho_Chi_Minh
+    user: "${AIRFLOW_UID:-50000}:0"
+    volumes:
+      - ./:/opt/project
+      - airflow_logs:/opt/airflow/logs
+    networks:
+      - crypto_network
 
   # --- Grafana ---
   grafana:
@@ -116,6 +215,9 @@ volumes:
   clickhouse_data:
   grafana_data:
   minio_data:
+  airflow_postgres_data:
+  airflow_logs:
+
 
 networks:
   crypto_network:

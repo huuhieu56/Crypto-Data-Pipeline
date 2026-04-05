@@ -25,7 +25,7 @@ from config.config import MINIO_CONFIG, PARTITION_DATE_FORMAT
 from config.symbols import SYMBOLS, SYMBOL_REGISTRY
 from utils.logger import get_logger
 from utils.exceptions import LoadError
-from utils.db_utils import init_schema, ch_insert_df
+from utils.db_utils import init_schema, ch_insert_df, ch_query_df
 from utils.storage import storage
 
 logger = get_logger(__name__)
@@ -112,6 +112,29 @@ def load_klines(
             logger.error("[Load] %s: error — %s", symbol, exc)
 
     if not all_dfs:
+        # Bootstrap: no delta yet but table is empty -> load full features once.
+        try:
+            cnt_df = ch_query_df("SELECT count() AS cnt FROM klines")
+            current_rows = int(cnt_df.iloc[0]["cnt"]) if not cnt_df.empty else 0
+        except Exception as exc:
+            logger.warning("Cannot verify klines row count: %s", exc)
+            current_rows = -1
+
+        if current_rows == 0:
+            feature_keys = [
+                k for k in storage.list_objects(BUCKET_PROCESSED, "features/")
+                if k.endswith(".parquet")
+            ]
+            if feature_keys:
+                logger.info(
+                    "No delta data for %s and klines table is empty; "
+                    "auto-loading from full features/ (%d files)",
+                    date_str,
+                    len(feature_keys),
+                )
+                load_klines_full_rebuild()
+                return
+
         logger.info("No delta data to load for %s", date_str)
         return
 

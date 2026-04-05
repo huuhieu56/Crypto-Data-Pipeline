@@ -7,6 +7,8 @@ backfill, or REST API).
 See docs/ProjectOverview.md §13.
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
