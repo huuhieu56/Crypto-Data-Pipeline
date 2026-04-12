@@ -1,17 +1,12 @@
 -- =============================================================================
 -- Database Schema - Crypto Data Warehouse (ClickHouse)
 -- =============================================================================
--- Star Schema với 1 Dimension table và 4 Fact tables:
---   - symbols (Dimension): Thông tin 50 coins
---   - klines (Fact): Dữ liệu nến 1 phút + technical indicators
---   - ticker_24h (Fact): Thống kê 24h hàng ngày + best bid/ask + spread
---   - order_book_snapshot (Fact): Snapshot order book
---   - predictions (Fact): Kết quả dự báo từ LSTM model (mỗi giờ)
+-- Star schema with one dimension table and market/advisory fact tables.
 -- =============================================================================
 
 CREATE DATABASE IF NOT EXISTS crypto_db;
 
--- 1. Bảng Dimensions: Symbols (Thông tin Coin)
+-- 1) Dimension: Symbols
 CREATE TABLE IF NOT EXISTS crypto_db.symbols (
     symbol String,
     base_asset String,
@@ -21,7 +16,7 @@ CREATE TABLE IF NOT EXISTS crypto_db.symbols (
 ) ENGINE = ReplacingMergeTree()
 ORDER BY (symbol);
 
--- 2. Bảng Fact: Klines (Dữ liệu nến & Chỉ báo)
+-- 2) Fact: Klines (1-minute candles + indicators)
 CREATE TABLE IF NOT EXISTS crypto_db.klines (
     symbol String,
     timestamp DateTime,
@@ -39,7 +34,7 @@ CREATE TABLE IF NOT EXISTS crypto_db.klines (
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (symbol, timestamp);
 
--- 3. Bảng Fact: Ticker 24h (Thống kê ngày)
+-- 3) Fact: Ticker 24h snapshot
 CREATE TABLE IF NOT EXISTS crypto_db.ticker_24h (
     symbol String,
     snapshot_time DateTime,
@@ -56,7 +51,7 @@ CREATE TABLE IF NOT EXISTS crypto_db.ticker_24h (
 ) ENGINE = ReplacingMergeTree()
 ORDER BY (symbol, snapshot_time);
 
--- 4. Bảng Fact: Order Book Snapshot (Sổ lệnh)
+-- 4) Fact: Order book snapshot
 CREATE TABLE IF NOT EXISTS crypto_db.order_book_snapshot (
     symbol String,
     timestamp DateTime,
@@ -66,15 +61,29 @@ CREATE TABLE IF NOT EXISTS crypto_db.order_book_snapshot (
 ) ENGINE = ReplacingMergeTree()
 ORDER BY (symbol, timestamp);
 
--- 5. Bảng Fact: Predictions (Kết quả dự báo AI)
-CREATE TABLE IF NOT EXISTS crypto_db.predictions (
+-- 5) Fact: LLM advisory signals
+CREATE TABLE IF NOT EXISTS crypto_db.llm_signals (
     symbol String,
-    predicted_at DateTime,
-    step_index UInt32,
-    target_time DateTime,
-    predicted_close Float64,
+    generated_at DateTime,
+
+    signal LowCardinality(String),
+    confidence UInt8,
+    reason String,
+    key_risk Nullable(String),
+
+    rsi_14 Nullable(Float64),
+    macd_cross LowCardinality(String),
+    ob_imbalance Nullable(Float64),
+    vol_change_pct Nullable(Float64),
+    price_change_pct Nullable(Float64),
+
+    data_window_minutes UInt16 DEFAULT 360,
+    trend_6h LowCardinality(String),
+    trend_6h_pct Nullable(Float64),
+
+    llm_provider LowCardinality(String),
     model_version String,
-    actual_close Nullable(Float64),
-    error_pct Nullable(Float64)
+    created_at DateTime DEFAULT now()
 ) ENGINE = ReplacingMergeTree()
-ORDER BY (symbol, predicted_at, step_index);
+PARTITION BY toYYYYMM(generated_at)
+ORDER BY (symbol, generated_at);

@@ -1,7 +1,6 @@
 """Data utilities for the Crypto Data Pipeline.
 
 Provides date/month helpers and partition key utilities.
-ML utilities (normalization, sequences, etc.) are in utils/ml_utils.py.
 """
 
 from __future__ import annotations
