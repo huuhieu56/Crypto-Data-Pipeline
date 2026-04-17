@@ -7,7 +7,7 @@
 # Tasks:
 #   1. extract_klines: Gọi Binance REST API lấy 1 nến mới nhất / coin
 #   2. transform: Spark tính RSI(14), MACD trên dữ liệu 1-min
-#   3. load_klines: Ghi vào PostgreSQL bảng klines (Spark JDBC upsert)
+#   3. load_klines: Ghi vào ClickHouse bảng klines
 #
 # Dependencies:
 #   extract_klines ──▶ transform ──▶ load_klines

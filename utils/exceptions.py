@@ -39,11 +39,11 @@ class TransformError(PipelineError):
 # --- Load Layer --------------------------------------------------------------
 
 class LoadError(PipelineError):
-    """Error during data loading into PostgreSQL."""
+    """Error during data loading into ClickHouse."""
 
 
 class DatabaseConnectionError(LoadError):
-    """Failed to connect to PostgreSQL."""
+    """Failed to connect to ClickHouse."""
 
 
 class SchemaInitError(LoadError):
@@ -52,9 +52,19 @@ class SchemaInitError(LoadError):
 
 # --- Model / Inference Layer -------------------------------------------------
 
-class ModelError(PipelineError):
-    """Error related to the LSTM model."""
+# --- LLM Layer ---------------------------------------------------------------
+
+class LLMError(PipelineError):
+    """Base class for LLM advisory errors."""
 
 
-class ModelNotFoundError(ModelError):
-    """Model weights file (.pth) not found."""
+class LLMAPIError(LLMError):
+    """Error when calling external LLM provider APIs."""
+
+
+class LLMQuotaExceededError(LLMAPIError):
+    """LLM quota/rate limit exhausted for current account."""
+
+
+class LLMParseError(LLMError):
+    """Error when parsing LLM response into expected JSON schema."""

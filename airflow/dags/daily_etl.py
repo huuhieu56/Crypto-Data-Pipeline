@@ -9,8 +9,8 @@
 #   2. extract_klines: Download dữ liệu nến mới từ Binance REST API
 #   3. extract_ticker: Download thống kê 24h + best bid/ask
 #   4. transform: Chạy Spark job tính RSI, MACD
-#   5. load_klines: Ghi vào PostgreSQL bảng klines (upsert)
-#   6. load_ticker: Ghi vào PostgreSQL bảng ticker_24h
+#   5. load_klines: Ghi vào ClickHouse bảng klines
+#   6. load_ticker: Ghi vào ClickHouse bảng ticker_24h
 #
 # Dependencies:
 #   pre_extract ──▶ extract_klines ─┬─▶ transform ──▶ load_klines

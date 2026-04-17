@@ -17,11 +17,9 @@ load_dotenv(PROJECT_ROOT / ".env")
 RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
 PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
 SQL_DIR = PROJECT_ROOT / "sql"
-MODELS_DIR = PROJECT_ROOT / "models"
 
 RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
 PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Database (ClickHouse) ---------------------------------------------------
 
@@ -84,30 +82,6 @@ GAP_THRESHOLD_DAYS = 30             # pre_extract: gap → backfill threshold
 GAP_WARNING_DAYS = 1                # pre_extract: gap warning threshold
 PARTITION_DATE_FORMAT = "%Y-%m-%d"  # daily partition key format
 
-# --- Model Hyperparameters (LSTM) --------------------------------------------
-
-MODEL_CONFIG = {
-    "input_window": 120,            # 120 candles (2h lookback)
-    "output_window": 60,            # 60 candles (1h prediction)
-    "features": 7,                  # open, high, low, close, volume, rsi_14, macd
-    "hidden_size": 128,
-    "num_layers": 2,
-    "dropout": 0.2,
-    "learning_rate": 0.001,
-    "epochs": 50,
-    "batch_size": 32,
-    "early_stopping_patience": 10,
-    "train_ratio": 0.70,
-    "val_ratio": 0.15,
-    "test_ratio": 0.15,
-    "n_candles_to_load": 50000,
-    "default_train_symbols": ["BTCUSDT"],
-    # Log-return prediction & directional loss
-    "predict_returns": True,
-    "directional_loss_weight": 0.3,
-    "grad_clip_max_norm": 1.0,
-}
-
 # --- Klines Schema -----------------------------------------------------------
 
 _KLINES_RAW_COLUMNS = [
@@ -127,8 +101,6 @@ KLINES_COLUMNS = [
     "symbol", "timestamp", "open", "high", "low", "close",
     "volume", "quote_volume", "trades", "rsi_14", "macd", "macd_signal",
 ]
-
-FEATURE_COLUMNS = ["open", "high", "low", "close", "volume", "rsi_14", "macd"]
 
 # Column rename mapping: raw field names -> database field names
 KLINES_RENAME_MAP = {
