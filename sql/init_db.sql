@@ -1,17 +1,14 @@
 -- =============================================================================
--- Initialize Database - Crypto Data Warehouse
+-- Initialize Database - Crypto Data Warehouse (ClickHouse)
 -- =============================================================================
--- Tạo database và user cho project
+-- ClickHouse tự tạo database qua schema.sql được mount vào Docker container.
+-- File này chỉ dùng khi cần tạo database thủ công bên ngoài Docker.
 --
--- Chạy với superuser:
---   psql -U postgres -f sql/init_db.sql
+-- Chạy qua ClickHouse client:
+--   clickhouse-client --query "$(cat sql/init_db.sql)"
+--
+-- Hoặc qua HTTP API:
+--   curl http://localhost:8123 --data-binary @sql/init_db.sql
 -- =============================================================================
 
--- TODO: CREATE DATABASE crypto_dw
-
--- TODO: CREATE USER crypto_user WITH PASSWORD
-
--- TODO: GRANT ALL PRIVILEGES ON DATABASE crypto_dw TO crypto_user
-
--- TODO: Enable extensions (nếu cần)
--- CREATE EXTENSION IF NOT EXISTS timescaledb;  -- Optional: cho time-series optimization
+CREATE DATABASE IF NOT EXISTS crypto_db;

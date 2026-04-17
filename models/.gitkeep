@@ -1,11 +1,7 @@
 # =============================================================================
 # Models Directory - Crypto Data Pipeline
 # =============================================================================
-# Thư mục chứa trained models (.pth files)
-# Các file .pth sẽ được ignore bởi .gitignore
-#
-# Cấu trúc:
-#   - lstm_v1.pth: Model version 1
-#   - lstm_v2.pth: Model version 2 (sau khi retrain)
-#   - ...
+# Thư mục dự phòng cho các model artifacts trong tương lai.
+# Hiện tại hệ thống sử dụng LLM API (Gemini/OpenAI) nên không lưu
+# model weights locally.
 # =============================================================================

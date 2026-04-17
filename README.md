@@ -1,20 +1,21 @@
-# Crypto Data Pipeline - Big Data & Deep Learning (LSTM)
+# Crypto Data Pipeline - Big Data & LLM Advisor
 
 ## Mô tả dự án
 
-Hệ thống End-to-End Data Pipeline thu thập, xử lý và dự báo giá cryptocurrency
-sử dụng Apache Spark, Apache Airflow, PostgreSQL, PyTorch LSTM và Grafana.
+Hệ thống End-to-End Data Pipeline thu thập, xử lý và phân tích thị trường cryptocurrency
+sử dụng Apache Spark, Apache Airflow, ClickHouse, MinIO, LLM (Gemini/OpenAI) và Grafana.
 
-- **Extract mỗi phút**: Gọi Binance REST API lấy nến 1-min cho 50 coins
+- **Extract hàng ngày**: Gọi Binance REST API + Data Vision lấy nến 1-min cho 50 coins
 - **Transform**: Spark tính RSI(14), MACD(12/26/9) trên 1-min candles
-- **Inference mỗi giờ**: LSTM dùng 600 nến (10h) → dự báo 60 nến tới (1h)
-- **Retrain hàng tuần**: Train lại model per-coin (mỗi coin weight riêng)
+- **Load**: Ghi vào ClickHouse (clickhouse-connect)
+- **LLM Advisory mỗi giờ**: Phân tích 30 nến daily + snapshot → BUY/SELL/HOLD signals
+- **Visualize**: Grafana dashboard real-time
 
 ## Cấu trúc thư mục
 
 ```
 Crypto-Data-Pipeline/
-├── .env                                # Biến môi trường 
+├── .env                                # Biến môi trường
 ├── .env.example                        # Mẫu biến môi trường
 ├── .gitignore                          # Git ignore rules
 ├── README.md                           # Tài liệu dự án
@@ -23,64 +24,59 @@ Crypto-Data-Pipeline/
 │
 ├── config/                             # Cấu hình hệ thống
 │   ├── __init__.py
-│   ├── config.py                       # Main configuration (paths, DB, API, Spark, Model)
-│   └── symbols.py                      # Danh sách 50 coins
+│   ├── config.py                       # Main config (paths, DB, API, MinIO, Spark)
+│   ├── llm_config.py                   # LLM config (provider, model, params)
+│   └── symbols.py                      # Danh sách 50 coins (single source of truth)
 │
-├── scripts/                            # Scripts chính ETL & ML
+├── scripts/                            # Scripts chính ETL & LLM
 │   ├── __init__.py
-│   ├── pre_extract.py                  # Self-healing gap detection + recovery (1 lần setup)
+│   ├── pre_extract.py                  # Self-healing gap detection + recovery
 │   ├── extract.py                      # Thu thập từ Binance API & Data Vision
 │   ├── transform.py                    # Xử lý với Spark (RSI, MACD trên 1-min)
-│   ├── load.py                         # Ghi vào PostgreSQL (Spark JDBC upsert)
-│   ├── train.py                        # Huấn luyện LSTM per-coin (600→60, 1-min candles)
-│   ├── inference.py                    # Chạy dự báo mỗi giờ (360→60)
-│   └── update_actuals.py               # Cập nhật giá thực tế
+│   ├── load.py                         # Ghi vào ClickHouse (clickhouse-connect)
+│   └── llm_signal.py                   # Sinh tín hiệu BUY/SELL/HOLD từ LLM
 │
 ├── airflow/                            # Apache Airflow
 │   ├── __init__.py
 │   └── dags/
 │       ├── __init__.py
-│       ├── minutely_extract.py         # DAG ETL klines mỗi phút (* * * * *)
+│       ├── daily_etl.py                # DAG ETL klines + ticker hàng ngày (0 2 * * *)
 │       ├── daily_snapshot.py           # DAG ticker_24h + order_book (0 0 * * *)
-│       ├── weekly_retrain.py           # DAG train lại model (Chủ Nhật)
-│       └── hourly_inference.py         # DAG dự báo mỗi giờ (0 * * * *)
+│       └── hourly_inference.py         # DAG LLM advisory signals mỗi giờ (0 * * * *)
 │
 ├── sql/                                # Database schemas & queries
-│   ├── init_db.sql                     # Khởi tạo database
-│   ├── schema.sql                      # Tạo bảng (Star Schema: 1 dim + 4 fact)
-│   └── queries.sql                     # Query mẫu cho Grafana
+│   ├── schema.sql                      # ClickHouse schema (Star Schema: 1 dim + 4 fact)
+│   ├── queries.sql                     # Query mẫu cho Grafana
+│   └── migrate_remove_predictions_clickhouse.sql  # Migration: predictions → llm_signals
 │
-├── models/                             # Model definitions & trained weights
-│   ├── .gitkeep
-│   └── model.py                        # LSTM model definition (PyTorch)
+├── models/                             # Placeholder (reserved for future use)
+│   └── .gitkeep
 │
-├── data/                               # Data Lake
-│   ├── raw/.gitkeep                    # Dữ liệu thô (CSV)
-│   └── processed/.gitkeep              # Dữ liệu đã xử lý (Parquet)
+├── data/                               # Data Lake (local cache, synced to MinIO)
+│   ├── raw/                            # Dữ liệu thô (CSV/Parquet)
+│   └── processed/                      # Dữ liệu đã xử lý (Parquet)
 │
 ├── grafana/                            # Grafana configs
-│   ├── dashboards/
-│   │   └── .gitkeep
-│   └── provisioning/
+│   ├── dashboards/                     # Dashboard JSON definitions
+│   └── provisioning/                   # Datasource & dashboard provisioning
 │       ├── datasources/
-│       │   └── datasources.yml         # PostgreSQL datasource
 │       └── dashboards/
-│           └── dashboards.yml          # Dashboard provisioning
 │
-├── notebooks/.gitkeep                  # Jupyter notebooks cho EDA
+├── notebooks/                          # Jupyter notebooks cho EDA
 │
 ├── tests/                              # Unit tests
 │   ├── __init__.py
 │   ├── test_extract.py                 # Tests cho extract pipeline
-│   ├── test_transform.py               # Tests cho transform pipeline
-│   └── test_model.py                   # Tests cho LSTM model
+│   └── test_transform.py              # Tests cho transform pipeline
 │
 ├── utils/                              # Utility functions
 │   ├── __init__.py
 │   ├── binance_utils.py                # Binance API wrappers (retry, rate limit, parse)
-│   ├── db_utils.py                     # Database utilities (SQLAlchemy, Spark JDBC, upsert)
-│   ├── data_utils.py                   # Data helpers (timestamps, merge CSV, date utils)
-│   ├── exceptions.py                   # Custom exceptions theo layer (E/T/L)
+│   ├── db_utils.py                     # ClickHouse client, insert/query helpers
+│   ├── data_utils.py                   # Data helpers (timestamps, partition keys, dates)
+│   ├── llm_utils.py                    # LLM API callers (Gemini, OpenAI), JSON parser
+│   ├── storage.py                      # MinIO object storage utilities
+│   ├── exceptions.py                   # Custom exceptions theo layer (E/T/L/LLM)
 │   └── logger.py                       # Logging configuration
 │
 └── docs/
@@ -89,38 +85,42 @@ Crypto-Data-Pipeline/
 
 ## Công nghệ sử dụng
 
-- **Extract**: Python + Binance REST API (mỗi phút)
-- **Transform**: Apache Spark (RSI, MACD trên 1-min candles)
-- **Load**: PostgreSQL (Spark JDBC upsert)
-- **Orchestrate**: Apache Airflow (minutely + hourly + weekly)
-- **Train**: PyTorch LSTM per-coin (600 nến → 60 nến, weight riêng mỗi coin)
-- **Visualize**: Grafana
+| Layer | Công nghệ | Mục đích |
+|-------|-----------|----------|
+| **Extract** | Python + Binance API | Thu thập dữ liệu nến 1-min |
+| **Transform** | Apache Spark | Tính RSI(14), MACD(12/26/9) |
+| **Load** | ClickHouse | Data Warehouse (columnar, fast analytics) |
+| **Store** | MinIO (S3-compatible) | Object Storage cho Data Lake |
+| **Orchestrate** | Apache Airflow | Tự động hóa ETL + LLM jobs |
+| **Advise** | LLM (Gemini / OpenAI) | Tín hiệu BUY/SELL/HOLD |
+| **Visualize** | Grafana | Dashboard real-time |
 
 ## Khởi chạy
 
 ```bash
-# 1. Start Docker services
+# 1. Start Docker services (ClickHouse, MinIO, Airflow, Grafana)
 docker compose up -d
 
 # 2. Install Python dependencies
-pip install -r requirements.txt 
+pip install -r requirements.txt
 
-# 3. Run pre-extract (self-healing: detect gaps)
+# 3. Run pre-extract (self-healing: detect gaps, bulk download)
 python scripts/pre_extract.py
 
-# 4. Run initial ETL 
+# 4. Run initial ETL
 python scripts/extract.py
 python scripts/transform.py
 python scripts/load.py
 
-# 5. Train model — mặc định BTC only, thêm coin qua --symbols
-python scripts/train.py --symbols BTCUSDT
+# 5. Run LLM advisory signals (manual test)
+python scripts/llm_signal.py --dry-run
 
-# 6. Airflow tự động: extract mỗi phút, inference mỗi giờ
+# 6. Airflow tự động: ETL hàng ngày, LLM advisory mỗi giờ
 # Truy cập Airflow UI: http://localhost:8080
+# Truy cập Grafana:    http://localhost:3000
+# Truy cập MinIO:      http://localhost:9001
 ```
 
 ## Tài liệu chi tiết
-
 
 Xem [docs/ProjectOverview.md](docs/ProjectOverview.md)

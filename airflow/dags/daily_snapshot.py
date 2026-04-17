@@ -7,8 +7,8 @@
 # Tasks:
 #   1. extract_ticker: GET /ticker/24hr + /ticker/bookTicker → ticker_24h
 #   2. extract_order_book: GET /depth → order_book_snapshot
-#   3. load_ticker: Spark JDBC ghi vào bảng ticker_24h
-#   4. load_order_book: Spark JDBC ghi vào bảng order_book_snapshot
+#   3. load_ticker: clickhouse-connect ghi vào bảng ticker_24h
+#   4. load_order_book: clickhouse-connect ghi vào bảng order_book_snapshot
 #
 # Dependencies:
 #   extract_ticker ──▶ load_ticker
