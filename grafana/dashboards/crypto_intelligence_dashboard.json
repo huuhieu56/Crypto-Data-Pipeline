@@ -393,60 +393,24 @@
       "type": "timeseries"
     },
     {
-      "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          }
-        },
-        "overrides": []
-      },
       "gridPos": {
-        "h": 8,
+        "h": 14,
         "w": 24,
         "x": 0,
         "y": 16
       },
-      "id": 12,
+      "id": 20,
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "enablePagination": true,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
+        "mode": "html",
+        "code": {
+          "language": "html",
+          "showLineNumbers": false,
+          "showMiniMap": false
         },
-        "showHeader": true
+        "content": "<iframe src=\"http://localhost:8501/chat-ui?symbol=${symbol}\" style=\"width:100%;height:100%;border:none;border-radius:8px;\" allow=\"clipboard-write\"></iframe>"
       },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
-          },
-          "editorMode": "code",
-          "format": 0,
-          "rawQuery": true,
-          "rawSql": "SELECT\n  generated_at,\n  symbol,\n  signal,\n  confidence,\n  reason\nFROM llm_signals\nORDER BY generated_at DESC\nLIMIT 100",
-          "refId": "A"
-        }
-      ],
-      "title": "Latest LLM Signals",
-      "type": "table"
+      "title": "AI Chat Assistant",
+      "type": "text"
     },
     {
       "datasource": {
@@ -491,7 +455,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 30
       },
       "id": 11,
       "options": {
@@ -530,7 +494,7 @@
   "tags": [
     "crypto",
     "etl",
-    "llm"
+    "llm-chat"
   ],
   "templating": {
     "list": [
@@ -568,6 +532,6 @@
   "timezone": "Asia/Ho_Chi_Minh",
   "title": "Crypto Intelligence Dashboard",
   "uid": "crypto-intel-main",
-  "version": 3,
+  "version": 4,
   "weekStart": ""
 }
