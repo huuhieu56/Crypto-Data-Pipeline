@@ -1,10 +1,9 @@
-"""Utilities for generating LLM-based advisory trading signals."""
+"""Utilities for calling LLM providers (Gemini / OpenAI) in chat mode."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import re
 from typing import Any
 
 import aiohttp
@@ -21,13 +20,22 @@ from config.llm_config import (
     TEMPERATURE,
     TIMEOUT_SECONDS,
 )
-from utils.exceptions import LLMAPIError, LLMParseError, LLMQuotaExceededError
+from utils.exceptions import LLMAPIError, LLMQuotaExceededError
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-async def _call_gemini(session: aiohttp.ClientSession, prompt: str) -> str:
+# ---------------------------------------------------------------------------
+# Provider-specific callers
+# ---------------------------------------------------------------------------
+
+async def _call_gemini(
+    session: aiohttp.ClientSession,
+    system_prompt: str,
+    messages: list[dict[str, str]],
+) -> str:
+    """Call Google Gemini with system instruction + multi-turn contents."""
     if not GEMINI_API_KEY:
         raise LLMAPIError("Missing GEMINI_API_KEY")
 
@@ -35,13 +43,22 @@ async def _call_gemini(session: aiohttp.ClientSession, prompt: str) -> str:
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     )
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
+
+    # Build Gemini contents array from conversation history
+    contents: list[dict[str, Any]] = []
+    for msg in messages:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    payload: dict[str, Any] = {
+        "contents": contents,
         "generationConfig": {
             "temperature": TEMPERATURE,
             "maxOutputTokens": MAX_TOKENS,
         },
     }
+    if system_prompt:
+        payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
 
     timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
     async with session.post(url, json=payload, timeout=timeout) as resp:
@@ -55,7 +72,12 @@ async def _call_gemini(session: aiohttp.ClientSession, prompt: str) -> str:
             raise LLMAPIError(f"Unexpected Gemini response: {body[:300]}") from exc
 
 
-async def _call_openai(session: aiohttp.ClientSession, prompt: str) -> str:
+async def _call_openai(
+    session: aiohttp.ClientSession,
+    system_prompt: str,
+    messages: list[dict[str, str]],
+) -> str:
+    """Call OpenAI Chat Completions with system + multi-turn messages."""
     if not OPENAI_API_KEY:
         raise LLMAPIError("Missing OPENAI_API_KEY")
 
@@ -64,9 +86,16 @@ async def _call_openai(session: aiohttp.ClientSession, prompt: str) -> str:
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
+
+    oai_messages: list[dict[str, str]] = []
+    if system_prompt:
+        oai_messages.append({"role": "system", "content": system_prompt})
+    for msg in messages:
+        oai_messages.append({"role": msg["role"], "content": msg["content"]})
+
     payload = {
         "model": OPENAI_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": oai_messages,
         "temperature": TEMPERATURE,
         "max_tokens": MAX_TOKENS,
     }
@@ -83,73 +112,46 @@ async def _call_openai(session: aiohttp.ClientSession, prompt: str) -> str:
             raise LLMAPIError(f"Unexpected OpenAI response: {body[:300]}") from exc
 
 
-def _extract_json_object(raw: str) -> str:
-    text = raw.strip()
-    text = re.sub(r"^```(?:json)?", "", text).strip()
-    text = re.sub(r"```$", "", text).strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise LLMParseError(f"No JSON object found in response: {raw!r}")
-    return text[start : end + 1]
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
-
-def parse_llm_response(raw: str) -> dict[str, Any]:
-    try:
-        result = json.loads(_extract_json_object(raw))
-        signal = result.get("signal")
-        confidence = result.get("confidence")
-        reason = result.get("reason")
-        key_risk = result.get("key_risk", "")
-
-        if signal not in {"BUY", "SELL", "HOLD"}:
-            raise ValueError("signal must be BUY|SELL|HOLD")
-        if not isinstance(confidence, int) or not (1 <= confidence <= 5):
-            raise ValueError("confidence must be integer in [1,5]")
-        if not isinstance(reason, str) or not reason.strip():
-            raise ValueError("reason must be non-empty string")
-        if key_risk is None:
-            key_risk = ""
-        if not isinstance(key_risk, str):
-            raise ValueError("key_risk must be string")
-
-        return {
-            "signal": signal,
-            "confidence": confidence,
-            "reason": reason.strip()[:240],
-            "key_risk": key_risk.strip()[:120],
-        }
-    except LLMParseError:
-        raise
-    except Exception as exc:
-        raise LLMParseError(f"Failed to parse LLM response: {raw!r}") from exc
-
-
-async def get_llm_signal(
+async def get_chat_response(
     session: aiohttp.ClientSession,
-    symbol: str,
-    prompt: str,
-) -> dict[str, Any] | None:
+    system_prompt: str,
+    messages: list[dict[str, str]],
+) -> str | None:
+    """Send a chat request to the configured LLM provider with retry/backoff.
+
+    Args:
+        session: aiohttp client session.
+        system_prompt: System-level instruction including market context.
+        messages: Conversation history as list of {"role": "user"|"assistant", "content": "..."}.
+
+    Returns:
+        The assistant reply text, or None if all retries fail.
+
+    Raises:
+        LLMQuotaExceededError: When the provider quota is exhausted (fail-fast).
+    """
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             if LLM_PROVIDER == "gemini":
-                raw = await _call_gemini(session, prompt)
+                reply = await _call_gemini(session, system_prompt, messages)
             elif LLM_PROVIDER == "openai":
-                raw = await _call_openai(session, prompt)
+                reply = await _call_openai(session, system_prompt, messages)
             else:
                 raise LLMAPIError(f"Unsupported LLM_PROVIDER: {LLM_PROVIDER}")
 
-            parsed = parse_llm_response(raw)
-            logger.debug("[%s] %s (conf=%s)", symbol, parsed["signal"], parsed["confidence"])
-            return parsed
+            logger.debug("LLM reply (%d chars)", len(reply))
+            return reply
         except LLMQuotaExceededError:
-            # Quota exhausted should fail fast for this symbol (and caller can stop whole run).
             raise
-        except (LLMAPIError, LLMParseError) as exc:
+        except LLMAPIError as exc:
             msg = str(exc).lower()
             if "http 429" in msg and "quota" in msg:
                 raise LLMQuotaExceededError(str(exc)) from exc
-            logger.warning("[%s] Attempt %d/%d failed: %s", symbol, attempt, MAX_RETRIES, exc)
+            logger.warning("Attempt %d/%d failed: %s", attempt, MAX_RETRIES, exc)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(RETRY_DELAY * attempt)
 

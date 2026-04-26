@@ -66,5 +66,5 @@ class LLMQuotaExceededError(LLMAPIError):
     """LLM quota/rate limit exhausted for current account."""
 
 
-class LLMParseError(LLMError):
-    """Error when parsing LLM response into expected JSON schema."""
+class ResponseFormatError(LLMError):
+    """Error when LLM response format is unexpected or unparseable."""

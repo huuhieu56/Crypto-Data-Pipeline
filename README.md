@@ -1,4 +1,4 @@
-# Crypto Data Pipeline - Big Data & LLM Advisor
+# Crypto Data Pipeline - Big Data & LLM Chat Assistant
 
 ## Mô tả dự án
 
@@ -8,7 +8,7 @@ sử dụng Apache Spark, Apache Airflow, ClickHouse, MinIO, LLM (Gemini/OpenAI)
 - **Extract hàng ngày**: Gọi Binance REST API + Data Vision lấy nến 1-min cho 50 coins
 - **Transform**: Spark tính RSI(14), MACD(12/26/9) trên 1-min candles
 - **Load**: Ghi vào ClickHouse (clickhouse-connect)
-- **LLM Advisory mỗi giờ**: Phân tích 30 nến daily + snapshot → BUY/SELL/HOLD signals
+- **LLM Chat Assistant**: Chatbox tương tác trên Grafana, tự động gắn 30 nến daily context
 - **Visualize**: Grafana dashboard real-time
 
 ## Cấu trúc thư mục
@@ -25,29 +25,35 @@ Crypto-Data-Pipeline/
 ├── config/                             # Cấu hình hệ thống
 │   ├── __init__.py
 │   ├── config.py                       # Main config (paths, DB, API, MinIO, Spark)
-│   ├── llm_config.py                   # LLM config (provider, model, params)
+│   ├── llm_config.py                   # LLM config (provider, model, chat params)
 │   └── symbols.py                      # Danh sách 50 coins (single source of truth)
 │
-├── scripts/                            # Scripts chính ETL & LLM
+├── scripts/                            # Scripts chính ETL
 │   ├── __init__.py
 │   ├── pre_extract.py                  # Self-healing gap detection + recovery
 │   ├── extract.py                      # Thu thập từ Binance API & Data Vision
 │   ├── transform.py                    # Xử lý với Spark (RSI, MACD trên 1-min)
-│   ├── load.py                         # Ghi vào ClickHouse (clickhouse-connect)
-│   └── llm_signal.py                   # Sinh tín hiệu BUY/SELL/HOLD từ LLM
+│   └── load.py                         # Ghi vào ClickHouse (clickhouse-connect)
+│
+├── services/                           # Microservices
+│   └── chat_api/                       # LLM Chat Assistant backend
+│       ├── Dockerfile
+│       ├── requirements.txt
+│       ├── main.py                     # FastAPI (GET /chat-ui, POST /api/chat)
+│       └── chat_ui.html                # Chat interface (dark theme, iframe-ready)
 │
 ├── airflow/                            # Apache Airflow
 │   ├── __init__.py
 │   └── dags/
 │       ├── __init__.py
 │       ├── daily_etl.py                # DAG ETL klines + ticker hàng ngày (0 2 * * *)
-│       ├── daily_snapshot.py           # DAG ticker_24h + order_book (0 0 * * *)
-│       └── hourly_inference.py         # DAG LLM advisory signals mỗi giờ (0 * * * *)
+│       └── daily_snapshot.py           # DAG ticker_24h + order_book (0 0 * * *)
 │
 ├── sql/                                # Database schemas & queries
-│   ├── schema.sql                      # ClickHouse schema (Star Schema: 1 dim + 4 fact)
+│   ├── schema.sql                      # ClickHouse schema (Star Schema: 1 dim + 3 fact)
 │   ├── queries.sql                     # Query mẫu cho Grafana
-│   └── migrate_remove_predictions_clickhouse.sql  # Migration: predictions → llm_signals
+│   ├── migrate_remove_llm_signals.sql  # Migration: xóa bảng llm_signals cũ
+│   └── migrate_remove_predictions_clickhouse.sql  # Migration cũ (legacy)
 │
 ├── models/                             # Placeholder (reserved for future use)
 │   └── .gitkeep
@@ -74,7 +80,7 @@ Crypto-Data-Pipeline/
 │   ├── binance_utils.py                # Binance API wrappers (retry, rate limit, parse)
 │   ├── db_utils.py                     # ClickHouse client, insert/query helpers
 │   ├── data_utils.py                   # Data helpers (timestamps, partition keys, dates)
-│   ├── llm_utils.py                    # LLM API callers (Gemini, OpenAI), JSON parser
+│   ├── llm_utils.py                    # LLM API callers (Gemini, OpenAI), chat mode
 │   ├── storage.py                      # MinIO object storage utilities
 │   ├── exceptions.py                   # Custom exceptions theo layer (E/T/L/LLM)
 │   └── logger.py                       # Logging configuration
@@ -91,14 +97,14 @@ Crypto-Data-Pipeline/
 | **Transform** | Apache Spark | Tính RSI(14), MACD(12/26/9) |
 | **Load** | ClickHouse | Data Warehouse (columnar, fast analytics) |
 | **Store** | MinIO (S3-compatible) | Object Storage cho Data Lake |
-| **Orchestrate** | Apache Airflow | Tự động hóa ETL + LLM jobs |
-| **Advise** | LLM (Gemini / OpenAI) | Tín hiệu BUY/SELL/HOLD |
-| **Visualize** | Grafana | Dashboard real-time |
+| **Orchestrate** | Apache Airflow | Tự động hóa ETL jobs |
+| **Chat** | LLM (Gemini / OpenAI) + FastAPI | AI Chat Assistant với market context |
+| **Visualize** | Grafana | Dashboard real-time + embedded chatbox |
 
 ## Khởi chạy
 
 ```bash
-# 1. Start Docker services (ClickHouse, MinIO, Airflow, Grafana)
+# 1. Start Docker services (ClickHouse, MinIO, Airflow, Chat API, Grafana)
 docker compose up -d
 
 # 2. Install Python dependencies
@@ -112,13 +118,11 @@ python scripts/extract.py
 python scripts/transform.py
 python scripts/load.py
 
-# 5. Run LLM advisory signals (manual test)
-python scripts/llm_signal.py --dry-run
-
-# 6. Airflow tự động: ETL hàng ngày, LLM advisory mỗi giờ
-# Truy cập Airflow UI: http://localhost:8080
-# Truy cập Grafana:    http://localhost:3000
-# Truy cập MinIO:      http://localhost:9001
+# 5. Truy cập các services:
+#    Grafana (+ AI Chatbox):  http://localhost:3000
+#    Chat API:                http://localhost:8501/chat-ui?symbol=BTCUSDT
+#    Airflow UI:              http://localhost:8080
+#    MinIO Console:           http://localhost:9001
 ```
 
 ## Tài liệu chi tiết
