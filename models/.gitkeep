@@ -1,7 +1,0 @@
-# =============================================================================
-# Models Directory - Crypto Data Pipeline
-# =============================================================================
-# Thư mục dự phòng cho các model artifacts trong tương lai.
-# Hiện tại hệ thống sử dụng LLM API (Gemini/OpenAI) nên không lưu
-# model weights locally.
-# =============================================================================

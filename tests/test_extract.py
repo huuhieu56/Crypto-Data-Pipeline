@@ -26,7 +26,7 @@ from scripts.extract import (
     extract_recent_klines,
     extract_ticker_24h,
     extract_order_book_snapshot,
-    extract_daily,
+    extract_minutely,
     _write_to_partition,
 )
 from utils.exceptions import ExtractError
@@ -641,10 +641,10 @@ class TestExtractOrderBookSnapshot:
 
 
 # ============================================================================
-# 4.6 extract_daily()
+# 4.6 extract_minutely()
 # ============================================================================
-class TestExtractDaily:
-    """Tests cho extract_daily() — orchestrator cho daily extract."""
+class TestExtractMinutely:
+    """Tests cho extract_minutely() — orchestrator cho minutely extract."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, sample_klines_df):
@@ -670,7 +670,7 @@ class TestExtractDaily:
             {"BTCUSDT": "TRADING", "ETHUSDT": "TRADING"},
         )
 
-        extract_daily(symbols=TEST_SYMBOLS)
+        extract_minutely(symbols=TEST_SYMBOLS)
 
         self.mock_klines.assert_called_once_with(TEST_SYMBOLS)
         self.mock_ticker.assert_called_once()
@@ -684,7 +684,7 @@ class TestExtractDaily:
         )
         self.mock_klines.return_value = {}
 
-        extract_daily(symbols=["BTCUSDT", "CROUSDT"])
+        extract_minutely(symbols=["BTCUSDT", "CROUSDT"])
 
         # klines gọi cho TẤT CẢ symbols
         self.mock_klines.assert_called_once_with(["BTCUSDT", "CROUSDT"])
@@ -700,7 +700,7 @@ class TestExtractDaily:
         )
         self.mock_klines.return_value = {}
 
-        extract_daily(symbols=["BTCUSDT"])
+        extract_minutely(symbols=["BTCUSDT"])
 
         self.mock_klines.assert_called_once_with(["BTCUSDT"])
         self.mock_ticker.assert_called_once_with(["BTCUSDT"])
@@ -712,7 +712,7 @@ class TestExtractDaily:
         monkeypatch.setattr("scripts.extract.SYMBOLS_STATUS", {})
         self.mock_klines.return_value = {}
 
-        extract_daily(symbols=["NEWCOIN"])
+        extract_minutely(symbols=["NEWCOIN"])
 
         # NEWCOIN phải nằm trong trading list
         self.mock_ticker.assert_called_once_with(["NEWCOIN"])

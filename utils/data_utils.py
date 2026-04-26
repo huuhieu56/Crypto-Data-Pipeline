@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from dateutil.relativedelta import relativedelta
 
-from config.config import PARTITION_DATE_FORMAT
+from config.config import PARTITION_MONTH_FORMAT
 from config.symbols import SYMBOLS_STATUS, BREAK_DATES
 from utils.logger import get_logger
 
@@ -31,25 +31,25 @@ def get_target_end(symbol: str) -> datetime:
 # --- Partition Key Helpers ---------------------------------------------------
 
 def partition_key(symbol: str, dt: datetime | str | None = None) -> str:
-    """MinIO key for a daily partition: klines/{SYMBOL}/{YYYY-MM-DD}.parquet"""
+    """MinIO key for a monthly partition: klines/{SYMBOL}/{YYYY-MM}.parquet"""
     if dt is None:
-        date_str = datetime.now(timezone.utc).strftime(PARTITION_DATE_FORMAT)
+        month_str = datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
     elif isinstance(dt, str):
-        date_str = dt
+        month_str = dt
     else:
-        date_str = dt.strftime(PARTITION_DATE_FORMAT)
-    return f"klines/{symbol}/{date_str}.parquet"
+        month_str = dt.strftime(PARTITION_MONTH_FORMAT)
+    return f"klines/{symbol}/{month_str}.parquet"
 
 
-def delta_key(symbol: str, dt: datetime | str | None = None) -> str:
-    """MinIO key for a processed delta: features_delta/{SYMBOL}/{YYYY-MM-DD}.parquet"""
+def features_key(symbol: str, dt: datetime | str | None = None) -> str:
+    """MinIO key for processed features: features/{SYMBOL}/{YYYY-MM}.parquet"""
     if dt is None:
-        date_str = datetime.now(timezone.utc).strftime(PARTITION_DATE_FORMAT)
+        month_str = datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
     elif isinstance(dt, str):
-        date_str = dt
+        month_str = dt
     else:
-        date_str = dt.strftime(PARTITION_DATE_FORMAT)
-    return f"features_delta/{symbol}/{date_str}.parquet"
+        month_str = dt.strftime(PARTITION_MONTH_FORMAT)
+    return f"features/{symbol}/{month_str}.parquet"
 
 
 # --- Date / Month Utilities (Data Vision) -----------------------------------

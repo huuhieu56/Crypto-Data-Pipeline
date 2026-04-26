@@ -1,11 +1,11 @@
 """Extract data from Binance.
 
 Two modes:
-  bulk  — Full historical download via Data Vision (monthly ZIP files)
-  daily — Incremental update via REST API + Ticker 24h + Order Book
+  bulk     — Full historical download via Data Vision (monthly ZIP files)
+  minutely — Incremental update via REST API + Ticker 24h + Order Book
 
 Bulk mode is used by pre_extract.py for first-time / backfill downloads.
-Daily mode runs after pre_extract.py for ongoing incremental updates.
+Minutely mode runs via minutely_etl DAG for ongoing incremental updates.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.config import (
-    ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM, PARTITION_DATE_FORMAT,
+    ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM, PARTITION_MONTH_FORMAT,
 )
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
@@ -63,10 +63,10 @@ def _normalize_timestamp_unit(table: pa.Table, unit: str = "us") -> pa.Table:
 
 
 def _write_to_partition(symbol: str, new_df: pd.DataFrame) -> None:
-    """Append rows to today's daily partition on MinIO.
+    """Append rows to current month's partition on MinIO.
 
-    Daily partition is small (~1,440 rows max = ~100KB),
-    so download+concat+upload is fast.
+    Monthly partition grows over time (~44,640 rows max = ~4MB),
+    so download+concat+upload is still fast.
     """
     key = partition_key(symbol)
 
@@ -96,7 +96,7 @@ def download_data_vision(
 ) -> int | None:
     """Download klines from Data Vision with parallel month downloads.
 
-    Writes daily partitions only: klines/{SYMBOL}/{YYYY-MM-DD}.parquet
+    Writes monthly partitions: klines/{SYMBOL}/{YYYY-MM}.parquet
     Returns total record count, or None if no data was downloaded.
     """
     sorted_months = sorted(months)
@@ -131,7 +131,7 @@ def download_data_vision(
     if not downloaded:
         return None
 
-    # Write daily partitions (consistent with incremental path)
+    # Write monthly partitions
     total = 0
     for ym in sorted_months:
         if ym not in downloaded:
@@ -140,21 +140,17 @@ def download_data_vision(
         if df.empty:
             continue
 
-        open_time = pd.to_datetime(df["open_time"], utc=True, errors="coerce")
-        if open_time.isna().all():
-            open_time = pd.to_datetime(df["open_time"], errors="coerce")
+        month_str = f"{ym[0]}-{ym[1]:02d}"
+        key = partition_key(symbol, month_str)
 
-        daily_df = df.assign(_dt=open_time).dropna(subset=["_dt"])
-        if daily_df.empty:
-            continue
+        df_out = df.sort_values("open_time")
+        for c in df_out.columns:
+            if pd.api.types.is_datetime64_any_dtype(df_out[c]):
+                df_out[c] = df_out[c].dt.as_unit("us")
 
-        for date_val, one_day in daily_df.groupby(daily_df["_dt"].dt.date):
-            day_str = date_val.strftime(PARTITION_DATE_FORMAT)
-            key = partition_key(symbol, day_str)
-            day_out = one_day.drop(columns=["_dt"]).sort_values("open_time")
-            table = pa.Table.from_pandas(day_out, preserve_index=False)
-            storage.upload_parquet(BUCKET_RAW, key, table)
-            total += len(day_out)
+        table = pa.Table.from_pandas(df_out, preserve_index=False)
+        storage.upload_parquet(BUCKET_RAW, key, table)
+        total += len(df_out)
 
     logger.info(
         "[%s] Bulk complete: %d/%d months, %s records",
@@ -210,7 +206,7 @@ def extract_recent_klines(
     """Incremental klines update via REST API.
 
     Uses batch ClickHouse query for last timestamps (1 query for all symbols).
-    Writes new rows to daily partitions on MinIO.
+    Writes new rows to monthly partitions on MinIO.
     """
     if not symbols:
         return {}
@@ -399,13 +395,13 @@ def _is_float(s: str) -> bool:
 
 # --- Entry Points ------------------------------------------------------------
 
-def extract_daily(symbols: list[str] | None = None) -> None:
-    """Daily extract: REST API klines + ticker + order book."""
+def extract_minutely(symbols: list[str] | None = None) -> None:
+    """Minutely extract: REST API klines + ticker + order book."""
     symbols = symbols or SYMBOLS
     trading = [s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"]
 
     logger.info(
-        "=== Daily Extract: %d symbols (%d TRADING) ===",
+        "=== Minutely Extract: %d symbols (%d TRADING) ===",
         len(symbols), len(trading),
     )
 
@@ -416,18 +412,18 @@ def extract_daily(symbols: list[str] | None = None) -> None:
 
     extract_ticker_24h(trading)
     extract_order_book_snapshot(trading)
-    logger.info("=== Daily Extract finished ===")
+    logger.info("=== Minutely Extract finished ===")
 
 
 # --- CLI ---------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Extract data from Binance (bulk or daily)",
+        description="Extract data from Binance (bulk or minutely)",
     )
     parser.add_argument(
-        "--mode", choices=["daily", "bulk"], default="daily",
-        help="daily = incremental REST API, bulk = full Data Vision",
+        "--mode", choices=["minutely", "bulk"], default="minutely",
+        help="minutely = incremental REST API, bulk = full Data Vision",
     )
     parser.add_argument(
         "--symbols", nargs="+", metavar="SYM", default=None,
@@ -449,7 +445,7 @@ def main() -> None:
     if args.mode == "bulk":
         extract_bulk(symbols, months_back=args.months)
     else:
-        extract_daily(symbols)
+        extract_minutely(symbols)
 
 
 if __name__ == "__main__":

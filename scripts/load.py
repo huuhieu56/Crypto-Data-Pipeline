@@ -1,6 +1,6 @@
 """Load script — write processed data to ClickHouse.
 
-Reads delta Parquet from MinIO (daily partitions), batch inserts
+Reads monthly features Parquet from MinIO, batch inserts
 into ClickHouse via native clickhouse-connect protocol.
 
 Usage:
@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from config.config import MINIO_CONFIG, PARTITION_DATE_FORMAT
+from config.config import MINIO_CONFIG, PARTITION_MONTH_FORMAT
 from config.symbols import SYMBOLS, SYMBOL_REGISTRY
 from utils.logger import get_logger
 from utils.exceptions import LoadError
@@ -75,22 +75,22 @@ def load_symbols() -> None:
 
 def load_klines(
     symbols: list[str] | None = None,
-    date_str: str | None = None,
+    month_str: str | None = None,
 ) -> None:
-    """Load klines from MinIO delta partitions into ClickHouse.
+    """Load klines from MinIO monthly features into ClickHouse.
 
-    Reads features_delta/{SYMBOL}/{date}.parquet for each symbol,
+    Reads features/{SYMBOL}/{YYYY-MM}.parquet for each symbol,
     batch inserts all data in one ClickHouse call.
     No column renaming needed — Transform outputs DB column names.
     """
     symbols = symbols or SYMBOLS
-    date_str = date_str or datetime.now(timezone.utc).strftime(PARTITION_DATE_FORMAT)
+    month_str = month_str or datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
 
-    # Collect all delta data
+    # Collect all feature data for current month
     all_dfs: list[pd.DataFrame] = []
 
     for symbol in symbols:
-        key = f"features_delta/{symbol}/{date_str}.parquet"
+        key = f"features/{symbol}/{month_str}.parquet"
         if not storage.object_exists(BUCKET_PROCESSED, key):
             continue
 
@@ -112,70 +112,13 @@ def load_klines(
             logger.error("[Load] %s: error — %s", symbol, exc)
 
     if not all_dfs:
-        # Bootstrap: no delta yet but table is empty -> load full features once.
-        try:
-            cnt_df = ch_query_df("SELECT count() AS cnt FROM klines")
-            current_rows = int(cnt_df.iloc[0]["cnt"]) if not cnt_df.empty else 0
-        except Exception as exc:
-            logger.warning("Cannot verify klines row count: %s", exc)
-            current_rows = -1
-
-        if current_rows == 0:
-            feature_keys = [
-                k for k in storage.list_objects(BUCKET_PROCESSED, "features/")
-                if k.endswith(".parquet")
-            ]
-            if feature_keys:
-                logger.info(
-                    "No delta data for %s and klines table is empty; "
-                    "auto-loading from full features/ (%d files)",
-                    date_str,
-                    len(feature_keys),
-                )
-                load_klines_full_rebuild()
-                return
-
-        logger.info("No delta data to load for %s", date_str)
+        logger.info("No features data to load for %s", month_str)
         return
 
     # Single batch insert (much faster than 50 individual inserts)
     combined = pd.concat(all_dfs, ignore_index=True)
     inserted = ch_insert_df("klines", combined)
-    logger.info("Klines loaded: %s rows (%s)", f"{inserted:,}", date_str)
-
-
-def load_klines_full_rebuild() -> None:
-    """Load full features for all symbols (after transform --full-rebuild)."""
-    keys = storage.list_objects(BUCKET_PROCESSED, "features/")
-    parquet_keys = [k for k in keys if k.endswith(".parquet")]
-
-    if not parquet_keys:
-        logger.warning("No features/ parquet found — skipping")
-        return
-
-    logger.info("Loading full features: %d files", len(parquet_keys))
-    total_rows = 0
-
-    for key in parquet_keys:
-        try:
-            table = storage.download_parquet(BUCKET_PROCESSED, key)
-            df = table.to_pandas()
-            del table
-
-            if df.empty:
-                continue
-
-            if "timestamp" in df.columns:
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
-            if "trades" in df.columns:
-                df["trades"] = pd.to_numeric(df["trades"], errors="coerce").fillna(0).astype("uint32")
-
-            inserted = ch_insert_df("klines", df)
-            total_rows += inserted
-        except Exception as exc:
-            logger.error("[Load] %s: error — %s", key, exc)
-
-    logger.info("Full rebuild loaded: %s total rows", f"{total_rows:,}")
+    logger.info("Klines loaded: %s rows (%s)", f"{inserted:,}", month_str)
 
 
 def load_ticker() -> None:
@@ -257,17 +200,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["symbols", "klines", "ticker", "orderbook"],
         help="Skip these tables",
     )
-    p.add_argument(
-        "--full-rebuild", action="store_true",
-        help="Load from features/ instead of features_delta/",
-    )
     return p
 
 
 def main(
     only: set[str] | None = None,
     skip: set[str] | None = None,
-    full_rebuild: bool = False,
 ) -> None:
     skip = skip or set()
 
@@ -286,10 +224,7 @@ def main(
     if should_load("orderbook"):
         load_order_book()
     if should_load("klines"):
-        if full_rebuild:
-            load_klines_full_rebuild()
-        else:
-            load_klines()
+        load_klines()
 
     logger.info("=== Load pipeline complete ===")
 
@@ -299,5 +234,4 @@ if __name__ == "__main__":
     main(
         only=set(args.only) if args.only else None,
         skip=set(args.skip),
-        full_rebuild=args.full_rebuild,
     )

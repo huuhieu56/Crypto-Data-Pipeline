@@ -5,7 +5,7 @@
 Hệ thống End-to-End Data Pipeline thu thập, xử lý và phân tích thị trường cryptocurrency
 sử dụng Apache Spark, Apache Airflow, ClickHouse, MinIO, LLM (Gemini/OpenAI) và Grafana.
 
-- **Extract hàng ngày**: Gọi Binance REST API + Data Vision lấy nến 1-min cho 50 coins
+- **Extract mỗi phút**: Gọi Binance REST API lấy nến 1-min, ticker 24h, order book cho 50 coins
 - **Transform**: Spark tính RSI(14), MACD(12/26/9) trên 1-min candles
 - **Load**: Ghi vào ClickHouse (clickhouse-connect)
 - **LLM Chat Assistant**: Chatbox tương tác trên Grafana, tự động gắn 30 nến daily context
@@ -46,14 +46,12 @@ Crypto-Data-Pipeline/
 │   ├── __init__.py
 │   └── dags/
 │       ├── __init__.py
-│       ├── daily_etl.py                # DAG ETL klines + ticker hàng ngày (0 2 * * *)
-│       └── daily_snapshot.py           # DAG ticker_24h + order_book (0 0 * * *)
+│       └── minutely_etl.py            # DAG Mini-batch ETL mỗi phút (* * * * *)
 │
 ├── sql/                                # Database schemas & queries
 │   ├── schema.sql                      # ClickHouse schema (Star Schema: 1 dim + 3 fact)
 │   ├── queries.sql                     # Query mẫu cho Grafana
-│   ├── migrate_remove_llm_signals.sql  # Migration: xóa bảng llm_signals cũ
-│   └── migrate_remove_predictions_clickhouse.sql  # Migration cũ (legacy)
+│   └── init_db.sql                     # Tạo database thủ công (ngoài Docker)
 │
 ├── models/                             # Placeholder (reserved for future use)
 │   └── .gitkeep

@@ -2,7 +2,7 @@
 # Airflow DAGs Package - Crypto Data Pipeline
 # =============================================================================
 # Chứa các DAG files:
-#   - daily_etl.py: ETL gia tăng hằng ngày
-#   - daily_snapshot.py: Ticker 24h + Order Book (0 0 * * *)
+#   - minutely_etl.py: Mini-batch ETL mỗi phút (* * * * *)
+#     klines + ticker_24h + order_book_snapshot
 # =============================================================================
 
