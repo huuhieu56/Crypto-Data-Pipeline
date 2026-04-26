@@ -78,26 +78,13 @@ Số records = 50 coins × 3 năm × 365 ngày
 Kích thước = 54,750 × 150 bytes/record ≈ 8 MB
 ```
 
-### 3.3. Bảng `llm_signals` (Hourly advisory - 1 lần/giờ)
-
-```
-Số records = 50 coins × 3 năm × 365 ngày × 24 lần/ngày
-           = 50 × 3 × 365 × 24
-           = 1,314,000 records
-
-Kích thước = 1,314,000 × 200 bytes/record ≈ 250 MB
-```
-
-### 3.4. Tổng hợp theo bảng
-
 | Bảng                  | Số records     | Kích thước   | Tần suất ghi     |
 | --------------------- | -------------- | ------------ | ---------------- |
 | `symbols`             | 50             | < 1 KB       | 1 lần (setup)    |
 | `klines`              | 78,840,000     | ~7.5 GB      | Daily batch      |
 | `ticker_24h`          | 54,750         | ~8 MB        | 50 recs/ngày      |
 | `order_book_snapshot`  | 54,750         | ~5 MB        | 50 recs/ngày      |
-| `llm_signals`         | 1,314,000      | ~250 MB      | 50 recs/giờ      |
-| **Total**             | **~80.3 triệu** | **~7.8 GB** | -               |
+| **Total**             | **~79 triệu** | **~7.5 GB** | -               |
 
 ### 3.5. Breakdown theo layer
 
@@ -105,7 +92,7 @@ Kích thước = 1,314,000 × 200 bytes/record ≈ 250 MB
 | --------------------- | --------------- | ---------- | ------------------------------------- |
 | Raw (Data Lake)       | CSV → MinIO     | ~7.5 GB    | Dữ liệu gốc từ Binance               |
 | Processed (Data Lake) | Parquet → MinIO | ~2 GB      | Nén tốt hơn CSV, có indicators        |
-| Warehouse             | ClickHouse      | ~5 GB      | Bao gồm index + llm_signals           |
+| Warehouse             | ClickHouse      | ~5 GB      | Bao gồm index + pre-aggregated data           |
 
 ---
 
@@ -136,10 +123,10 @@ Kích thước = 1,314,000 × 200 bytes/record ≈ 250 MB
 ├─────────────────────────────────────────────────────────────────────┼──────────┤
 │                                                                     ▼          │
 │  ┌─────────────────────────────────┐    ┌─────────────────────────────────┐   │
-│  │        LLM ADVISOR LAYER        │    │         VISUALIZATION           │   │
+│  │        LLM CHAT ASSISTANT       │    │         VISUALIZATION           │   │
 │  │  ┌───────────┐ ┌─────────────┐  │    │                                 │   │
-│  │  │  Gemini / │ │  Advisory   │  │    │         Grafana                 │   │
-│  │  │  OpenAI   │ │  Signals    │  │    │         Dashboard               │   │
+│  │  │  Gemini / │ │chat-api     │  │    │         Grafana                 │   │
+│  │  │  OpenAI   │ │FastAPI (:8501)│  │    │         Dashboard (w/ iframe)   │   │
 │  │  └───────────┘ └─────────────┘  │    │                                 │   │
 │  └─────────────────────────────────┘    └─────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────────┘
@@ -190,31 +177,21 @@ Kích thước = 1,314,000 × 200 bytes/record ≈ 250 MB
                          │  status             │
                          └──────────┬──────────┘
                                     │
-              ┌─────────────────────┼─────────────────────┐
-              │                     │                     │
-              ▼                     ▼                     ▼
-┌──────────────────────┐ ┌──────────────────────┐ ┌──────────────────────┐
-│       klines         │ │     ticker_24h       │ │     llm_signals      │
-│    (Fact Table)      │ │    (Fact Table)      │ │    (Fact Table)      │
-│                      │ │                      │ │                      │
-│  symbol (FK) ────────│─│── symbol (FK) ───────│─│── symbol (FK)        │
-│  timestamp (PK)      │ │  snapshot_time (PK)  │ │  generated_at (PK)   │
-│  open, high, low...  │ │  price_change_24h    │ │  signal, confidence  │
-│  rsi, macd...        │ │  volume_24h...       │ │  reason, key_risk    │
-└──────────────────────┘ └──────────────────────┘ └──────────────────────┘
-                         ┌──────────────────────────┐
-                         │   order_book_snapshot    │
-                         │       (Fact Table)       │
-                         │                          │
-                         │  symbol (FK)             │
-                         │  timestamp (PK)          │
-                         │  total_bid_volume        │
-                         │  total_ask_volume        │
-                         │  imbalance               │
-                         └──────────────────────────┘
-```
+               ┌─────────────────────┼─────────────────────┐
+               │                     │                     │
+               ▼                     ▼                     ▼
+ ┌──────────────────────┐ ┌──────────────────────┐ ┌──────────────────────────┐
+ │       klines         │ │     ticker_24h       │ │   order_book_snapshot    │
+ │    (Fact Table)      │ │    (Fact Table)      │ │       (Fact Table)       │
+ │                      │ │                      │ │                          │
+ │  symbol (FK) ────────│─│── symbol (FK) ───────│─│── symbol (FK)            │
+ │  timestamp (PK)      │ │  snapshot_time (PK)  │ │  timestamp (PK)          │
+ │  open, high, low...  │ │  price_change_24h    │ │  total_bid_volume        │
+ │  rsi, macd...        │ │  volume_24h...       │ │  total_ask_volume        │
+ └──────────────────────┘ └──────────────────────┘ │  imbalance               │
+                                                   └──────────────────────────┘
 
-> **Thiết kế Star Schema:** 1 Dimension table (`symbols`) + 4 Fact tables (`klines`, `ticker_24h`, `order_book_snapshot`, `llm_signals`)
+> **Thiết kế Star Schema:** 1 Dimension table (`symbols`) + 3 Fact tables (`klines`, `ticker_24h`, `order_book_snapshot`)
 
 ### 5.2. Nguồn dữ liệu
 
@@ -224,7 +201,6 @@ Kích thước = 1,314,000 × 200 bytes/record ≈ 250 MB
 | `klines`              | Binance `/api/v3/klines`                                   | Dữ liệu nến (OHLCV) + indicators        | Daily (02:00 AM)  |
 | `ticker_24h`          | Binance `/api/v3/ticker/24hr` + `/api/v3/ticker/bookTicker`| Thống kê 24h + best bid/ask + spread     | Daily             |
 | `order_book_snapshot`  | Binance `/api/v3/depth`                                    | Snapshot order book để đo áp lực mua/bán | Daily             |
-| `llm_signals`         | LLM API (Gemini / OpenAI)                                  | Tín hiệu tư vấn BUY/SELL/HOLD           | Mỗi giờ           |
 
 ### 5.3. Bảng `symbols` (Dimension Table)
 
@@ -310,54 +286,7 @@ Kích thước = 1,314,000 × 200 bytes/record ≈ 250 MB
 
 > **Ý nghĩa:** Dữ liệu này giúp phân tích market sentiment, detect unusual volume spikes, và là context đầu vào cho LLM advisory.
 
-### 5.6. Bảng `llm_signals` (Fact Table)
-
-> **Mục đích:** Lưu kết quả tín hiệu tư vấn từ LLM mỗi giờ, bao gồm tín hiệu, mức độ tin cậy, lý do, và snapshot thị trường tại thời điểm phân tích.
-
-| Column              | Type                   | Description                                | Nguồn         |
-| ------------------- | ---------------------- | ------------------------------------------ | ------------- |
-| `symbol`            | String                 | → symbols.symbol                           | System        |
-| `generated_at`      | DateTime               | Thời điểm chạy LLM (mỗi giờ)               | System        |
-| `signal`            | LowCardinality(String) | Tín hiệu: BUY / SELL / HOLD              | LLM           |
-| `confidence`        | UInt8                  | Mức tin cậy (1-5)                          | LLM           |
-| `reason`            | String                 | Lý do tín hiệu (max 240 ký tự)            | LLM           |
-| `key_risk`          | Nullable(String)       | Rủi ro chính (max 120 ký tự)              | LLM           |
-| `rsi_14`            | Nullable(Float64)      | RSI tại thời điểm phân tích                | Snapshot      |
-| `macd_cross`        | LowCardinality(String) | MACD crossover: bullish/bearish/neutral    | Calculated    |
-| `ob_imbalance`      | Nullable(Float64)      | Order book imbalance (0-1)                 | Snapshot      |
-| `vol_change_pct`    | Nullable(Float64)      | Thay đổi volume 24h (%)                    | Calculated    |
-| `price_change_pct`  | Nullable(Float64)      | Thay đổi giá 24h (%)                       | Ticker        |
-| `data_window_minutes`| UInt16                | Cửa sổ dữ liệu đầu vào (phút)             | Config        |
-| `trend_6h`          | LowCardinality(String) | Xu hướng: UPTREND/DOWNTREND/SIDEWAYS      | Calculated    |
-| `trend_6h_pct`      | Nullable(Float64)      | % thay đổi theo xu hướng                   | Calculated    |
-| `llm_provider`      | LowCardinality(String) | Provider: gemini / openai                  | Config        |
-| `model_version`     | String                 | Version (e.g. daily30_v1)                  | System        |
-| `created_at`        | DateTime               | Thời gian ghi vào DB                       | System        |
-
-**ORDER BY:** `(symbol, generated_at)`
-
-**PARTITION BY:** `toYYYYMM(generated_at)`
-
-**Engine:** `ReplacingMergeTree()`
-
-**Sample Data:**
-
-```
-| symbol  | generated_at        | signal | confidence | reason                        | key_risk              |
-|---------|---------------------|--------|------------|-------------------------------|-----------------------|
-| BTCUSDT | 2026-01-26 14:00:00 | BUY    | 4          | RSI oversold, MACD bullish    | High volatility risk  |
-| ETHUSDT | 2026-01-26 14:00:00 | HOLD   | 3          | Sideways trend, mixed signals | Breakout uncertainty  |
-| SOLUSDT | 2026-01-26 14:00:00 | SELL   | 4          | RSI overbought, volume drop   | Sudden reversal risk  |
-```
-
-> **Ý nghĩa:** Tách signals ra bảng riêng giúp:
->
-> - Theo dõi performance của LLM advisor theo thời gian
-> - So sánh giữa các LLM providers (Gemini vs OpenAI)
-> - Phân tích phân bố tín hiệu (BUY/SELL/HOLD ratio)
-> - Dashboard hiển thị advisory real-time
-
-### 5.7. Bảng `order_book_snapshot` (Fact Table)
+### 5.6. Bảng `order_book_snapshot` (Fact Table)
 
 > **Mục đích:** Theo dõi áp lực mua/bán theo snapshot order book.
 
@@ -375,20 +304,16 @@ Kích thước = 1,314,000 × 200 bytes/record ≈ 250 MB
 
 > **Ý nghĩa:** `imbalance` > 0.5 → lực mua mạnh, < 0.5 → lực bán mạnh. Dữ liệu này là một trong các input cho LLM advisory.
 
-### 5.8. Ví dụ SQL Queries (ClickHouse)
+### 5.7. Ví dụ SQL Queries (ClickHouse)
 
-**Query 1:** Snapshot mới nhất theo symbol: close + ticker + advisory
+**Query 1:** Snapshot mới nhất theo symbol: close + ticker
 
 ```sql
 SELECT
     s.symbol,
     s.base_asset,
     k.latest_close,
-    t.price_change_pct AS change_24h_pct,
-    l.signal,
-    l.confidence,
-    l.reason,
-    l.generated_at
+    t.price_change_pct AS change_24h_pct
 FROM symbols s
 LEFT JOIN (
     SELECT symbol, argMax(close, timestamp) AS latest_close
@@ -398,42 +323,7 @@ LEFT JOIN (
     SELECT symbol, argMax(price_change_pct, snapshot_time) AS price_change_pct
     FROM ticker_24h GROUP BY symbol
 ) t ON s.symbol = t.symbol
-LEFT JOIN (
-    SELECT symbol, argMax(signal, generated_at) AS signal,
-           argMax(confidence, generated_at) AS confidence,
-           argMax(reason, generated_at) AS reason,
-           max(generated_at) AS generated_at
-    FROM llm_signals GROUP BY symbol
-) l ON s.symbol = l.symbol
 ORDER BY s.symbol;
-```
-
-**Query 2:** Phân bố tín hiệu theo giờ trong 7 ngày
-
-```sql
-SELECT
-    toStartOfHour(generated_at) AS hour,
-    countIf(signal = 'BUY') AS buy_count,
-    countIf(signal = 'SELL') AS sell_count,
-    countIf(signal = 'HOLD') AS hold_count,
-    round(avg(confidence), 2) AS avg_confidence
-FROM llm_signals
-WHERE generated_at >= now() - INTERVAL 7 DAY
-GROUP BY hour
-ORDER BY hour DESC;
-```
-
-**Query 3:** KPI advisory tổng quan (7 ngày)
-
-```sql
-SELECT
-    count() AS total_signals,
-    round(avg(confidence), 2) AS avg_confidence,
-    round(countIf(signal = 'BUY') * 100.0 / count(), 2) AS buy_ratio_pct,
-    round(countIf(signal = 'SELL') * 100.0 / count(), 2) AS sell_ratio_pct,
-    round(countIf(signal = 'HOLD') * 100.0 / count(), 2) AS hold_ratio_pct
-FROM llm_signals
-WHERE generated_at >= now() - INTERVAL 7 DAY;
 ```
 
 ### 5.9. Giải thích các chỉ số kỹ thuật
@@ -476,10 +366,10 @@ WHERE generated_at >= now() - INTERVAL 7 DAY;
 ┌────────────┴───────────────────────┴───────────────────────────┴────────────────────────┐
 │                                      LOAD                                                │
 │                                                                                          │
-│    ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐   ┌──────────────────────┐   ┌───────────────┐ │
-│    │    symbols      │   │     klines      │   │   ticker_24h    │   │ order_book_snapshot │   │  llm_signals  │ │
-│    │  (dim table)    │   │  (fact table)   │   │  (fact table)   │   │   (fact table)      │   │ (fact table)  │ │
-│    └─────────────────┘   └─────────────────┘   └─────────────────┘   └──────────────────────┘   └───────────────┘ │
+│    ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐   ┌──────────────────────┐ │
+│    │    symbols      │   │     klines      │   │   ticker_24h    │   │ order_book_snapshot │ │
+│    │  (dim table)    │   │  (fact table)   │   │  (fact table)   │   │   (fact table)      │ │
+│    └─────────────────┘   └─────────────────┘   └─────────────────┘   └──────────────────────┘ │
 │                                                                                          │
 │                              ClickHouse Database                                         │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
@@ -554,7 +444,6 @@ WHERE generated_at >= now() - INTERVAL 7 DAY;
 | `klines`              | features.parquet        | Append | Dữ liệu mới daily (daily_etl)        |
 | `ticker_24h`          | ticker_24h.csv          | Append | 50 records/ngày (daily_etl)           |
 | `order_book_snapshot`  | order_book_snapshot.csv | Append | 50 records/ngày (daily_snapshot)      |
-| `llm_signals`         | (từ LLM inference)      | Append | 50 records/giờ (hourly_inference)     |
 
 ---
 
@@ -575,7 +464,6 @@ WHERE generated_at >= now() - INTERVAL 7 DAY;
 | -------------------- | --------------- | ------------------------------------------------------- |
 | `daily_etl`          | 0 2 * * *       | Pre-extract → Extract klines/ticker → Transform → Load  |
 | `daily_snapshot`     | 0 0 * * *       | Ticker 24h + Order Book snapshot hàng ngày               |
-| `hourly_inference`   | 0 * * * *       | Sinh tín hiệu LLM advisory (BUY/SELL/HOLD) mỗi giờ      |
 
 ### 7.3. DAG: daily_etl
 
@@ -651,100 +539,49 @@ Timeout: 15 phút
 
 > **Note:** Ticker 24h là rolling 24h snapshot, Order book là snapshot áp lực mua/bán — cả hai lấy 1 lần/ngày là đủ cho phân tích.
 
-### 7.5. DAG: hourly_inference
-
-```
-Trigger: Đầu mỗi giờ (0 * * * *)
-Timeout: 10 phút
-max_active_runs: 1
-
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                              llm_signal task                                   │
-│                                                                                │
-│  Cho mỗi symbol (batch 10):                                                   │
-│  ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────────────┐ │
-│  │ Fetch context    │───▶│  Call LLM API    │───▶│  Save to llm_signals    │ │
-│  │                  │    │                  │    │                          │ │
-│  │ - 30 daily klines│    │ - Gemini/OpenAI  │    │ - INSERT into ClickHouse │ │
-│  │ - Ticker 24h     │    │ - Prompt + JSON  │    │ - 50 rows/giờ           │ │
-│  │ - Order book     │    │ - BUY/SELL/HOLD  │    │                          │ │
-│  │   imbalance      │    │                  │    │                          │ │
-│  └──────────────────┘    └──────────────────┘    └──────────────────────────┘ │
-│       ~2 giây                  ~5 giây                    ~1 giây             │
-└───────────────────────────────────────────────────────────────────────────────┘
-```
-
-> **LLM Prompt Context:** Mỗi symbol nhận prompt bao gồm 30 nến daily (OHLCV + RSI), snapshot thị trường (RSI, MACD crossover, order book imbalance, price/volume change 24h), và trả về JSON `{signal, confidence, reason, key_risk}`.
-
-> **Quota Handling:** Nếu LLM API bị rate limit (HTTP 429), hệ thống tự fallback sang tín hiệu HOLD với confidence=1 cho các symbol còn lại, đảm bảo pipeline không crash.
-
 ---
 
-## 8. LLM Advisor — Tín hiệu tư vấn giao dịch Crypto
+## 8. LLM Chat Assistant — AI Chat Tương Tác
 
 ### 8.1. Thiết kế tổng quan
 
-**Bài toán:** Phân tích dữ liệu thị trường đa chiều và sinh tín hiệu tư vấn BUY/SELL/HOLD cho 50 coins, mỗi giờ.
+**Bài toán:** Thay vì sinh tín hiệu BUY/SELL/HOLD định kì một cách cứng nhắc, hệ thống cần cung cấp một AI chatbot linh hoạt, cho phép người dùng đặt câu hỏi tự do về thị trường và nhận được phân tích chuyên sâu dựa trên dữ liệu thật.
 
-**Tại sao dùng LLM Advisor thay vì LSTM prediction?**
+**Kiến trúc:** Iframe trên Grafana → truy cập FastAPI Backend (`chat-api`) → tự động query ClickHouse (30 market candles gần nhất + snapshot thị trường) → Gửi prompt tới LLM (Gemini/OpenAI) → Trả về Markdown response cho UI.
 
-| Khía cạnh             | LSTM Prediction                      | LLM Advisor (được chọn)                |
-| --------------------- | ------------------------------------ | --------------------------------------- |
-| Output                | Giá close dự báo (con số)             | Signal BUY/SELL/HOLD + lý do            |
-| Actionable            | Cần tự diễn giải giá                  | Signal rõ ràng, trader action ngay       |
-| Interpretability      | Black-box                             | Có `reason` + `key_risk` giải thích      |
-| Multi-factor          | Chỉ dùng OHLCV + RSI/MACD            | Kết hợp RSI, MACD, order book, volume   |
-| Infrastructure        | Cần GPU training, `.pth` file         | Chỉ cần API key, không cần GPU           |
-| Maintenance           | Cần retrain weekly                    | Model tự cập nhật bởi provider           |
-| Cost                  | GPU training cost                     | API cost per request (rất thấp)          |
-
-**Pipeline:** Klines daily (ClickHouse) + Ticker 24h + Order Book → Build Prompt → LLM API → Parse JSON → Save to `llm_signals`
-
-### 8.2. Cấu hình LLM
+### 8.2. Cấu hình LLM cho Chat
 
 | Parameter            | Value               | Giải thích                                       |
 | -------------------- | ------------------- | ------------------------------------------------ |
-| Daily candles        | 30                  | 30 nến daily (~1 tháng) làm context               |
-| Providers            | Gemini / OpenAI     | Có thể switch qua env variable                    |
-| Gemini model         | gemini-2.5-flash-lite| Nhanh, rẻ, đủ cho structured output              |
-| OpenAI model         | gpt-5.4-nano        | Alternative provider                              |
-| Temperature          | 0.1                 | Thấp → output ổn định, ít random                  |
-| Max tokens           | 220                 | Đủ cho JSON response ngắn                         |
-| Timeout              | 15s / request       | Tránh treo quá lâu                                |
-| Batch size           | 10 symbols          | 10 symbols/batch, async concurrent                |
-| Max retries          | 3                   | Retry với delay tăng dần (2s × attempt)            |
+| Daily candles        | 30                  | 30 nến daily (~1 tháng) tự động làm context      |
+| Providers            | Gemini / OpenAI     | Có thể switch qua env variable                   |
+| Gemini model         | gemini-2.5-flash-lite| Nhanh, rẻ, phù hợp cho text chat                |
+| OpenAI model         | gpt-5.4-nano        | Alternative provider                             |
+| Temperature          | 0.3                 | Tăng một chút so với 0.1 để câu trả lời tự nhiên hơn|
+| Max tokens           | 512                 | Đủ cho một response phân tích chi tiết           |
+| Timeout              | 30s / request       | Tăng timeout cho chat response dài               |
+| History              | 10 turn             | Giữ ngữ cảnh chat (context memory) cho session   |
 
-### 8.3. Context đầu vào cho LLM
+### 8.3. Context Đầu Vào Tự Động (System Prompt)
+
+Mỗi lần người dùng gửi tin nhắn, backend tự động fetch dữ liệu mới nhất từ ClickHouse để chèn vào `system_prompt`:
 
 | Dữ liệu             | Nguồn                | Chi tiết                                    |
 | -------------------- | -------------------- | ------------------------------------------- |
-| Daily candles        | Bảng `klines`        | 30 nến daily aggregate (O, H, L, C, V, RSI) |
-| RSI(14)              | Bảng `klines`        | Kèm tag: OVERBOUGHT / OVERSOLD / NEUTRAL   |
-| MACD crossover       | Bảng `klines`        | bullish / bearish / neutral                  |
-| Order book imbalance | Bảng `order_book_snapshot` | strong buy / strong sell / balanced    |
+| Daily candles        | Bảng `klines`        | OHLCV, RSI, MACD của 30 ngày gần nhất       |
+| MACD crossover       | Bảng `klines`        | bullish / bearish / neutral                 |
+| Order book imbalance | Bảng `order_book_snapshot` | strong buy / strong sell / balanced   |
 | Price change 24h     | Bảng `ticker_24h`    | % thay đổi giá                              |
-| Volume change 24h    | Bảng `ticker_24h`    | % thay đổi volume so với ngày trước          |
+| Volume change 24h    | Bảng `ticker_24h`    | % thay đổi volume so với ngày trước         |
 
-### 8.4. Output Schema
+### 8.4. Giao diện & Fallback
 
-```json
-{
-    "signal": "BUY | SELL | HOLD",
-    "confidence": 1-5,
-    "reason": "max 20 words",
-    "key_risk": "max 12 words"
-}
-```
-
-### 8.5. Xử lý Quota & Fallback
-
-| Tình huống                     | Hành vi                                                 |
-| ------------------------------ | ------------------------------------------------------- |
-| LLM trả kết quả hợp lệ        | Parse JSON, lưu vào `llm_signals`                       |
-| LLM parse error                | Retry (max 3 lần), bỏ qua symbol nếu vẫn fail          |
-| HTTP 429 (quota exceeded)      | Dừng batch, fallback HOLD (confidence=1) cho symbol đó, stop toàn bộ run |
-| LLM trả response không hợp lệ | Retry, log warning                                      |
-| Không đủ daily candles         | Skip symbol, log warning                                |
+| Tính năng | Mô tả |
+|---|---|
+| **Dark Theme** | Giao diện chat (HTML/CSS) được build dark-theme để nhúng liền mạch vào Grafana. |
+| **Typing Indicator** | Hiệu ứng UI "đang gõ..." trong lúc chờ LLM xử lý. |
+| **Markdown Parsing** | Frontend (marked.js) render bôi đậm, danh sách và bảng biểu. |
+| **Quota Fallback** | Báo lỗi thân thiện nếu API Key hết quota thay vì crash. |
 
 ---
 
@@ -781,8 +618,7 @@ crypto-pipeline/
 ├── airflow/
 │   └── dags/
 │       ├── daily_etl.py        # ETL klines + ticker hàng ngày (0 2 * * *)
-│       ├── daily_snapshot.py   # Ticker 24h + Order Book (0 0 * * *)
-│       └── hourly_inference.py # LLM advisory signals mỗi giờ (0 * * * *)
+│       └── daily_snapshot.py   # Ticker 24h + Order Book (0 0 * * *)
 ├── data/
 │   ├── raw/                    # Data Lake - Raw (CSV, synced to MinIO)
 │   │   ├── BTCUSDT.csv
@@ -801,7 +637,8 @@ crypto-pipeline/
 │   ├── schema.sql              # ClickHouse schema (5 bảng)
 │   ├── queries.sql             # Sample ClickHouse queries
 │   ├── init_db.sql             # Database initialization
-│   └── migrate_remove_predictions_clickhouse.sql  # Migration: predictions → llm_signals
+│   ├── migrate_remove_llm_signals.sql             # Migration: xóa bảng llm_signals cũ
+│   └── migrate_remove_predictions_clickhouse.sql  # Legacy migration
 ├── utils/
 │   ├── binance_utils.py        # API wrappers (retry, rate limit)
 │   ├── db_utils.py             # ClickHouse client, insert/query helpers
@@ -839,21 +676,12 @@ crypto-pipeline/
 │                                 │                                                   │
 ├─────────────────────────────────┼───────────────────────────────────────────────────┤
 │                                 │                                                   │
-│   TOP GAINERS 24H (Table)       │         LLM ADVISORY SIGNALS (Table)              │
+│   TOP LOSERS 24H (Table)        │         AI CHAT ASSISTANT (Iframe Panel)          │
 │   ┌───────────────────────┐     │   ┌─────────────────────────────────────────────┐ │
-│   │ PEPE  +15.2%          │     │   │ BTC  BUY  ★★★★☆  RSI oversold, MACD...    │ │
-│   │ WIF   +12.8%          │     │   │ ETH  HOLD ★★★☆☆  Sideways trend...        │ │
-│   │ RUNE  +8.5%           │     │   │ SOL  SELL ★★★★☆  RSI overbought...        │ │
+│   │ FTM   -8.3%           │     │   │ User: Tại sao đợt này BTC tăng?             │ │
+│   │ ALGO  -6.2%           │     │   │ Bot: Dựa theo 30 nến gần nhất, RSI đang ở...│ │
+│   │ MANA  -5.8%           │     │   │                                             │ │
 │   └───────────────────────┘     │   └─────────────────────────────────────────────┘ │
-│                                 │                                                   │
-├─────────────────────────────────┼───────────────────────────────────────────────────┤
-│                                 │                                                   │
-│   TOP LOSERS 24H (Table)        │         SIGNAL DISTRIBUTION (Pie/Bar)             │
-│   ┌───────────────────────┐     │   ┌──────────┬──────────┬──────────┬──────────┐  │
-│   │ FTM   -8.3%           │     │   │   BUY    │   SELL   │   HOLD   │ Avg Conf │  │
-│   │ ALGO  -6.2%           │     │   │   35%    │   25%    │   40%    │   3.2    │  │
-│   │ MANA  -5.8%           │     │   └──────────┴──────────┴──────────┴──────────┘  │
-│   └───────────────────────┘     │                                                   │
 │                                 │                                                   │
 ├─────────────────────────────────┴───────────────────────────────────────────────────┤
 │                          RSI HEATMAP (50 COINS)                                     │
@@ -944,38 +772,14 @@ WHERE symbol = $symbol
 ORDER BY timestamp;
 ```
 
-#### Panel 5: LLM Advisory Signals (Table)
+#### Panel 5: AI Chat Assistant (Text/HTML)
 
 | Thuộc tính | Giá trị                                     |
 | ---------- | ------------------------------------------- |
-| Loại       | Table (color-coded by signal)               |
-| Legend     | BUY (green), SELL (red), HOLD (yellow)      |
+| Loại       | Text (với Iframe)                           |
+| Nội dung   | `<iframe src="http://localhost:8501/chat-ui?symbol=$symbol" ...></iframe>` |
 
-```sql
-SELECT
-    s.base_asset AS coin,
-    l.signal,
-    l.confidence,
-    l.reason,
-    l.key_risk,
-    l.trend_6h,
-    l.generated_at
-FROM llm_signals l
-JOIN symbols s ON l.symbol = s.symbol
-WHERE l.generated_at = (
-    SELECT max(generated_at) FROM llm_signals
-)
-ORDER BY l.confidence DESC;
-```
-
-#### Panel 6: Signal Distribution (Stat Panels)
-
-| Metric          | Query                                                                                           |
-| --------------- | ----------------------------------------------------------------------------------------------- |
-| BUY ratio       | `SELECT countIf(signal='BUY') * 100.0 / count() FROM llm_signals WHERE generated_at >= now() - INTERVAL 7 DAY` |
-| SELL ratio      | `SELECT countIf(signal='SELL') * 100.0 / count() FROM llm_signals WHERE generated_at >= now() - INTERVAL 7 DAY` |
-| HOLD ratio      | `SELECT countIf(signal='HOLD') * 100.0 / count() FROM llm_signals WHERE generated_at >= now() - INTERVAL 7 DAY` |
-| Avg Confidence  | `SELECT round(avg(confidence), 2) FROM llm_signals WHERE generated_at >= now() - INTERVAL 7 DAY` |
+> **Lưu ý:** Panel này kết nối trực tiếp với backend FastAPI để cung cấp trải nghiệm chat tương tác thay vì hiển thị dữ liệu tĩnh. Đòi hỏi Grafana bật `GF_PANELS_DISABLE_SANITIZE_HTML`.
 
 #### Panel 7: RSI Heatmap (Table with color)
 
@@ -1006,7 +810,6 @@ ORDER BY rsi_14 DESC;
 | Alert                 | Điều kiện                               | Notification |
 | --------------------- | --------------------------------------- | ------------ |
 | RSI Overbought        | RSI > 70 cho BTC hoặc ETH               | Slack/Email  |
-| LLM SELL nhiều        | Hơn 50% signals là SELL trong 1h        | Slack        |
 | Volume Spike          | Volume 24h tăng > 200% so với hôm trước | Slack        |
 
 ### 10.5. Refresh Rate
@@ -1015,7 +818,6 @@ ORDER BY rsi_14 DESC;
 | ----------------- | ---------------- | ------------------------------------------------ |
 | Price charts      | 5 phút           | Klines cập nhật daily, refresh vừa đủ            |
 | Volume/Gainers    | 1 giờ            | Snapshot daily, thay đổi ít                       |
-| LLM Signals       | 1 giờ            | Signals cập nhật mỗi giờ                         |
 | RSI Heatmap       | 5 phút           | RSI trên 1-min, cập nhật theo klines             |
 
 ---
@@ -1043,15 +845,15 @@ ORDER BY rsi_14 DESC;
 | Ngày | Task                                      | Deliverable                  |
 | ---- | ----------------------------------------- | ---------------------------- |
 | 1-2  | Setup Airflow, tạo daily_etl DAG         | DAG chạy được từ UI          |
-| 3-4  | Tạo daily_snapshot, hourly_inference DAGs | Tất cả DAGs hoạt động        |
+| 3-4  | Tạo daily_snapshot DAG                   | Tất cả DAGs hoạt động        |
 | 5-7  | Test scheduling, error handling           | Retry hoạt động, logs đầy đủ |
 
-### Tuần 4: LLM Advisor & Dashboard
+### Tuần 4: LLM Chat Assistant & Dashboard
 
 | Ngày | Task                                    | Deliverable                    |
 | ---- | --------------------------------------- | ------------------------------ |
-| 1-3  | Viết llm_signal.py, test LLM advisory  | Signals ghi đúng vào ClickHouse|
-| 4-5  | Setup Grafana dashboard                 | Dashboard hiển thị đúng        |
+| 1-3  | Dựng FastAPI chatbot, test LLM Context | API query ClickHouse + LLM chat|
+| 4-5  | Setup UI iframe & Grafana dashboard     | Dashboard hiển thị đúng        |
 | 6-7  | Test end-to-end, viết báo cáo           | Demo hoàn chỉnh                |
 
 ---
@@ -1069,21 +871,18 @@ ORDER BY rsi_14 DESC;
 - [ ] Airflow Web UI accessible (port 8080)
 - [ ] daily_etl DAG chạy thành công
 - [ ] daily_snapshot DAG chạy thành công
-- [ ] hourly_inference DAG chạy thành công
 
-### LLM Advisor
+### Chat Assistant
 
 - [ ] LLM API connected (Gemini/OpenAI)
-- [ ] Signals generated (BUY/SELL/HOLD) cho 50 coins
-- [ ] Quota fallback hoạt động (HOLD khi bị limit)
-- [ ] Signals lưu đúng vào bảng `llm_signals`
+- [ ] Backend FastAPI xử lý context thành công
+- [ ] Fallback error hiển thị đúng trên chatbox khi hết quota
 
 ### Visualization
 
 - [ ] Grafana accessible (port 3000)
-- [ ] Dashboard hiển thị giá
-- [ ] Dashboard hiển thị LLM advisory signals
-- [ ] Dashboard hiển thị signal distribution
+- [ ] Dashboard hiển thị chart / tables
+- [ ] Chatbox iframe tương tác mượt mà
 
 ---
 
@@ -1098,8 +897,8 @@ ORDER BY rsi_14 DESC;
 | Downtime dài (≥ 30 ngày)  | Thấp       | Gap dữ liệu lớn | Self-healing dùng Data Vision bulk + REST API phần còn lại |
 | Coin bị delist/migrate    | Thấp       | Dữ liệu bị cắt  | BREAK status + break_date giới hạn fetch tự động  |
 | Spark out of memory       | Trung bình | Transform fail  | Tăng partition, xử lý theo batch nhỏ              |
-| LLM quota exceeded        | Trung bình | Signals thiếu   | Fallback HOLD (confidence=1), stop early           |
-| LLM response invalid      | Thấp       | Parse error      | Retry 3 lần, JSON extraction + validation          |
+| LLM quota exceeded        | Trung bình | Chat fail       | Hiển thị error message thân thiện trên chatbox    |
+| LLM response invalid      | Thấp       | Parse error     | Retry 3 lần, báo lỗi format trên giao diện        |
 | ClickHouse slow query     | Thấp       | Dashboard lag   | Partition by month, ORDER BY tối ưu                |
 | Airflow scheduler crash   | Thấp       | Jobs không chạy | Auto-restart với Docker, monitoring               |
 
