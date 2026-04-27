@@ -206,10 +206,12 @@ services:
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-crypto123}
       - CLICKHOUSE_DB=${CLICKHOUSE_DB:-crypto_db}
       - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash-lite}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5.4-nano}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash-lite}
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-crypto-chatbot}
+      - LANGCHAIN_CALLBACKS_BACKGROUND=true
       - TZ=Asia/Ho_Chi_Minh
     volumes:
       - ./:/opt/project
