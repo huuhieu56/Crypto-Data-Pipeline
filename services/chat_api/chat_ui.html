@@ -376,6 +376,7 @@
 (function() {
   const SYMBOL = '__SYMBOL__';
   const API_BASE = window.location.origin;
+  const IS_EMBEDDED = window.self !== window.top;
   const messagesEl = document.getElementById('messages');
   const inputEl = document.getElementById('input');
   const sendBtn = document.getElementById('sendBtn');
@@ -383,6 +384,13 @@
   const welcomeEl = document.getElementById('welcome');
   let history = [];
   let isLoading = false;
+
+  function maybeFocusInput() {
+    // Avoid forcing focus when embedded in Grafana; this prevents page jump to iframe.
+    if (!IS_EMBEDDED) {
+      inputEl.focus();
+    }
+  }
 
   // Bind events in JS scope to avoid global-function dependency from inline handlers.
   inputEl.addEventListener('input', () => {
@@ -410,7 +418,7 @@
   function useSuggestion(btn) {
     inputEl.value = btn.textContent;
     sendBtn.disabled = false;
-    inputEl.focus();
+    maybeFocusInput();
     sendMessage();
   }
 
@@ -516,12 +524,12 @@
     } finally {
       isLoading = false;
       sendBtn.disabled = !inputEl.value.trim();
-      inputEl.focus();
+      maybeFocusInput();
     }
   }
 
   // Auto-focus input
-  inputEl.focus();
+  maybeFocusInput();
 })();
 </script>
 </body>

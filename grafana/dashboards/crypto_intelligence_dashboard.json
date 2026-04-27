@@ -394,9 +394,9 @@
     },
     {
       "gridPos": {
-        "h": 14,
-        "w": 24,
-        "x": 0,
+        "h": 18,
+        "w": 14,
+        "x": 10,
         "y": 16
       },
       "id": 20,
@@ -452,17 +452,17 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 10,
-        "w": 24,
+        "h": 18,
+        "w": 10,
         "x": 0,
-        "y": 30
+        "y": 16
       },
       "id": 11,
       "options": {
         "cellHeight": "sm",
         "footer": {
           "countRows": false,
-          "enablePagination": true,
+          "enablePagination": false,
           "fields": "",
           "reducer": [
             "sum"
@@ -532,6 +532,6 @@
   "timezone": "Asia/Ho_Chi_Minh",
   "title": "Crypto Intelligence Dashboard",
   "uid": "crypto-intel-main",
-  "version": 4,
+  "version": 5,
   "weekStart": ""
 }
