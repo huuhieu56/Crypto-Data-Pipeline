@@ -13,8 +13,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 import argparse
-import gc
-from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -25,7 +23,6 @@ import pyarrow as pa
 
 from config.config import (
     MINIO_CONFIG, PARALLELISM, INDICATOR_CONTEXT_ROWS,
-    PARTITION_MONTH_FORMAT, KLINES_COLUMNS,
 )
 from config.symbols import SYMBOLS
 from utils.logger import get_logger
@@ -175,42 +172,61 @@ def _upload_features(symbol: str, pdf: pd.DataFrame, month_str: str) -> None:
 
 # --- Main Entry Point --------------------------------------------------------
 
+def _discover_raw_months(symbol: str) -> list[str]:
+    """Find all months with raw klines data for a symbol in MinIO."""
+    keys = storage.list_objects(BUCKET_RAW, prefix=f"klines/{symbol}/")
+    months = []
+    for k in keys:
+        if k.endswith(".parquet"):
+            month = k.split("/")[-1].replace(".parquet", "")
+            months.append(month)
+    return sorted(months)
+
+
 def transform_data(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> str | None:
-    """Incremental transform: compute indicators for new data only."""
-    symbols = symbols or SYMBOLS
-    month_str = month_str or datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
+    """Incremental transform: compute indicators for new data only.
 
-    logger.info("Transform started: %d symbols, month=%s", len(symbols), month_str)
+    If month_str is provided, processes only that month.
+    Otherwise, auto-discovers all months with raw data per symbol.
+    """
+    symbols = symbols or SYMBOLS
+
+    logger.info("Transform started: %d symbols, month=%s", len(symbols), month_str or "auto-discover")
 
     # Batch query: get last loaded timestamps from ClickHouse
     last_ts_map = get_last_timestamps(symbols)
 
     total_new_rows = 0
     symbols_updated = 0
-    n_symbols = len(symbols)
-    max_workers = min(TRANSFORM_MAX_WORKERS, n_symbols)
+    max_workers = min(TRANSFORM_MAX_WORKERS, len(symbols))
 
-    def _do_symbol(symbol: str) -> tuple[str, pd.DataFrame | None]:
+    def _do_symbol(symbol: str) -> tuple[str, int]:
         raw_ts = last_ts_map.get(symbol)
         last_loaded = pd.to_datetime(raw_ts, unit="ms", utc=True) if raw_ts else None
-        return symbol, _process_symbol(symbol, month_str, last_loaded)
+
+        months = [month_str] if month_str else _discover_raw_months(symbol)
+        sym_rows = 0
+        for month in months:
+            result_df = _process_symbol(symbol, month, last_loaded)
+            if result_df is not None and not result_df.empty:
+                _upload_features(symbol, result_df, month)
+                sym_rows += len(result_df)
+                del result_df
+        return symbol, sym_rows
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         future_map = {pool.submit(_do_symbol, sym): sym for sym in symbols}
         for future in as_completed(future_map):
             sym = future_map[future]
             try:
-                symbol, result_df = future.result()
-                if result_df is not None and not result_df.empty:
-                    _upload_features(symbol, result_df, month_str)
+                symbol, n_rows = future.result()
+                if n_rows > 0:
                     symbols_updated += 1
-                    n_rows = len(result_df)
                     total_new_rows += n_rows
                     logger.info("[Transform] %s: +%s rows", symbol, f"{n_rows:,}")
-                    del result_df
             except Exception as exc:
                 logger.error("[Transform] %s: ERROR — %s", sym, exc)
 

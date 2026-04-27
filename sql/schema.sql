@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS crypto_db.ticker_24h (
     ask_price Float64,
     spread_pct Float64
 ) ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(snapshot_time)
 ORDER BY (symbol, snapshot_time);
 
 -- 4) Fact: Order book snapshot
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS crypto_db.order_book_snapshot (
     total_ask_volume Float64,
     imbalance Float64
 ) ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(timestamp)
 ORDER BY (symbol, timestamp);
 
 

@@ -30,26 +30,28 @@ def get_target_end(symbol: str) -> datetime:
 
 # --- Partition Key Helpers ---------------------------------------------------
 
-def partition_key(symbol: str, dt: datetime | str | None = None) -> str:
-    """MinIO key for a monthly partition: klines/{SYMBOL}/{YYYY-MM}.parquet"""
+def _resolve_month(dt: datetime | str | None = None) -> str:
+    """Resolve a datetime or string into a YYYY-MM month string."""
     if dt is None:
-        month_str = datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
-    elif isinstance(dt, str):
-        month_str = dt
-    else:
-        month_str = dt.strftime(PARTITION_MONTH_FORMAT)
-    return f"klines/{symbol}/{month_str}.parquet"
+        return datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
+    if isinstance(dt, str):
+        return dt
+    return dt.strftime(PARTITION_MONTH_FORMAT)
+
+
+def minio_key(prefix: str, symbol: str, dt: datetime | str | None = None) -> str:
+    """MinIO key: {prefix}/{SYMBOL}/{YYYY-MM}.parquet"""
+    return f"{prefix}/{symbol}/{_resolve_month(dt)}.parquet"
+
+
+def partition_key(symbol: str, dt: datetime | str | None = None) -> str:
+    """MinIO key for raw klines: klines/{SYMBOL}/{YYYY-MM}.parquet"""
+    return minio_key("klines", symbol, dt)
 
 
 def features_key(symbol: str, dt: datetime | str | None = None) -> str:
     """MinIO key for processed features: features/{SYMBOL}/{YYYY-MM}.parquet"""
-    if dt is None:
-        month_str = datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
-    elif isinstance(dt, str):
-        month_str = dt
-    else:
-        month_str = dt.strftime(PARTITION_MONTH_FORMAT)
-    return f"features/{symbol}/{month_str}.parquet"
+    return minio_key("features", symbol, dt)
 
 
 # --- Date / Month Utilities (Data Vision) -----------------------------------

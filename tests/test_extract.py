@@ -27,7 +27,7 @@ from scripts.extract import (
     extract_ticker_24h,
     extract_order_book_snapshot,
     extract_minutely,
-    _write_to_partition,
+    append_to_partition,
 )
 from utils.exceptions import ExtractError
 
@@ -300,7 +300,7 @@ class TestExtractRecentKlines:
             "scripts.extract.fetch_klines_paginated", self.mock_fetch,
         )
         monkeypatch.setattr(
-            "scripts.extract._write_to_partition", self.mock_write,
+            "scripts.extract.append_to_partition", self.mock_write,
         )
 
     # --- Happy Path ---
@@ -371,7 +371,7 @@ class TestExtractTicker24h:
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
-        """Setup chung: mock get_ticker_24h, get_book_ticker, storage."""
+        """Setup chung: mock get_ticker_24h, get_book_ticker, append_to_partition."""
         self.tmp_path = tmp_path
 
         self.mock_ticker = MagicMock(return_value=SAMPLE_TICKER_24H_RAW)
@@ -384,7 +384,7 @@ class TestExtractTicker24h:
             "scripts.extract.get_book_ticker", self.mock_book,
         )
         monkeypatch.setattr(
-            "scripts.extract.storage.append_csv_df", self.mock_append,
+            "scripts.extract.append_to_partition", self.mock_append,
         )
 
     # --- Happy Path ---
@@ -487,16 +487,17 @@ class TestExtractTicker24h:
         assert result["bid_price"].isna().all()
         assert result["ask_price"].isna().all()
 
-    def test_csv_created_with_header_if_not_exists(self):
-        """storage.append_csv_df is called with correct args."""
+    def test_per_symbol_partition_writes(self):
+        """append_to_partition is called once per symbol (per-symbol Parquet)."""
         extract_ticker_24h(TEST_SYMBOLS)
 
-        self.mock_append.assert_called_once()
-        args = self.mock_append.call_args
-        assert args[0][1] == "ticker_24h.csv"  # key argument
-        saved_df = args[0][2]  # the DataFrame
-        assert len(saved_df) == 2
-        assert "symbol" in saved_df.columns
+        # 2 symbols → 2 calls to append_to_partition
+        assert self.mock_append.call_count == 2
+        # Verify prefix and dedup_col
+        for call in self.mock_append.call_args_list:
+            args, kwargs = call
+            assert args[1] == "ticker_24h"  # prefix
+            assert kwargs.get("dedup_col", args[4] if len(args) > 4 else None) == "snapshot_time"
 
 
 # ============================================================================
@@ -507,14 +508,14 @@ class TestExtractOrderBookSnapshot:
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
-        """Setup chung: mock get_order_book, sleep, storage."""
+        """Setup chung: mock get_order_book, sleep, append_to_partition."""
         self.tmp_path = tmp_path
         monkeypatch.setattr(
             "scripts.extract.sleep_between_requests", lambda: None,
         )
         self.mock_append = MagicMock()
         monkeypatch.setattr(
-            "scripts.extract.storage.append_csv_df", self.mock_append,
+            "scripts.extract.append_to_partition", self.mock_append,
         )
 
         self.mock_ob = MagicMock(return_value=SAMPLE_ORDER_BOOK)
@@ -616,20 +617,15 @@ class TestExtractOrderBookSnapshot:
         assert row["total_bid_volume"] == pytest.approx(1.5)
         assert row["total_ask_volume"] == pytest.approx(2.0)
 
-    def test_csv_created_with_header_if_not_exists(self):
-        """storage.append_csv_df is called with correct args."""
+    def test_per_symbol_partition_writes(self):
+        """append_to_partition is called once per symbol (per-symbol Parquet)."""
         extract_order_book_snapshot(["BTCUSDT"])
 
-        self.mock_append.assert_called_once()
-        args = self.mock_append.call_args
-        assert args[0][1] == "order_book_snapshot.csv"  # key argument
-        saved_df = args[0][2]  # the DataFrame
-        assert len(saved_df) == 1
-        expected_cols = {
-            "symbol", "timestamp", "total_bid_volume",
-            "total_ask_volume", "imbalance",
-        }
-        assert set(saved_df.columns) == expected_cols
+        # 1 symbol → 1 call to append_to_partition
+        assert self.mock_append.call_count == 1
+        args = self.mock_append.call_args[0]
+        assert args[1] == "order_book"  # prefix
+        assert args[2] == "BTCUSDT"     # symbol
 
     def test_get_order_book_called_with_limit(self, monkeypatch):
         """get_order_book phải được gọi với limit=ORDER_BOOK_LIMIT."""

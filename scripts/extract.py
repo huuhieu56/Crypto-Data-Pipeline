@@ -22,12 +22,12 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.config import (
-    ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM, PARTITION_MONTH_FORMAT,
+    ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM,
 )
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
 from utils.exceptions import ExtractError
-from utils.storage import storage
+from utils.storage import storage, append_to_partition
 from utils.db_utils import get_last_timestamps
 from utils.data_utils import partition_key, get_target_end, get_target_months
 from utils.binance_utils import (
@@ -45,47 +45,6 @@ ORDERBOOK_MAX_WORKERS = PARALLELISM["orderbook_max_workers"]
 BULK_DOWNLOAD_WORKERS = PARALLELISM["bulk_download_workers"]
 BULK_SYMBOL_WORKERS = PARALLELISM["bulk_symbol_workers"]
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
-
-
-# --- Partition I/O -----------------------------------------------------------
-
-
-def _normalize_timestamp_unit(table: pa.Table, unit: str = "us") -> pa.Table:
-    """Normalize timestamp columns to a consistent Arrow unit for safe concat."""
-    fields = []
-    for field in table.schema:
-        if pa.types.is_timestamp(field.type):
-            fields.append(pa.field(field.name, pa.timestamp(unit, tz=field.type.tz), nullable=field.nullable))
-        else:
-            fields.append(field)
-    target_schema = pa.schema(fields)
-    return table.cast(target_schema, safe=False)
-
-
-def _write_to_partition(symbol: str, new_df: pd.DataFrame) -> None:
-    """Append rows to current month's partition on MinIO.
-
-    Monthly partition grows over time (~44,640 rows max = ~4MB),
-    so download+concat+upload is still fast.
-    """
-    key = partition_key(symbol)
-
-    # Keep Arrow schema stable across runs (timestamp[us]) to prevent concat errors.
-    for c in new_df.columns:
-        if pd.api.types.is_datetime64_any_dtype(new_df[c]):
-            new_df[c] = new_df[c].dt.as_unit("us")
-
-    new_table = pa.Table.from_pandas(new_df, preserve_index=False)
-    new_table = _normalize_timestamp_unit(new_table, unit="us")
-
-    if storage.object_exists(BUCKET_RAW, key):
-        existing = storage.download_parquet(BUCKET_RAW, key)
-        existing = _normalize_timestamp_unit(existing, unit="us")
-        table = pa.concat_tables([existing, new_table])
-    else:
-        table = new_table
-
-    storage.upload_parquet(BUCKET_RAW, key, table)
 
 
 # --- Data Vision (parallel bulk download) ------------------------------------
@@ -235,7 +194,7 @@ def extract_recent_klines(
         if new_df is None or new_df.empty:
             return symbol, None
 
-        _write_to_partition(symbol, new_df)
+        append_to_partition(BUCKET_RAW, "klines", symbol, new_df, dedup_col="open_time")
         return symbol, new_df
 
     max_workers = min(KLINES_MAX_WORKERS, len(symbols))
@@ -324,8 +283,13 @@ def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
         "trade_count", "bid_price", "ask_price", "spread_pct",
     ]]
 
-    storage.append_csv_df(BUCKET_RAW, "ticker_24h.csv", merged)
-    logger.info("Saved ticker_24h (+%d records)", len(merged))
+    # Write per-symbol monthly partitions (same pattern as klines)
+    for symbol, group_df in merged.groupby("symbol"):
+        append_to_partition(
+            BUCKET_RAW, "ticker_24h", symbol,
+            group_df.reset_index(drop=True), dedup_col="snapshot_time",
+        )
+    logger.info("Saved ticker_24h (+%d records, %d symbols)", len(merged), merged["symbol"].nunique())
     return merged
 
 
@@ -380,8 +344,14 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
         return None
 
     df = pd.DataFrame(records)
-    storage.append_csv_df(BUCKET_RAW, "order_book_snapshot.csv", df)
-    logger.info("Saved order_book_snapshot (+%d records)", len(df))
+
+    # Write per-symbol monthly partitions (same pattern as klines)
+    for symbol, group_df in df.groupby("symbol"):
+        append_to_partition(
+            BUCKET_RAW, "order_book", symbol,
+            group_df.reset_index(drop=True), dedup_col="timestamp",
+        )
+    logger.info("Saved order_book_snapshot (+%d records, %d symbols)", len(df), df["symbol"].nunique())
     return df
 
 

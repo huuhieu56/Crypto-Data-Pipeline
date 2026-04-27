@@ -15,10 +15,8 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
 from typing import Any
 
-import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from minio import Minio
@@ -84,38 +82,6 @@ class MinIOStorage:
             response.release_conn()
         return pq.read_table(buf)
 
-    # ---- CSV I/O ----------------------------------------------------------
-
-    def upload_csv_df(self, bucket: str, key: str, df: pd.DataFrame) -> None:
-        """Write a pandas DataFrame as CSV to MinIO."""
-        buf = io.BytesIO()
-        df.to_csv(buf, index=False)
-        buf.seek(0)
-        self.client.put_object(
-            bucket, key, buf, length=buf.getbuffer().nbytes,
-            content_type="text/csv",
-        )
-        logger.debug("Uploaded CSV %s/%s (%d rows)", bucket, key, len(df))
-
-    def download_csv_df(self, bucket: str, key: str) -> pd.DataFrame:
-        """Read a CSV file from MinIO into a pandas DataFrame."""
-        response = self.client.get_object(bucket, key)
-        try:
-            buf = io.BytesIO(response.read())
-        finally:
-            response.close()
-            response.release_conn()
-        return pd.read_csv(buf)
-
-    def append_csv_df(self, bucket: str, key: str, df: pd.DataFrame) -> None:
-        """Append rows to an existing CSV on MinIO (download → concat → upload)."""
-        if self.object_exists(bucket, key):
-            existing = self.download_csv_df(bucket, key)
-            combined = pd.concat([existing, df], ignore_index=True)
-        else:
-            combined = df
-        self.upload_csv_df(bucket, key, combined)
-
     # ---- JSON I/O ---------------------------------------------------------
 
     def upload_json(self, bucket: str, key: str, data: Any) -> None:
@@ -135,18 +101,6 @@ class MinIOStorage:
         finally:
             response.close()
             response.release_conn()
-
-    # ---- Generic file I/O -------------------------------------------------
-
-    def upload_file(self, bucket: str, key: str, local_path: Path) -> None:
-        """Upload a local file to MinIO."""
-        self.client.fput_object(bucket, key, str(local_path))
-        logger.debug("Uploaded file %s -> %s/%s", local_path, bucket, key)
-
-    def download_file(self, bucket: str, key: str, local_path: Path) -> None:
-        """Download a file from MinIO to local path."""
-        self.client.fget_object(bucket, key, str(local_path))
-        logger.debug("Downloaded %s/%s -> %s", bucket, key, local_path)
 
     # ---- Utility ----------------------------------------------------------
 
@@ -177,3 +131,66 @@ class MinIOStorage:
 
 # --- Module-level Singleton --------------------------------------------------
 storage = MinIOStorage()
+
+
+# --- Partition I/O (module-level functions using singleton) -------------------
+
+import pandas as pd
+from datetime import datetime, timezone
+from config.config import PARTITION_MONTH_FORMAT
+
+
+def _normalize_timestamp_unit(table: pa.Table, unit: str = "us") -> pa.Table:
+    """Normalize timestamp columns to a consistent Arrow unit for safe concat."""
+    fields = []
+    for field in table.schema:
+        if pa.types.is_timestamp(field.type):
+            fields.append(pa.field(field.name, pa.timestamp(unit, tz=field.type.tz), nullable=field.nullable))
+        else:
+            fields.append(field)
+    target_schema = pa.schema(fields)
+    return table.cast(target_schema, safe=False)
+
+
+def append_to_partition(
+    bucket: str,
+    prefix: str,
+    symbol: str,
+    new_df: pd.DataFrame,
+    dedup_col: str,
+    month_str: str | None = None,
+) -> None:
+    """Append rows to a monthly partition on MinIO with dedup.
+
+    Unified write pattern for all data types:
+        download partition → concat → dedup(dedup_col) → upload.
+
+    File is capped at ~44,640 rows/month (1 row/min × 31 days)
+    and resets automatically when the month changes.
+    """
+    month_str = month_str or datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
+    key = f"{prefix}/{symbol}/{month_str}.parquet"
+
+    # Normalize timestamps to microseconds for stable Arrow concat
+    for c in new_df.columns:
+        if pd.api.types.is_datetime64_any_dtype(new_df[c]):
+            new_df[c] = new_df[c].dt.as_unit("us")
+
+    new_table = pa.Table.from_pandas(new_df, preserve_index=False)
+    new_table = _normalize_timestamp_unit(new_table, unit="us")
+
+    if storage.object_exists(bucket, key):
+        existing = storage.download_parquet(bucket, key)
+        existing = _normalize_timestamp_unit(existing, unit="us")
+        table = pa.concat_tables([existing, new_table])
+
+        # Dedup: keep last (newest) value for each timestamp
+        pdf = table.to_pandas()
+        pdf = pdf.drop_duplicates(subset=[dedup_col], keep="last")
+        pdf = pdf.sort_values(dedup_col).reset_index(drop=True)
+        table = pa.Table.from_pandas(pdf, preserve_index=False)
+        del pdf
+    else:
+        table = new_table
+
+    storage.upload_parquet(bucket, key, table)

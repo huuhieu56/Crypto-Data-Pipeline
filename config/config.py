@@ -14,13 +14,7 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
-PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
 SQL_DIR = PROJECT_ROOT / "sql"
-
-RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
-PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-
 # --- Database (ClickHouse) ---------------------------------------------------
 
 CH_CONFIG = {
@@ -102,10 +96,4 @@ KLINES_COLUMNS = [
     "volume", "quote_volume", "trades", "rsi_14", "macd", "macd_signal",
 ]
 
-# Column rename mapping: raw field names -> database field names
-KLINES_RENAME_MAP = {
-    "open_time": "timestamp",
-    "RSI": "rsi_14",
-    "MACD": "macd",
-    "MACD_signal": "macd_signal",
-}
+

@@ -83,18 +83,16 @@ def ch_query_df(query: str) -> pd.DataFrame:
     return client.query_df(query)
 
 
-def ch_command(sql: str) -> None:
-    """Execute a non-SELECT command (DDL, ALTER, etc.)."""
-    client = get_ch_client()
-    client.command(sql)
-
-
 # --- Batch Helpers -----------------------------------------------------------
 
-def get_last_timestamps(symbols: list[str]) -> dict[str, int]:
-    """Get last loaded timestamp (ms) for each symbol from ClickHouse.
+def get_table_watermarks(
+    table: str,
+    ts_col: str,
+    symbols: list[str],
+) -> dict[str, int]:
+    """Get max timestamp (ms) per symbol from any ClickHouse table.
 
-    Single batch query instead of N file downloads.
+    Generalizes watermark queries for klines, ticker_24h, and order_book_snapshot.
     Returns {symbol: last_timestamp_ms}.
     """
     if not symbols:
@@ -102,8 +100,8 @@ def get_last_timestamps(symbols: list[str]) -> dict[str, int]:
 
     sym_list = "', '".join(symbols)
     df = ch_query_df(
-        f"SELECT symbol, max(timestamp) AS max_ts "
-        f"FROM klines "
+        f"SELECT symbol, max({ts_col}) AS max_ts "
+        f"FROM {table} "
         f"WHERE symbol IN ('{sym_list}') "
         f"GROUP BY symbol"
     )
@@ -117,3 +115,12 @@ def get_last_timestamps(symbols: list[str]) -> dict[str, int]:
             result[row["symbol"]] = int(ts.timestamp() * 1000)
 
     return result
+
+
+def get_last_timestamps(symbols: list[str]) -> dict[str, int]:
+    """Get last loaded timestamp (ms) for each symbol from ClickHouse klines.
+
+    Single batch query instead of N file downloads.
+    Returns {symbol: last_timestamp_ms}.
+    """
+    return get_table_watermarks("klines", "timestamp", symbols)

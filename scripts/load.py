@@ -17,15 +17,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
-from datetime import datetime, timezone
-
 import pandas as pd
 
-from config.config import MINIO_CONFIG, PARTITION_MONTH_FORMAT
+from config.config import MINIO_CONFIG
 from config.symbols import SYMBOLS, SYMBOL_REGISTRY
 from utils.logger import get_logger
 from utils.exceptions import LoadError
-from utils.db_utils import init_schema, ch_insert_df, ch_query_df
+from utils.db_utils import init_schema, ch_insert_df, get_table_watermarks
 from utils.storage import storage
 
 logger = get_logger(__name__)
@@ -73,117 +71,198 @@ def load_symbols() -> None:
         raise LoadError(f"Failed to load symbols: {exc}") from exc
 
 
+def _filter_by_watermark(
+    df: pd.DataFrame,
+    ts_col_name: str,
+    watermark_ms: int | None,
+) -> pd.DataFrame:
+    """Filter DataFrame to only rows after the watermark timestamp."""
+    if watermark_ms is None:
+        return df
+    cutoff = pd.to_datetime(watermark_ms, unit="ms", utc=True)
+    ts_col = pd.to_datetime(df[ts_col_name])
+    if ts_col.dt.tz is None:
+        ts_col = ts_col.dt.tz_localize("UTC")
+    return df[ts_col > cutoff]
+
+
+def _discover_months(bucket: str, prefix: str, symbol: str) -> list[str]:
+    """Find all month partitions for a symbol in MinIO."""
+    keys = storage.list_objects(bucket, prefix=f"{prefix}/{symbol}/")
+    months = []
+    for k in keys:
+        if k.endswith(".parquet"):
+            month = k.split("/")[-1].replace(".parquet", "")
+            months.append(month)
+    return sorted(months)
+
+
+# --- Loaders -----------------------------------------------------------------
+
+
 def load_klines(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Load klines from MinIO monthly features into ClickHouse.
-
-    Reads features/{SYMBOL}/{YYYY-MM}.parquet for each symbol,
-    batch inserts all data in one ClickHouse call.
-    No column renaming needed — Transform outputs DB column names.
-    """
+    """Load klines features into ClickHouse (with cleanup after insert)."""
     symbols = symbols or SYMBOLS
-    month_str = month_str or datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
+    wm_map = get_table_watermarks("klines", "timestamp", symbols)
 
-    # Collect all feature data for current month
     all_dfs: list[pd.DataFrame] = []
+    loaded_keys: list[str] = []
+    errors = 0
 
     for symbol in symbols:
-        key = f"features/{symbol}/{month_str}.parquet"
-        if not storage.object_exists(BUCKET_PROCESSED, key):
-            continue
+        months = [month_str] if month_str else _discover_months(BUCKET_PROCESSED, "features", symbol)
+        for month in months:
+            key = f"features/{symbol}/{month}.parquet"
+            try:
+                table = storage.download_parquet(BUCKET_PROCESSED, key)
+                df = table.to_pandas()
+                del table
 
-        try:
-            table = storage.download_parquet(BUCKET_PROCESSED, key)
-            df = table.to_pandas()
-            del table
+                if df.empty:
+                    continue
 
-            if df.empty:
-                continue
-
-            if "timestamp" in df.columns:
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
-            if "trades" in df.columns:
-                df["trades"] = pd.to_numeric(df["trades"], errors="coerce").fillna(0).astype("uint32")
+                if "trades" in df.columns:
+                    df["trades"] = pd.to_numeric(df["trades"], errors="coerce").fillna(0).astype("uint32")
 
-            all_dfs.append(df)
-        except Exception as exc:
-            logger.error("[Load] %s: error — %s", symbol, exc)
+                df = _filter_by_watermark(df, "timestamp", wm_map.get(symbol))
+                if df.empty:
+                    continue
+
+                all_dfs.append(df)
+                loaded_keys.append(key)
+            except Exception as exc:
+                errors += 1
+                logger.error("[Load] klines %s/%s: %s", symbol, month, exc)
 
     if not all_dfs:
-        logger.info("No features data to load for %s", month_str)
+        if errors > 0:
+            raise LoadError(f"klines: all {errors} partition(s) failed, 0 loaded")
+        logger.info("No new klines data to load")
         return
 
-    # Single batch insert (much faster than 50 individual inserts)
     combined = pd.concat(all_dfs, ignore_index=True)
     inserted = ch_insert_df("klines", combined)
-    logger.info("Klines loaded: %s rows (%s)", f"{inserted:,}", month_str)
+    logger.info("Loaded %s NEW klines rows", f"{inserted:,}")
+
+    for key in loaded_keys:
+        try:
+            storage.remove_object(BUCKET_PROCESSED, key)
+        except Exception:
+            pass
 
 
-def load_ticker() -> None:
-    """Load ticker_24h from MinIO CSV into ClickHouse."""
-    key = "ticker_24h.csv"
-    if not storage.object_exists(BUCKET_RAW, key):
-        logger.warning("Ticker file not found — skipping")
+def load_ticker(
+    symbols: list[str] | None = None,
+    month_str: str | None = None,
+) -> None:
+    """Load ticker snapshots into ClickHouse."""
+    symbols = symbols or SYMBOLS
+    wm_map = get_table_watermarks("ticker_24h", "snapshot_time", symbols)
+
+    all_dfs: list[pd.DataFrame] = []
+    errors = 0
+
+    for symbol in symbols:
+        months = [month_str] if month_str else _discover_months(BUCKET_RAW, "ticker_24h", symbol)
+        for month in months:
+            key = f"ticker_24h/{symbol}/{month}.parquet"
+            try:
+                table = storage.download_parquet(BUCKET_RAW, key)
+                df = table.to_pandas()
+                del table
+
+                if df.empty:
+                    continue
+
+                df["snapshot_time"] = pd.to_datetime(df["snapshot_time"])
+                for col in ["price_change", "price_change_pct", "high_24h", "low_24h",
+                            "volume_24h", "quote_volume_24h", "bid_price", "ask_price", "spread_pct"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                if "trade_count" in df.columns:
+                    df["trade_count"] = pd.to_numeric(df["trade_count"], errors="coerce").fillna(0).astype("uint32")
+
+                df = _filter_by_watermark(df, "snapshot_time", wm_map.get(symbol))
+                if df.empty:
+                    continue
+
+                target_cols = [
+                    "symbol", "snapshot_time", "price_change", "price_change_pct",
+                    "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
+                    "trade_count", "bid_price", "ask_price", "spread_pct",
+                ]
+                df = df[[c for c in target_cols if c in df.columns]]
+                all_dfs.append(df)
+            except Exception as exc:
+                errors += 1
+                logger.error("[Load] ticker %s/%s: %s", symbol, month, exc)
+
+    if not all_dfs:
+        if errors > 0:
+            raise LoadError(f"ticker_24h: all {errors} partition(s) failed, 0 loaded")
+        logger.info("No new ticker data to load")
         return
 
-    logger.info("Loading ticker from MinIO")
-    try:
-        df = storage.download_csv_df(BUCKET_RAW, key)
-        if df.empty:
-            return
-
-        if "snapshot_time" in df.columns:
-            df["snapshot_time"] = pd.to_datetime(df["snapshot_time"])
-
-        target_cols = [
-            "symbol", "snapshot_time", "price_change", "price_change_pct",
-            "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
-            "trade_count", "bid_price", "ask_price", "spread_pct",
-        ]
-        df = df[[c for c in target_cols if c in df.columns]]
-
-        if "trade_count" in df.columns:
-            df["trade_count"] = pd.to_numeric(df["trade_count"], errors="coerce").fillna(0).astype("uint32")
-
-        for col in df.select_dtypes(include=["object"]).columns:
-            if col != "symbol":
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        inserted = ch_insert_df("ticker_24h", df)
-        logger.info("Loaded %d ticker rows", inserted)
-    except Exception as exc:
-        raise LoadError(f"Failed to load ticker: {exc}") from exc
+    combined = pd.concat(all_dfs, ignore_index=True)
+    inserted = ch_insert_df("ticker_24h", combined)
+    logger.info("Loaded %s NEW ticker rows", f"{inserted:,}")
 
 
-def load_order_book() -> None:
-    """Load order_book_snapshot from MinIO CSV into ClickHouse."""
-    key = "order_book_snapshot.csv"
-    if not storage.object_exists(BUCKET_RAW, key):
-        logger.warning("Order book file not found — skipping")
+def load_order_book(
+    symbols: list[str] | None = None,
+    month_str: str | None = None,
+) -> None:
+    """Load order book snapshots into ClickHouse."""
+    symbols = symbols or SYMBOLS
+    wm_map = get_table_watermarks("order_book_snapshot", "timestamp", symbols)
+
+    all_dfs: list[pd.DataFrame] = []
+    errors = 0
+
+    for symbol in symbols:
+        months = [month_str] if month_str else _discover_months(BUCKET_RAW, "order_book", symbol)
+        for month in months:
+            key = f"order_book/{symbol}/{month}.parquet"
+            try:
+                table = storage.download_parquet(BUCKET_RAW, key)
+                df = table.to_pandas()
+                del table
+
+                if df.empty:
+                    continue
+
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                for col in ["total_bid_volume", "total_ask_volume", "imbalance"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+                df = _filter_by_watermark(df, "timestamp", wm_map.get(symbol))
+                if df.empty:
+                    continue
+
+                target_cols = [
+                    "symbol", "timestamp", "total_bid_volume",
+                    "total_ask_volume", "imbalance",
+                ]
+                df = df[[c for c in target_cols if c in df.columns]]
+                all_dfs.append(df)
+            except Exception as exc:
+                errors += 1
+                logger.error("[Load] order_book %s/%s: %s", symbol, month, exc)
+
+    if not all_dfs:
+        if errors > 0:
+            raise LoadError(f"order_book_snapshot: all {errors} partition(s) failed, 0 loaded")
+        logger.info("No new order book data to load")
         return
 
-    logger.info("Loading order book from MinIO")
-    try:
-        df = storage.download_csv_df(BUCKET_RAW, key)
-        if df.empty:
-            return
-
-        if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-        target_cols = ["symbol", "timestamp", "total_bid_volume", "total_ask_volume", "imbalance"]
-        df = df[[c for c in target_cols if c in df.columns]]
-
-        for col in ["total_bid_volume", "total_ask_volume", "imbalance"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        inserted = ch_insert_df("order_book_snapshot", df)
-        logger.info("Loaded %d order book rows", inserted)
-    except Exception as exc:
-        raise LoadError(f"Failed to load order book: {exc}") from exc
+    combined = pd.concat(all_dfs, ignore_index=True)
+    inserted = ch_insert_df("order_book_snapshot", combined)
+    logger.info("Loaded %s NEW order book rows", f"{inserted:,}")
 
 
 # --- CLI ---------------------------------------------------------------------
@@ -200,12 +279,17 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["symbols", "klines", "ticker", "orderbook"],
         help="Skip these tables",
     )
+    p.add_argument(
+        "--month", type=str, default=None,
+        help="Process specific month (YYYY-MM). Default: auto-discover all months.",
+    )
     return p
 
 
 def main(
     only: set[str] | None = None,
     skip: set[str] | None = None,
+    month_str: str | None = None,
 ) -> None:
     skip = skip or set()
 
@@ -220,11 +304,11 @@ def main(
     if should_load("symbols"):
         load_symbols()
     if should_load("ticker"):
-        load_ticker()
+        load_ticker(month_str=month_str)
     if should_load("orderbook"):
-        load_order_book()
+        load_order_book(month_str=month_str)
     if should_load("klines"):
-        load_klines()
+        load_klines(month_str=month_str)
 
     logger.info("=== Load pipeline complete ===")
 
@@ -234,4 +318,5 @@ if __name__ == "__main__":
     main(
         only=set(args.only) if args.only else None,
         skip=set(args.skip),
+        month_str=args.month,
     )
