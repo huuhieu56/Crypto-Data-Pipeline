@@ -10,6 +10,7 @@ import aiohttp
 
 from config.llm_config import (
     LLM_API_KEY,
+    LLM_BASE_URL,
     LLM_MODEL,
     LLM_PROVIDER,
     MAX_RETRIES,
@@ -79,7 +80,8 @@ async def _call_openai(
     if not LLM_API_KEY:
         raise LLMAPIError("Missing LLM_API_KEY")
 
-    url = "https://api.openai.com/v1/chat/completions"
+    base = LLM_BASE_URL or "https://api.openai.com/v1"
+    url = f"{base.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {LLM_API_KEY}",
         "Content-Type": "application/json",
@@ -134,12 +136,10 @@ async def get_chat_response(
     """
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            if LLM_PROVIDER == "gemini":
-                reply = await _call_gemini(session, system_prompt, messages)
-            elif LLM_PROVIDER == "openai":
+            if LLM_BASE_URL or LLM_PROVIDER != "gemini":
                 reply = await _call_openai(session, system_prompt, messages)
             else:
-                raise LLMAPIError(f"Unsupported LLM_PROVIDER: {LLM_PROVIDER}")
+                reply = await _call_gemini(session, system_prompt, messages)
 
             logger.debug("LLM reply (%d chars)", len(reply))
             return reply

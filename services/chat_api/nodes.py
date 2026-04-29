@@ -17,6 +17,7 @@ from langchain_core.tools import tool
 from config.llm_config import (
     CHAT_MAX_HISTORY,
     LLM_API_KEY,
+    LLM_BASE_URL,
     LLM_MODEL,
     LLM_PROVIDER,
     MAX_RETRIES,
@@ -43,13 +44,34 @@ _llm_instance = None
 def _get_llm():
     """Create the LangChain ChatModel based on configured provider.
 
-    Switch provider by changing LLM_PROVIDER, LLM_API_KEY, LLM_MODEL in .env.
+    Priority: LLM_BASE_URL (any OpenAI-compatible) > LLM_PROVIDER.
     """
     global _llm_instance
     if _llm_instance is not None:
         return _llm_instance
 
-    if LLM_PROVIDER == "gemini":
+    if LLM_BASE_URL and "deepseek" in LLM_BASE_URL.lower():
+        # DeepSeek reasoning models — need ChatDeepSeek for reasoning_content
+        from langchain_deepseek import ChatDeepSeek
+
+        _llm_instance = ChatDeepSeek(
+            model=LLM_MODEL,
+            api_key=LLM_API_KEY,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+        )
+    elif LLM_BASE_URL:
+        # Any other OpenAI-compatible provider (Groq, Mistral, etc.)
+        from langchain_openai import ChatOpenAI
+
+        _llm_instance = ChatOpenAI(
+            model=LLM_MODEL,
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+        )
+    elif LLM_PROVIDER == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         _llm_instance = ChatGoogleGenerativeAI(
@@ -58,7 +80,8 @@ def _get_llm():
             temperature=TEMPERATURE,
             max_output_tokens=MAX_TOKENS,
         )
-    elif LLM_PROVIDER == "openai":
+    else:
+        # Default: OpenAI native (no base_url needed)
         from langchain_openai import ChatOpenAI
 
         _llm_instance = ChatOpenAI(
@@ -67,10 +90,9 @@ def _get_llm():
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
         )
-    else:
-        raise ValueError(f"Unsupported LLM_PROVIDER: {LLM_PROVIDER}")
 
-    logger.info("LLM initialized: provider=%s, model=%s", LLM_PROVIDER, LLM_MODEL)
+    provider = LLM_BASE_URL or LLM_PROVIDER
+    logger.info("LLM initialized: provider=%s, model=%s", provider, LLM_MODEL)
     return _llm_instance
 
 
@@ -291,7 +313,7 @@ async def save_history(state: dict[str, Any]) -> dict[str, Any]:
         "symbol": symbol,
         "tools_used": [tc["name"] for tc in tool_calls_made],
         "timeframes": timeframes_used,
-        "provider": LLM_PROVIDER,
+        "provider": LLM_BASE_URL or LLM_PROVIDER,
     }
 
     # Save user message + assistant reply to ClickHouse

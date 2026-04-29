@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from config.llm_config import LLM_PROVIDER
+from config.llm_config import LLM_BASE_URL, LLM_PROVIDER
 from utils.db_utils import ch_query_df
 from utils.logger import get_logger
 
@@ -158,4 +158,4 @@ async def delete_history(session_id: str):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "provider": LLM_PROVIDER}
+    return {"status": "ok", "provider": LLM_BASE_URL or LLM_PROVIDER}
