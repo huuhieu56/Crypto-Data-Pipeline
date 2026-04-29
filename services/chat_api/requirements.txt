@@ -6,4 +6,5 @@ pandas==2.2.3
 langgraph>=0.3.0
 langchain-google-genai>=2.1.0
 langchain-openai>=0.3.0
+langchain-deepseek>=1.0.0
 langsmith>=0.3.0

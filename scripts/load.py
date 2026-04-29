@@ -104,12 +104,11 @@ def load_klines(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Load klines features into ClickHouse (with cleanup after insert)."""
+    """Load klines features into ClickHouse (per-partition to avoid OOM)."""
     symbols = symbols or SYMBOLS
     wm_map = get_table_watermarks("klines", "timestamp", symbols)
 
-    all_dfs: list[pd.DataFrame] = []
-    loaded_keys: list[str] = []
+    total_inserted = 0
     errors = 0
 
     for symbol in symbols:
@@ -132,38 +131,34 @@ def load_klines(
                 if df.empty:
                     continue
 
-                all_dfs.append(df)
-                loaded_keys.append(key)
+                inserted = ch_insert_df("klines", df)
+                total_inserted += inserted
+
+                # Cleanup after successful insert
+                try:
+                    storage.remove_object(BUCKET_PROCESSED, key)
+                except Exception:
+                    pass
+
             except Exception as exc:
                 errors += 1
                 logger.error("[Load] klines %s/%s: %s", symbol, month, exc)
 
-    if not all_dfs:
-        if errors > 0:
-            raise LoadError(f"klines: all {errors} partition(s) failed, 0 loaded")
-        logger.info("No new klines data to load")
-        return
+    if total_inserted == 0 and errors > 0:
+        raise LoadError(f"klines: all {errors} partition(s) failed, 0 loaded")
 
-    combined = pd.concat(all_dfs, ignore_index=True)
-    inserted = ch_insert_df("klines", combined)
-    logger.info("Loaded %s NEW klines rows", f"{inserted:,}")
-
-    for key in loaded_keys:
-        try:
-            storage.remove_object(BUCKET_PROCESSED, key)
-        except Exception:
-            pass
+    logger.info("Loaded %s NEW klines rows (%d errors)", f"{total_inserted:,}", errors)
 
 
 def load_ticker(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Load ticker snapshots into ClickHouse."""
+    """Load ticker snapshots into ClickHouse (per-partition)."""
     symbols = symbols or SYMBOLS
     wm_map = get_table_watermarks("ticker_24h", "snapshot_time", symbols)
 
-    all_dfs: list[pd.DataFrame] = []
+    total_inserted = 0
     errors = 0
 
     for symbol in symbols:
@@ -196,31 +191,26 @@ def load_ticker(
                     "trade_count", "bid_price", "ask_price", "spread_pct",
                 ]
                 df = df[[c for c in target_cols if c in df.columns]]
-                all_dfs.append(df)
+                total_inserted += ch_insert_df("ticker_24h", df)
             except Exception as exc:
                 errors += 1
                 logger.error("[Load] ticker %s/%s: %s", symbol, month, exc)
 
-    if not all_dfs:
-        if errors > 0:
-            raise LoadError(f"ticker_24h: all {errors} partition(s) failed, 0 loaded")
-        logger.info("No new ticker data to load")
-        return
+    if total_inserted == 0 and errors > 0:
+        raise LoadError(f"ticker_24h: all {errors} partition(s) failed, 0 loaded")
 
-    combined = pd.concat(all_dfs, ignore_index=True)
-    inserted = ch_insert_df("ticker_24h", combined)
-    logger.info("Loaded %s NEW ticker rows", f"{inserted:,}")
+    logger.info("Loaded %s NEW ticker rows (%d errors)", f"{total_inserted:,}", errors)
 
 
 def load_order_book(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Load order book snapshots into ClickHouse."""
+    """Load order book snapshots into ClickHouse (per-partition)."""
     symbols = symbols or SYMBOLS
     wm_map = get_table_watermarks("order_book_snapshot", "timestamp", symbols)
 
-    all_dfs: list[pd.DataFrame] = []
+    total_inserted = 0
     errors = 0
 
     for symbol in symbols:
@@ -249,20 +239,15 @@ def load_order_book(
                     "total_ask_volume", "imbalance",
                 ]
                 df = df[[c for c in target_cols if c in df.columns]]
-                all_dfs.append(df)
+                total_inserted += ch_insert_df("order_book_snapshot", df)
             except Exception as exc:
                 errors += 1
                 logger.error("[Load] order_book %s/%s: %s", symbol, month, exc)
 
-    if not all_dfs:
-        if errors > 0:
-            raise LoadError(f"order_book_snapshot: all {errors} partition(s) failed, 0 loaded")
-        logger.info("No new order book data to load")
-        return
+    if total_inserted == 0 and errors > 0:
+        raise LoadError(f"order_book_snapshot: all {errors} partition(s) failed, 0 loaded")
 
-    combined = pd.concat(all_dfs, ignore_index=True)
-    inserted = ch_insert_df("order_book_snapshot", combined)
-    logger.info("Loaded %s NEW order book rows", f"{inserted:,}")
+    logger.info("Loaded %s NEW order book rows (%d errors)", f"{total_inserted:,}", errors)
 
 
 # --- CLI ---------------------------------------------------------------------

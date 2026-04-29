@@ -26,7 +26,7 @@ from config.llm_config import (
     TEMPERATURE,
     TIMEFRAME_CONFIG,
 )
-from utils.db_utils import ch_insert_df, ch_query_df
+from utils.db_utils import new_ch_client
 from utils.logger import get_logger
 
 import market_queries as mq
@@ -51,10 +51,23 @@ def _get_llm():
         return _llm_instance
 
     if LLM_BASE_URL and "deepseek" in LLM_BASE_URL.lower():
-        # DeepSeek reasoning models — need ChatDeepSeek for reasoning_content
-        from langchain_deepseek import ChatDeepSeek
+        # DeepSeek reasoning models — patched to preserve reasoning_content
+        # in multi-turn tool-calling loops (upstream strips it)
+        from langchain_deepseek import ChatDeepSeek as _BaseChatDeepSeek
 
-        _llm_instance = ChatDeepSeek(
+        class _PatchedDeepSeek(_BaseChatDeepSeek):
+            def _get_request_payload(self, input_, *, stop=None, **kwargs):
+                payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+                # Re-inject reasoning_content stripped by ChatOpenAI serializer
+                input_msgs = self._convert_input(input_).to_messages()
+                for lc_msg, api_msg in zip(input_msgs, payload.get("messages", [])):
+                    if api_msg.get("role") == "assistant":
+                        rc = getattr(lc_msg, "additional_kwargs", {}).get("reasoning_content")
+                        if rc:
+                            api_msg["reasoning_content"] = rc
+                return payload
+
+        _llm_instance = _PatchedDeepSeek(
             model=LLM_MODEL,
             api_key=LLM_API_KEY,
             temperature=TEMPERATURE,
@@ -229,7 +242,11 @@ async def load_history(state: dict[str, Any]) -> dict[str, Any]:
             f"WHERE session_id = '{mq._esc(session_id)}' "
             "ORDER BY timestamp ASC"
         )
-        df = ch_query_df(q)
+        client = new_ch_client()
+        try:
+            df = client.query_df(q)
+        finally:
+            client.close()
         if not df.empty:
             for _, row in df.iterrows():
                 history.append({"role": row["role"], "content": row["content"]})
@@ -254,9 +271,14 @@ async def load_history(state: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def agent_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Invoke the LLM with tool-calling enabled."""
+    """Invoke the LLM with tool-calling enabled.
+
+    For DeepSeek reasoning models: converts AIMessages to include
+    reasoning_content in the format the API expects.
+    """
     llm = _get_llm()
     llm_with_tools = llm.bind_tools(TOOLS)
+
     response = await llm_with_tools.ainvoke(state["messages"])
     return {"messages": [response]}
 
@@ -284,11 +306,18 @@ async def save_history(state: dict[str, Any]) -> dict[str, Any]:
     user_message = state["user_message"]
 
     # Extract reply from last AI message
+    # DeepSeek reasoning models may put analysis in reasoning_content
     reply = ""
     for msg in reversed(state["messages"]):
-        if isinstance(msg, AIMessage) and msg.content:
-            reply = msg.content.strip()
-            break
+        if isinstance(msg, AIMessage):
+            if msg.content:
+                reply = msg.content.strip()
+                break
+            # Fallback: use reasoning_content if content is empty
+            rc = msg.additional_kwargs.get("reasoning_content", "")
+            if rc:
+                reply = rc.strip()
+                break
 
     if not reply:
         reply = "Sorry, I could not generate a response. Please try again."
@@ -341,7 +370,11 @@ async def save_history(state: dict[str, Any]) -> dict[str, Any]:
 
     try:
         df = pd.DataFrame(rows)
-        ch_insert_df("chat_history", df)
+        client = new_ch_client()
+        try:
+            client.insert_df("chat_history", df)
+        finally:
+            client.close()
         logger.debug("Saved %d messages for session %s", len(rows), session_id)
     except Exception as exc:
         logger.error("Failed to save chat history: %s", exc)

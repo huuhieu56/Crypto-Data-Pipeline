@@ -8,10 +8,19 @@ from __future__ import annotations
 
 import pandas as pd
 
-from utils.db_utils import ch_query_df
+from utils.db_utils import new_ch_client
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _query_df(query: str) -> pd.DataFrame:
+    """Execute a query using a fresh ClickHouse client (async-safe)."""
+    client = new_ch_client()
+    try:
+        return client.query_df(query)
+    finally:
+        client.close()
 
 
 def _esc(value: str) -> str:
@@ -45,7 +54,7 @@ def fetch_candles(symbol: str, config: dict) -> pd.DataFrame:
         f"GROUP BY ts ORDER BY ts ASC "
         f"LIMIT {limit}"
     )
-    return ch_query_df(q)
+    return _query_df(q)
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +77,7 @@ def fetch_ticker_trend(symbol: str, config: dict) -> pd.DataFrame:
         f"AND snapshot_time >= now() - INTERVAL {lookback} DAY "
         "GROUP BY ts ORDER BY ts ASC"
     )
-    return ch_query_df(q)
+    return _query_df(q)
 
 
 def fetch_latest_ticker(symbol: str) -> dict:
@@ -79,7 +88,7 @@ def fetch_latest_ticker(symbol: str) -> dict:
         f"WHERE symbol = '{_esc(symbol)}' "
         "ORDER BY snapshot_time DESC LIMIT 1"
     )
-    df = ch_query_df(q)
+    df = _query_df(q)
     if df.empty:
         return {"price_change_pct": 0.0, "volume_24h": 0.0, "spread_pct": 0.0}
 
@@ -113,7 +122,7 @@ def _fetch_ob_latest(symbol: str) -> dict:
         f"WHERE symbol = '{_esc(symbol)}' "
         "ORDER BY timestamp DESC LIMIT 1"
     )
-    df = ch_query_df(q)
+    df = _query_df(q)
     if df.empty:
         return {"mode": "latest_only", "latest_imbalance": 0.5}
     row = df.iloc[0]
@@ -136,7 +145,7 @@ def _fetch_ob_summary(symbol: str) -> dict:
         f"WHERE symbol = '{_esc(symbol)}' "
         "AND timestamp >= now() - INTERVAL 30 DAY"
     )
-    df = ch_query_df(q)
+    df = _query_df(q)
     if df.empty:
         return {"mode": "summary_30d", "avg_imbalance": 0.5, "latest_imbalance": 0.5}
     row = df.iloc[0]
@@ -163,7 +172,7 @@ def _fetch_ob_trend(symbol: str, config: dict) -> dict:
         f"AND timestamp >= now() - INTERVAL {lookback} DAY "
         "GROUP BY ts ORDER BY ts ASC"
     )
-    trend_df = ch_query_df(q)
+    trend_df = _query_df(q)
 
     # Also fetch latest snapshot
     latest = _fetch_ob_latest(symbol)

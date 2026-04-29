@@ -20,11 +20,10 @@
 #
 # Note:
 #   - Mini-batch / near-streaming: toàn bộ pipeline chạy mỗi phút
-#   - ETL nặng chỉ trong lần chạy đầu tiên (bulk 3 năm × 50 coins ~ 78M rows)
+#   - Lần chạy đầu tiên: auto-bootstrap 3 năm data từ Data Vision (~78M rows)
 #   - Incremental mỗi phút chỉ xử lý ~50 rows (1 nến/coin) → rất nhẹ
 #   - ticker_24h + order_book: mỗi lần chỉ 1–2 API requests (trả về tất cả
 #     50 coins cùng lúc) → overhead rất thấp
-#   - pre_extract (self-healing) chạy riêng khi cần, không thuộc DAG này
 # =============================================================================
 
 from datetime import datetime, timedelta
@@ -46,7 +45,7 @@ default_args = {
 	"email_on_failure": False,
 	"email_on_retry": False,
 	"retries": 0,
-	"execution_timeout": timedelta(minutes=3),
+	"execution_timeout": timedelta(minutes=60),
 }
 
 
@@ -109,6 +108,11 @@ with DAG(
 
 	# --- Load ------------------------------------------------------------
 
+	load_symbols_task = BashOperator(
+		task_id="load_symbols",
+		bash_command=f"cd {project_root} && python scripts/load.py --only symbols",
+	)
+
 	load_klines_task = BashOperator(
 		task_id="load_klines",
 		bash_command=f"cd {project_root} && python scripts/load.py --only klines",
@@ -126,6 +130,7 @@ with DAG(
 
 	# --- Dependencies ----------------------------------------------------
 
+	load_symbols_task
 	extract_klines_task >> transform_task >> load_klines_task
 	extract_ticker_task >> load_ticker_task
 	extract_order_book_task >> load_order_book_task
