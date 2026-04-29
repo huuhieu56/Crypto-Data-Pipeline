@@ -4,8 +4,9 @@ Two modes:
   bulk     — Full historical download via Data Vision (monthly ZIP files)
   minutely — Incremental update via REST API + Ticker 24h + Order Book
 
-Bulk mode is used by pre_extract.py for first-time / backfill downloads.
-Minutely mode runs via minutely_etl DAG for ongoing incremental updates.
+On first run (empty DB), extract_recent_klines auto-bootstraps by downloading
+3 years of historical data via Data Vision, then fills the gap to present.
+Subsequent runs only fetch new 1-min candles incrementally.
 """
 
 from __future__ import annotations
@@ -148,11 +149,6 @@ def extract_bulk(
             except Exception as exc:
                 logger.error("[%s] FAILED — %s", symbol, exc)
 
-    # Snapshot data
-    trading = [s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"]
-    extract_ticker_24h(trading)
-    extract_order_book_snapshot(trading)
-
     return results
 
 
@@ -164,8 +160,8 @@ def extract_recent_klines(
 ) -> dict[str, pd.DataFrame]:
     """Incremental klines update via REST API.
 
-    Uses batch ClickHouse query for last timestamps (1 query for all symbols).
-    Writes new rows to monthly partitions on MinIO.
+    On first run (empty DB): auto-bootstraps by downloading historical data
+    via Data Vision, then fills the gap to present via REST API.
     """
     if not symbols:
         return {}
@@ -176,6 +172,39 @@ def extract_recent_klines(
     # 1 batch query for all symbols instead of N file downloads
     last_timestamps = get_last_timestamps(symbols)
 
+    # --- Bootstrap: empty DB → bulk download 3 years from Data Vision --------
+    symbols_needing_bootstrap = [s for s in symbols if s not in last_timestamps]
+    if symbols_needing_bootstrap:
+        logger.info(
+            "=== Bootstrap: %d/%d symbols have no data — "
+            "downloading %d months of history via Data Vision ===",
+            len(symbols_needing_bootstrap), len(symbols), MONTHS_BACK,
+        )
+        target_months = get_target_months(MONTHS_BACK)
+
+        def _bulk_one(symbol: str) -> tuple[str, int | None]:
+            return symbol, download_data_vision(symbol, target_months)
+
+        max_workers = min(BULK_SYMBOL_WORKERS, len(symbols_needing_bootstrap))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_map = {
+                pool.submit(_bulk_one, sym): sym
+                for sym in symbols_needing_bootstrap
+            }
+            for future in as_completed(future_map):
+                sym = future_map[future]
+                try:
+                    sym, total = future.result()
+                    if total is not None:
+                        logger.info("[BOOTSTRAP] %s: %s records", sym, f"{total:,}")
+                except Exception as exc:
+                    logger.error("[BOOTSTRAP] %s: FAILED — %s", sym, exc)
+
+        # Refresh watermarks after bulk download
+        last_timestamps = get_last_timestamps(symbols)
+        logger.info("=== Bootstrap complete — filling gap to present ===")
+
+    # --- Incremental: fill from last watermark to now ------------------------
     def _extract_one(symbol: str) -> tuple[str, pd.DataFrame | None]:
         last_ts = last_timestamps.get(symbol)
         if last_ts is None:

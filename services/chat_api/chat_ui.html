@@ -84,6 +84,30 @@
     color: var(--text-secondary);
   }
 
+  .header-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .new-chat-btn {
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-family: var(--font);
+    cursor: pointer;
+    transition: all var(--transition);
+  }
+
+  .new-chat-btn:hover {
+    background: rgba(220, 38, 38, 0.15);
+    border-color: rgba(220, 38, 38, 0.4);
+    color: #f87171;
+  }
+
   .symbol-badge {
     padding: 3px 10px;
     border-radius: 6px;
@@ -343,7 +367,10 @@
     <div class="header-icon">🤖</div>
     <div class="header-info">
       <div class="header-title">AI Market Analyst</div>
-      <div class="header-sub">Powered by LLM · 30 daily candles context</div>
+      <div class="header-sub">Powered by LangGraph · Dynamic timeframe analysis</div>
+    </div>
+    <div class="header-actions">
+      <button class="new-chat-btn" id="newChatBtn">🗑 New Chat</button>
     </div>
     <div class="symbol-badge" id="symbolBadge">__SYMBOL__</div>
   </div>
@@ -353,12 +380,12 @@
     <div class="welcome" id="welcome">
       <div class="welcome-icon">📊</div>
       <h2 id="welcomeTitle">Analyzing __SYMBOL__</h2>
-      <p>Ask anything about this coin — trend, RSI, MACD, support/resistance, or trading considerations. Market data from the last 30 days is automatically included.</p>
+      <p>Ask anything about this coin — trend, RSI, MACD, support/resistance, or trading considerations. Market data is dynamically loaded based on your analysis timeframe.</p>
       <div class="suggestions" id="suggestions">
-        <button class="suggestion-btn">Phân tích xu hướng 7 ngày gần nhất</button>
+        <button class="suggestion-btn">Phân tích xu hướng 3 ngày tới</button>
+        <button class="suggestion-btn">Xu hướng dài hạn 1 năm</button>
         <button class="suggestion-btn">RSI đang cho tín hiệu gì?</button>
         <button class="suggestion-btn">Nên chờ mua hay bán?</button>
-        <button class="suggestion-btn">So sánh volume hôm nay với tuần trước</button>
       </div>
     </div>
   </div>
@@ -381,27 +408,61 @@
   const inputEl = document.getElementById('input');
   const sendBtn = document.getElementById('sendBtn');
   const suggestionButtons = document.querySelectorAll('.suggestion-btn');
-  const welcomeEl = document.getElementById('welcome');
-  let history = [];
+  const newChatBtn = document.getElementById('newChatBtn');
+  let welcomeEl = document.getElementById('welcome');
   let isLoading = false;
 
+  // --- Session ID management ---
+  function getSessionId() {
+    let sid = localStorage.getItem('chat_session_id');
+    if (!sid) {
+      sid = crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
+      localStorage.setItem('chat_session_id', sid);
+    }
+    return sid;
+  }
+
+  let SESSION_ID = getSessionId();
+
+  // --- Load chat history on page load ---
+  async function loadHistory() {
+    try {
+      const resp = await fetch(`${API_BASE}/api/chat/history/${SESSION_ID}`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.messages && data.messages.length > 0) {
+        if (welcomeEl) { welcomeEl.remove(); welcomeEl = null; }
+        data.messages.forEach(function(msg) {
+          addMessage(msg.role, msg.content);
+        });
+      }
+    } catch (err) {
+      console.warn('Failed to load chat history:', err);
+    }
+  }
+
+  loadHistory();
+
+  // --- Event bindings ---
   function maybeFocusInput() {
-    // Avoid forcing focus when embedded in Grafana; this prevents page jump to iframe.
     if (!IS_EMBEDDED) {
       inputEl.focus();
     }
   }
 
-  // Bind events in JS scope to avoid global-function dependency from inline handlers.
-  inputEl.addEventListener('input', () => {
+  inputEl.addEventListener('input', function() {
     autoResize(inputEl);
     sendBtn.disabled = !inputEl.value.trim() || isLoading;
   });
   inputEl.addEventListener('keydown', handleKey);
   sendBtn.addEventListener('click', sendMessage);
-  suggestionButtons.forEach((btn) => {
-    btn.addEventListener('click', () => useSuggestion(btn));
+  suggestionButtons.forEach(function(btn) {
+    btn.addEventListener('click', function() { useSuggestion(btn); });
   });
+  newChatBtn.addEventListener('click', startNewChat);
 
   function autoResize(el) {
     el.style.height = 'auto';
@@ -422,11 +483,29 @@
     sendMessage();
   }
 
+  async function startNewChat() {
+    try {
+      await fetch(`${API_BASE}/api/chat/history/${SESSION_ID}`, { method: 'DELETE' });
+    } catch (err) {
+      console.warn('Failed to delete history:', err);
+    }
+    // Generate new session
+    const newSid = crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+    localStorage.setItem('chat_session_id', newSid);
+    SESSION_ID = newSid;
+    // Clear UI
+    messagesEl.innerHTML = '';
+    location.reload();
+  }
+
   function addMessage(role, content) {
-    if (welcomeEl) welcomeEl.remove();
+    if (welcomeEl) { welcomeEl.remove(); welcomeEl = null; }
 
     const wrapper = document.createElement('div');
-    wrapper.className = `msg ${role}`;
+    wrapper.className = 'msg ' + role;
 
     const avatar = document.createElement('div');
     avatar.className = 'msg-avatar';
@@ -472,7 +551,7 @@
     toast.className = 'error-toast';
     toast.textContent = msg;
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 4000);
+    setTimeout(function() { toast.remove(); }, 4000);
   }
 
   async function sendMessage() {
@@ -488,35 +567,26 @@
     showTyping();
 
     try {
-      const resp = await fetch(`${API_BASE}/api/chat`, {
+      const resp = await fetch(API_BASE + '/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          session_id: SESSION_ID,
           symbol: SYMBOL,
           message: text,
-          history: history,
         }),
       });
 
       removeTyping();
 
       if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.detail || `HTTP ${resp.status}`);
+        const err = await resp.json().catch(function() { return {}; });
+        throw new Error(err.detail || 'HTTP ' + resp.status);
       }
 
       const data = await resp.json();
       addMessage('assistant', data.reply);
 
-      // Update history
-      history.push({ role: 'user', content: text });
-      history.push({ role: 'assistant', content: data.reply });
-
-      // Keep history within limit (10 turns = 20 messages)
-      const maxMessages = 20;
-      if (history.length > maxMessages) {
-        history = history.slice(history.length - maxMessages);
-      }
     } catch (err) {
       removeTyping();
       showError(err.message || 'Failed to get response');
@@ -528,7 +598,6 @@
     }
   }
 
-  // Auto-focus input
   maybeFocusInput();
 })();
 </script>

@@ -9,13 +9,12 @@ from typing import Any
 import aiohttp
 
 from config.llm_config import (
-    GEMINI_API_KEY,
-    GEMINI_MODEL,
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_MODEL,
     LLM_PROVIDER,
     MAX_RETRIES,
     MAX_TOKENS,
-    OPENAI_API_KEY,
-    OPENAI_MODEL,
     RETRY_DELAY,
     TEMPERATURE,
     TIMEOUT_SECONDS,
@@ -36,12 +35,12 @@ async def _call_gemini(
     messages: list[dict[str, str]],
 ) -> str:
     """Call Google Gemini with system instruction + multi-turn contents."""
-    if not GEMINI_API_KEY:
-        raise LLMAPIError("Missing GEMINI_API_KEY")
+    if not LLM_API_KEY:
+        raise LLMAPIError("Missing LLM_API_KEY")
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        f"{LLM_MODEL}:generateContent?key={LLM_API_KEY}"
     )
 
     # Build Gemini contents array from conversation history
@@ -78,12 +77,13 @@ async def _call_openai(
     messages: list[dict[str, str]],
 ) -> str:
     """Call OpenAI Chat Completions with system + multi-turn messages."""
-    if not OPENAI_API_KEY:
-        raise LLMAPIError("Missing OPENAI_API_KEY")
+    if not LLM_API_KEY:
+        raise LLMAPIError("Missing LLM_API_KEY")
 
-    url = "https://api.openai.com/v1/chat/completions"
+    base = LLM_BASE_URL or "https://api.openai.com/v1"
+    url = f"{base.rstrip('/')}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {LLM_API_KEY}",
         "Content-Type": "application/json",
     }
 
@@ -94,7 +94,7 @@ async def _call_openai(
         oai_messages.append({"role": msg["role"], "content": msg["content"]})
 
     payload = {
-        "model": OPENAI_MODEL,
+        "model": LLM_MODEL,
         "messages": oai_messages,
         "temperature": TEMPERATURE,
         "max_tokens": MAX_TOKENS,
@@ -136,12 +136,10 @@ async def get_chat_response(
     """
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            if LLM_PROVIDER == "gemini":
-                reply = await _call_gemini(session, system_prompt, messages)
-            elif LLM_PROVIDER == "openai":
+            if LLM_BASE_URL or LLM_PROVIDER != "gemini":
                 reply = await _call_openai(session, system_prompt, messages)
             else:
-                raise LLMAPIError(f"Unsupported LLM_PROVIDER: {LLM_PROVIDER}")
+                reply = await _call_gemini(session, system_prompt, messages)
 
             logger.debug("LLM reply (%d chars)", len(reply))
             return reply

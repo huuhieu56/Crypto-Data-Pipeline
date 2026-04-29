@@ -63,4 +63,18 @@ CREATE TABLE IF NOT EXISTS crypto_db.order_book_snapshot (
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (symbol, timestamp);
 
+-- 5) Chat history for AI chatbot
+CREATE TABLE IF NOT EXISTS crypto_db.chat_history (
+    session_id String,
+    message_id String,
+    timestamp DateTime DEFAULT now(),
+    symbol String,
+    role String,
+    content String,
+    timeframe Nullable(String),
+    context_summary String DEFAULT ''
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (session_id, timestamp);
+
 

@@ -22,7 +22,7 @@ _ch_client: Client | None = None
 
 
 def get_ch_client() -> Client:
-    """Return a singleton ClickHouse client."""
+    """Return a singleton ClickHouse client. Use for synchronous ETL code."""
     global _ch_client
     if _ch_client is None:
         try:
@@ -43,6 +43,17 @@ def get_ch_client() -> Client:
                 f"Cannot connect to ClickHouse: {exc}"
             ) from exc
     return _ch_client
+
+
+def new_ch_client() -> Client:
+    """Create a fresh ClickHouse client. Use for async/concurrent contexts."""
+    return clickhouse_connect.get_client(
+        host=CH_CONFIG["host"],
+        port=CH_CONFIG["port"],
+        username=CH_CONFIG["user"],
+        password=CH_CONFIG["password"],
+        database=CH_CONFIG["database"],
+    )
 
 
 def init_schema() -> None:

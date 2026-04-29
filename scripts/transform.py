@@ -207,7 +207,18 @@ def transform_data(
         raw_ts = last_ts_map.get(symbol)
         last_loaded = pd.to_datetime(raw_ts, unit="ms", utc=True) if raw_ts else None
 
-        months = [month_str] if month_str else _discover_raw_months(symbol)
+        if month_str:
+            months = [month_str]
+        elif last_loaded is not None:
+            # Only check months that could have new data
+            # (the month of last loaded data + current month)
+            last_month = last_loaded.strftime("%Y-%m")
+            current_month = pd.Timestamp.now(tz="UTC").strftime("%Y-%m")
+            months = sorted(set([last_month, current_month]))
+        else:
+            # No data loaded yet — discover all months (first run)
+            months = _discover_raw_months(symbol)
+
         sym_rows = 0
         for month in months:
             result_df = _process_symbol(symbol, month, last_loaded)
