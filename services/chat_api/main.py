@@ -24,11 +24,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from config.llm_config import LLM_BASE_URL, LLM_PROVIDER
-from utils.db_utils import ch_query_df
+from utils.db_utils import ch_query_df_params, new_ch_client
 from utils.logger import get_logger
 
 from graph import compiled_graph
-from market_queries import _esc
 
 logger = get_logger(__name__)
 
@@ -114,10 +113,10 @@ async def get_history(session_id: str):
         q = (
             "SELECT role, content "
             "FROM chat_history "
-            f"WHERE session_id = '{_esc(session_id)}' "
+            "WHERE session_id = {session_id:String} "
             "ORDER BY timestamp ASC"
         )
-        df = ch_query_df(q)
+        df = ch_query_df_params(q, {"session_id": session_id})
 
         if df.empty:
             return {"messages": []}
@@ -140,12 +139,14 @@ async def get_history(session_id: str):
 async def delete_history(session_id: str):
     """Delete chat history for a session."""
     try:
-        from utils.db_utils import get_ch_client
-
-        client = get_ch_client()
-        client.command(
-            f"ALTER TABLE chat_history DELETE WHERE session_id = '{_esc(session_id)}'"
-        )
+        client = new_ch_client()
+        try:
+            client.command(
+                "ALTER TABLE chat_history DELETE WHERE session_id = {session_id:String}",
+                parameters={"session_id": session_id},
+            )
+        finally:
+            client.close()
         return {"status": "deleted", "session_id": session_id}
 
     except Exception as exc:

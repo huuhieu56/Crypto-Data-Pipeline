@@ -26,7 +26,7 @@ from config.llm_config import (
     TEMPERATURE,
     TIMEFRAME_CONFIG,
 )
-from utils.db_utils import new_ch_client
+from utils.db_utils import new_ch_client, ch_query_df_params
 from utils.logger import get_logger
 
 import market_queries as mq
@@ -148,6 +148,13 @@ def get_price_candles(symbol: str, timeframe: str) -> str:
         f"\nRSI(14): {rsi}"
         f"\nMACD: {macd_val}, Signal: {signal_val}"
     )
+
+    # Append pre-interpreted signals
+    signals = mq.compute_signals(df)
+    signal_text = mq.format_signals(signals)
+    if signal_text:
+        result += f"\n\n{signal_text}"
+
     return result
 
 
@@ -192,8 +199,68 @@ def get_orderbook_pressure(symbol: str, timeframe: str) -> str:
     return mq.format_orderbook(data)
 
 
+@tool
+def get_funding_rate(symbol: str, timeframe: str) -> str:
+    """Fetch perpetual futures funding rate history.
+
+    Funding rates indicate whether the market is net long (positive rate,
+    longs pay shorts) or net short (negative rate, shorts pay longs).
+    Extreme negative rates with rising open interest often signal a
+    short squeeze setup.
+
+    Args:
+        symbol: Crypto trading pair (e.g. BTCUSDT, ETHUSDT).
+        timeframe: One of 'short', 'medium', 'long', 'very_long'.
+    """
+    config = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["medium"])
+    df = mq.fetch_funding_rates(symbol, config)
+    result = mq.format_funding_rates(df)
+
+    latest = mq.fetch_latest_funding(symbol)
+    rate = latest["funding_rate"]
+    pct = rate * 100
+    if rate > 0:
+        tag = "longs pay shorts (market is net long)"
+    elif rate < 0:
+        tag = "shorts pay longs (market is net short)"
+    else:
+        tag = "neutral"
+
+    result += (
+        f"\n\n--- Latest ---"
+        f"\nFunding rate: {pct:+.4f}% ({tag})"
+        f"\nMark price: {latest['mark_price']:.2f}"
+    )
+    return result
+
+
+@tool
+def get_open_interest(symbol: str, timeframe: str) -> str:
+    """Fetch open interest history for a symbol.
+
+    Open interest represents the total number of outstanding derivative
+    contracts.  Rising OI with rising price confirms trend strength.
+    Rising OI with falling price suggests new short positions opening.
+
+    Args:
+        symbol: Crypto trading pair (e.g. BTCUSDT, ETHUSDT).
+        timeframe: One of 'short', 'medium', 'long', 'very_long'.
+    """
+    config = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["medium"])
+    df = mq.fetch_open_interest(symbol, config)
+    result = mq.format_open_interest(df)
+
+    latest = mq.fetch_latest_oi(symbol)
+    result += (
+        f"\n\n--- Latest ---"
+        f"\nOpen interest: {latest['open_interest']:,.0f} contracts"
+        f"\nNotional value: ${latest['open_interest_value']:,.0f}"
+    )
+    return result
+
+
 # List used by the graph to bind tools to the LLM.
-TOOLS = [get_price_candles, get_volume_and_liquidity, get_orderbook_pressure]
+TOOLS = [get_price_candles, get_volume_and_liquidity, get_orderbook_pressure, get_funding_rate, get_open_interest]
 
 
 # ---------------------------------------------------------------------------
@@ -203,16 +270,28 @@ TOOLS = [get_price_candles, get_volume_and_liquidity, get_orderbook_pressure]
 SYSTEM_PROMPT = (
     "You are a professional crypto market analyst assistant.\n"
     "You have access to tools that query the market database.\n\n"
+    "DETECTING THE SYMBOL:\n"
+    "Determine which crypto trading pair (e.g. BTCUSDT, ETHUSDT) the user "
+    "is asking about from their message. If they mention a coin name or "
+    "ticker (BTC, ETH, SOL, ARB...), convert it to the pair format "
+    "by appending USDT. If no specific coin is mentioned, use {symbol} "
+    "as the default.\n\n"
     "WORKFLOW:\n"
     "1. Analyze the user's question to determine what data you need.\n"
-    "2. Call the appropriate tools with the right timeframe:\n"
+    "2. Call the appropriate tools with the right symbol AND timeframe:\n"
     "   - 'short' for hours to ~3 days (intraday / scalp / swing)\n"
     "   - 'medium' for 1 week to 1 month (default if unclear)\n"
     "   - 'long' for a few months to 1 year\n"
     "   - 'very_long' for 1 to 3+ years\n"
     "3. Use the returned data to provide your analysis.\n\n"
-    "The user is currently viewing {symbol}. "
-    "Use this symbol unless they ask about a different coin.\n\n"
+    "AVAILABLE TOOLS:\n"
+    "- get_price_candles: OHLCV with RSI/MACD and computed signals\n"
+    "- get_volume_and_liquidity: Volume trends, spread, trade count\n"
+    "- get_orderbook_pressure: Buy/sell pressure and imbalance\n"
+    "- get_funding_rate: Perpetual futures funding rates (leverage sentiment)\n"
+    "- get_open_interest: Outstanding derivative contracts (trend confirmation)\n\n"
+    "For comprehensive analysis, combine price/volume data with derivatives "
+    "data (funding + OI) to assess leverage positioning and squeeze potential.\n\n"
     "RULES:\n"
     "- ALWAYS call at least one tool before answering market questions.\n"
     "- Base analysis ONLY on data returned by your tools.\n"
@@ -239,14 +318,10 @@ async def load_history(state: dict[str, Any]) -> dict[str, Any]:
         q = (
             "SELECT role, content "
             "FROM chat_history "
-            f"WHERE session_id = '{mq._esc(session_id)}' "
+            "WHERE session_id = {session_id:String} "
             "ORDER BY timestamp ASC"
         )
-        client = new_ch_client()
-        try:
-            df = client.query_df(q)
-        finally:
-            client.close()
+        df = ch_query_df_params(q, {"session_id": session_id})
         if not df.empty:
             for _, row in df.iterrows():
                 history.append({"role": row["role"], "content": row["content"]})

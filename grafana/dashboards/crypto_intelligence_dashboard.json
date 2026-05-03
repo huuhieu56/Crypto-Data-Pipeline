@@ -78,7 +78,7 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS coin,\n  round(t.quote_volume_24h / 1000000000, 2) AS volume_billion_usd\nFROM ticker_24h t\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT max(snapshot_time) FROM ticker_24h)\nORDER BY t.quote_volume_24h DESC\nLIMIT 10",
+          "rawSql": "SELECT\n  s.base_asset AS coin,\n  round(t.quote_volume_24h / 1000000000, 2) AS volume_billion_usd\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT max(snapshot_time) FROM ticker_24h FINAL)\nORDER BY t.quote_volume_24h DESC\nLIMIT 10",
           "refId": "A"
         }
       ],
@@ -99,11 +99,9 @@
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisPlacement": "auto",
-            "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 5,
             "showPoints": "never",
             "spanNulls": true,
@@ -144,12 +142,12 @@
           "editorMode": "code",
           "format": 1,
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  close AS price\nFROM klines\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
+          "rawSql": "SELECT\n  toStartOfDay(timestamp) AS time,\n  argMin(open, timestamp) AS open,\n  max(high) AS high,\n  min(low) AS low,\n  argMax(close, timestamp) AS close\nFROM klines FINAL\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nGROUP BY time\nORDER BY time",
           "refId": "A"
         }
       ],
-      "title": "Price Chart",
-      "type": "timeseries"
+      "title": "Price Chart (Candlestick)",
+      "type": "candlestick"
     },
     {
       "datasource": {
@@ -231,7 +229,7 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS coin,\n  t.price_change_pct,\n  t.quote_volume_24h\nFROM ticker_24h t\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h)\n  AND t.price_change_pct > 0\nORDER BY t.price_change_pct DESC\nLIMIT 5",
+          "rawSql": "SELECT\n  s.base_asset AS coin,\n  t.price_change_pct,\n  t.quote_volume_24h\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct > 0\nORDER BY t.price_change_pct DESC\nLIMIT 5",
           "refId": "A"
         }
       ],
@@ -318,7 +316,7 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS coin,\n  t.price_change_pct,\n  t.quote_volume_24h\nFROM ticker_24h t\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h)\n  AND t.price_change_pct < 0\nORDER BY t.price_change_pct ASC\nLIMIT 5",
+          "rawSql": "SELECT\n  s.base_asset AS coin,\n  t.price_change_pct,\n  t.quote_volume_24h\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct < 0\nORDER BY t.price_change_pct ASC\nLIMIT 5",
           "refId": "A"
         }
       ],
@@ -385,7 +383,7 @@
           "editorMode": "code",
           "format": 1,
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  imbalance\nFROM order_book_snapshot\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
+          "rawSql": "SELECT\n  toStartOfDay(timestamp) AS time,\n  avg(imbalance) AS imbalance\nFROM order_book_snapshot FINAL\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nGROUP BY time\nORDER BY time",
           "refId": "A"
         }
       ],
@@ -480,7 +478,7 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS coin,\n  k.rsi_14\nFROM symbols s\nJOIN (\n  SELECT symbol, argMax(rsi_14, timestamp) AS rsi_14\n  FROM klines\n  GROUP BY symbol\n) k ON k.symbol = s.symbol\nORDER BY k.rsi_14 DESC",
+          "rawSql": "SELECT\n  s.base_asset AS coin,\n  k.rsi_14\nFROM symbols s\nJOIN (\n  SELECT symbol, argMax(rsi_14, timestamp) AS rsi_14\n  FROM klines FINAL\n  GROUP BY symbol\n) k ON k.symbol = s.symbol\nORDER BY k.rsi_14 DESC",
           "refId": "A"
         }
       ],

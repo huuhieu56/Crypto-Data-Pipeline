@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.config import (
     ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM,
+    BINANCE_FUTURES_ENDPOINTS,
 )
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
@@ -56,67 +57,49 @@ def download_data_vision(
 ) -> int | None:
     """Download klines from Data Vision with parallel month downloads.
 
-    Writes monthly partitions: klines/{SYMBOL}/{YYYY-MM}.parquet
+    Each month is written to MinIO immediately after download to avoid
+    accumulating all months in memory.  Writes monthly partitions:
+    klines/{SYMBOL}/{YYYY-MM}.parquet
+
     Returns total record count, or None if no data was downloaded.
     """
     sorted_months = sorted(months)
     if not sorted_months:
         return None
 
-    downloaded: dict[tuple[int, int], pd.DataFrame] = {}
+    total = 0
     max_workers = min(BULK_DOWNLOAD_WORKERS, len(sorted_months))
 
-    def _download_one(ym: tuple[int, int]) -> tuple[tuple[int, int], pd.DataFrame | None]:
+    def _download_and_write(ym: tuple[int, int]) -> int:
         y, m = ym
-        return ym, download_klines_month(symbol, y, m)
+        df = download_klines_month(symbol, y, m)
+        if df is not None and not df.empty:
+            month_str = f"{y}-{m:02d}"
+            key = partition_key(symbol, month_str)
+            df = df.sort_values("open_time")
+            for c in df.columns:
+                if pd.api.types.is_datetime64_any_dtype(df[c]):
+                    df[c] = df[c].dt.as_unit("us")
+            table = pa.Table.from_pandas(df, preserve_index=False)
+            storage.upload_parquet(BUCKET_RAW, key, table)
+            logger.info("[%s] %d-%02d: %s rows", symbol, y, m, f"{len(df):,}")
+            return len(df)
+        return 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {pool.submit(_download_one, ym): ym for ym in sorted_months}
+        future_map = {pool.submit(_download_and_write, ym): ym for ym in sorted_months}
         for future in as_completed(future_map):
             ym = future_map[future]
             try:
-                ym, df = future.result()
-                if df is not None:
-                    downloaded[ym] = df
-                    logger.info(
-                        "[%s] %d-%02d: %s rows",
-                        symbol, ym[0], ym[1], f"{len(df):,}",
-                    )
+                total += future.result()
             except Exception as exc:
-                logger.error(
-                    "[%s] %d-%02d: ERROR %s",
-                    symbol, ym[0], ym[1], exc,
-                )
-
-    if not downloaded:
-        return None
-
-    # Write monthly partitions
-    total = 0
-    for ym in sorted_months:
-        if ym not in downloaded:
-            continue
-        df = downloaded[ym]
-        if df.empty:
-            continue
-
-        month_str = f"{ym[0]}-{ym[1]:02d}"
-        key = partition_key(symbol, month_str)
-
-        df_out = df.sort_values("open_time")
-        for c in df_out.columns:
-            if pd.api.types.is_datetime64_any_dtype(df_out[c]):
-                df_out[c] = df_out[c].dt.as_unit("us")
-
-        table = pa.Table.from_pandas(df_out, preserve_index=False)
-        storage.upload_parquet(BUCKET_RAW, key, table)
-        total += len(df_out)
+                logger.error("[%s] %d-%02d: ERROR %s", symbol, ym[0], ym[1], exc)
 
     logger.info(
         "[%s] Bulk complete: %d/%d months, %s records",
-        symbol, len(downloaded), len(sorted_months), f"{total:,}",
+        symbol, len(sorted_months), len(sorted_months), f"{total:,}",
     )
-    return total
+    return total if total > 0 else None
 
 
 def extract_bulk(
@@ -384,6 +367,76 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
     return df
 
 
+def extract_funding_rates(symbols: list[str]) -> int:
+    """Fetch latest funding rates for symbols from Binance Futures API.
+
+    Funding rates are published every 8h.  Each call returns the most recent
+    funding rate per symbol.  Results are appended to monthly MinIO partitions.
+    """
+    if not symbols:
+        return 0
+
+    from utils.binance_utils import make_request
+
+    total = 0
+    for symbol in symbols:
+        try:
+            data = make_request(
+                BINANCE_FUTURES_ENDPOINTS["funding_rate"],
+                params={"symbol": symbol, "limit": 1},
+            )
+            if not data:
+                continue
+            row = data[0]
+            df = pd.DataFrame([{
+                "symbol": symbol,
+                "funding_time": pd.to_datetime(row["fundingTime"], unit="ms"),
+                "funding_rate": float(row["fundingRate"]),
+                "mark_price": float(row["markPrice"]),
+            }])
+            append_to_partition(BUCKET_RAW, "funding_rates", symbol, df, dedup_col="funding_time")
+            total += 1
+        except Exception as exc:
+            logger.warning("Funding rate failed for %s: %s", symbol, exc)
+
+    logger.info("Saved funding_rates (+%d symbols)", total)
+    return total
+
+
+def extract_open_interest(symbols: list[str]) -> int:
+    """Fetch current open interest for symbols from Binance Futures API.
+
+    Open interest snapshots are taken on demand.  Results are appended to
+    monthly MinIO partitions.
+    """
+    if not symbols:
+        return 0
+
+    from utils.binance_utils import make_request
+    timestamp = datetime.now(timezone.utc)
+
+    total = 0
+    for symbol in symbols:
+        try:
+            data = make_request(
+                BINANCE_FUTURES_ENDPOINTS["open_interest"],
+                params={"symbol": symbol},
+            )
+            df = pd.DataFrame([{
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "open_interest": float(data["openInterest"]),
+                "open_interest_value": float(data.get("openInterestValue", 0)),
+            }])
+            append_to_partition(BUCKET_RAW, "open_interest", symbol, df, dedup_col="timestamp")
+            total += 1
+        except Exception as exc:
+            logger.warning("Open interest failed for %s: %s", symbol, exc)
+
+    logger.info("Saved open_interest (+%d symbols)", total)
+    return total
+
+
 def _is_float(s: str) -> bool:
     try:
         float(s)
@@ -395,7 +448,7 @@ def _is_float(s: str) -> bool:
 # --- Entry Points ------------------------------------------------------------
 
 def extract_minutely(symbols: list[str] | None = None) -> None:
-    """Minutely extract: REST API klines + ticker + order book."""
+    """Minutely extract: REST API klines + ticker + order book + derivatives."""
     symbols = symbols or SYMBOLS
     trading = [s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"]
 
@@ -411,6 +464,8 @@ def extract_minutely(symbols: list[str] | None = None) -> None:
 
     extract_ticker_24h(trading)
     extract_order_book_snapshot(trading)
+    extract_funding_rates(trading)
+    extract_open_interest(trading)
     logger.info("=== Minutely Extract finished ===")
 
 

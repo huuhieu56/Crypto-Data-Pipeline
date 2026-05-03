@@ -23,8 +23,8 @@ from config.config import MINIO_CONFIG
 from config.symbols import SYMBOLS, SYMBOL_REGISTRY
 from utils.logger import get_logger
 from utils.exceptions import LoadError
-from utils.db_utils import init_schema, ch_insert_df, get_table_watermarks
-from utils.storage import storage
+from utils.db_utils import ch_insert_df, get_table_watermarks
+from utils.storage import storage, discover_month_partitions
 
 logger = get_logger(__name__)
 
@@ -32,13 +32,106 @@ BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
 
 
-# --- Load Functions ----------------------------------------------------------
+# --- Helpers ------------------------------------------------------------------
+
+def _filter_by_watermark(
+    df: pd.DataFrame,
+    ts_col_name: str,
+    watermark_ms: int | None,
+) -> pd.DataFrame:
+    """Filter DataFrame to only rows after the watermark timestamp."""
+    if watermark_ms is None:
+        return df
+    cutoff = pd.to_datetime(watermark_ms, unit="ms", utc=True)
+    ts_col = pd.to_datetime(df[ts_col_name])
+    if ts_col.dt.tz is None:
+        ts_col = ts_col.dt.tz_localize("UTC")
+    return df[ts_col > cutoff]
+
+
+# --- Generic Loader -----------------------------------------------------------
+
+def _load_table(
+    symbols: list[str] | None,
+    bucket: str,
+    prefix: str,
+    table_name: str,
+    ts_col: str,
+    target_cols: list[str],
+    type_coercions: dict[str, str] | None = None,
+    month_str: str | None = None,
+) -> None:
+    """Generic loader: MinIO Parquet -> ClickHouse with watermark filtering."""
+    symbols = symbols or SYMBOLS
+    wm_map = get_table_watermarks(table_name, ts_col, symbols)
+    total_inserted = 0
+    total_skipped = 0
+    errors = 0
+
+    logger.info("[Load] %s: %d symbols, partitions=%s", table_name, len(symbols), month_str or "auto-discover")
+
+    for symbol in symbols:
+        months = (
+            [month_str]
+            if month_str
+            else discover_month_partitions(bucket, prefix, symbol)
+        )
+        if not months:
+            logger.debug("[Load] %s %s: no partitions found", table_name, symbol)
+            continue
+
+        for month in months:
+            key = f"{prefix}/{symbol}/{month}.parquet"
+            try:
+                table = storage.download_parquet(bucket, key)
+                df = table.to_pandas()
+                del table
+
+                if df.empty:
+                    logger.debug("[Load] %s %s/%s: empty, skipped", table_name, symbol, month)
+                    total_skipped += 1
+                    continue
+
+                raw_count = len(df)
+                df[ts_col] = pd.to_datetime(df[ts_col])
+                if type_coercions:
+                    for col, dtype in type_coercions.items():
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors="coerce")
+                            if dtype == "uint32":
+                                df[col] = df[col].fillna(0).astype("uint32")
+
+                df = _filter_by_watermark(df, ts_col, wm_map.get(symbol))
+                if df.empty:
+                    logger.debug("[Load] %s %s/%s: %d rows filtered (watermark), skipped", table_name, symbol, month, raw_count)
+                    total_skipped += 1
+                    continue
+
+                df = df[[c for c in target_cols if c in df.columns]]
+                inserted = ch_insert_df(table_name, df)
+                total_inserted += inserted
+                logger.info("[Load] %s %s/%s: %d rows inserted", table_name, symbol, month, inserted)
+
+                try:
+                    storage.remove_object(bucket, key)
+                except Exception:
+                    pass
+
+            except Exception as exc:
+                errors += 1
+                logger.error("[Load] %s %s/%s: ERROR -- %s", table_name, symbol, month, exc)
+
+    if total_inserted == 0 and errors > 0:
+        raise LoadError(f"{table_name}: all {errors} partition(s) failed, 0 loaded")
+    logger.info("[Load] %s complete: %s inserted, %d skipped, %d errors", table_name, f"{total_inserted:,}", total_skipped, errors)
+
+
+# --- Load Functions -----------------------------------------------------------
 
 def load_symbols() -> None:
     """Load symbols into ClickHouse from SYMBOL_REGISTRY."""
     logger.info("Loading symbols into database")
     try:
-        # Check MinIO first
         key = "symbols.json"
         if storage.object_exists(BUCKET_RAW, key):
             data = storage.download_json(BUCKET_RAW, key)
@@ -49,7 +142,6 @@ def load_symbols() -> None:
             target_cols = ["symbol", "base_asset", "quote_asset", "status"]
             df = df[[c for c in target_cols if c in df.columns]]
         else:
-            # Generate from SYMBOL_REGISTRY
             records = []
             for sym, info in SYMBOL_REGISTRY.items():
                 quote = "USDT" if sym.endswith("USDT") else ""
@@ -71,83 +163,17 @@ def load_symbols() -> None:
         raise LoadError(f"Failed to load symbols: {exc}") from exc
 
 
-def _filter_by_watermark(
-    df: pd.DataFrame,
-    ts_col_name: str,
-    watermark_ms: int | None,
-) -> pd.DataFrame:
-    """Filter DataFrame to only rows after the watermark timestamp."""
-    if watermark_ms is None:
-        return df
-    cutoff = pd.to_datetime(watermark_ms, unit="ms", utc=True)
-    ts_col = pd.to_datetime(df[ts_col_name])
-    if ts_col.dt.tz is None:
-        ts_col = ts_col.dt.tz_localize("UTC")
-    return df[ts_col > cutoff]
-
-
-def _discover_months(bucket: str, prefix: str, symbol: str) -> list[str]:
-    """Find all month partitions for a symbol in MinIO."""
-    keys = storage.list_objects(bucket, prefix=f"{prefix}/{symbol}/")
-    months = []
-    for k in keys:
-        if k.endswith(".parquet"):
-            month = k.split("/")[-1].replace(".parquet", "")
-            months.append(month)
-    return sorted(months)
-
-
-# --- Loaders -----------------------------------------------------------------
-
-
 def load_klines(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
     """Load klines features into ClickHouse (per-partition to avoid OOM)."""
-    symbols = symbols or SYMBOLS
-    wm_map = get_table_watermarks("klines", "timestamp", symbols)
-
-    total_inserted = 0
-    errors = 0
-
-    for symbol in symbols:
-        months = [month_str] if month_str else _discover_months(BUCKET_PROCESSED, "features", symbol)
-        for month in months:
-            key = f"features/{symbol}/{month}.parquet"
-            try:
-                table = storage.download_parquet(BUCKET_PROCESSED, key)
-                df = table.to_pandas()
-                del table
-
-                if df.empty:
-                    continue
-
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
-                if "trades" in df.columns:
-                    df["trades"] = pd.to_numeric(df["trades"], errors="coerce").fillna(0).astype("uint32")
-
-                df = _filter_by_watermark(df, "timestamp", wm_map.get(symbol))
-                if df.empty:
-                    continue
-
-                inserted = ch_insert_df("klines", df)
-                total_inserted += inserted
-
-                # Cleanup after successful insert
-                try:
-                    storage.remove_object(BUCKET_PROCESSED, key)
-                except Exception:
-                    pass
-
-            except Exception as exc:
-                errors += 1
-                logger.error("[Load] klines %s/%s: %s", symbol, month, exc)
-
-    if total_inserted == 0 and errors > 0:
-        raise LoadError(f"klines: all {errors} partition(s) failed, 0 loaded")
-
-    logger.info("Loaded %s NEW klines rows (%d errors)", f"{total_inserted:,}", errors)
+    _load_table(
+        symbols, BUCKET_PROCESSED, "features", "klines", "timestamp",
+        ["symbol", "timestamp", "open", "high", "low", "close",
+         "volume", "quote_volume", "trades", "rsi_14", "macd", "macd_signal"],
+        {"trades": "uint32"}, month_str,
+    )
 
 
 def load_ticker(
@@ -155,51 +181,13 @@ def load_ticker(
     month_str: str | None = None,
 ) -> None:
     """Load ticker snapshots into ClickHouse (per-partition)."""
-    symbols = symbols or SYMBOLS
-    wm_map = get_table_watermarks("ticker_24h", "snapshot_time", symbols)
-
-    total_inserted = 0
-    errors = 0
-
-    for symbol in symbols:
-        months = [month_str] if month_str else _discover_months(BUCKET_RAW, "ticker_24h", symbol)
-        for month in months:
-            key = f"ticker_24h/{symbol}/{month}.parquet"
-            try:
-                table = storage.download_parquet(BUCKET_RAW, key)
-                df = table.to_pandas()
-                del table
-
-                if df.empty:
-                    continue
-
-                df["snapshot_time"] = pd.to_datetime(df["snapshot_time"])
-                for col in ["price_change", "price_change_pct", "high_24h", "low_24h",
-                            "volume_24h", "quote_volume_24h", "bid_price", "ask_price", "spread_pct"]:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-                if "trade_count" in df.columns:
-                    df["trade_count"] = pd.to_numeric(df["trade_count"], errors="coerce").fillna(0).astype("uint32")
-
-                df = _filter_by_watermark(df, "snapshot_time", wm_map.get(symbol))
-                if df.empty:
-                    continue
-
-                target_cols = [
-                    "symbol", "snapshot_time", "price_change", "price_change_pct",
-                    "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
-                    "trade_count", "bid_price", "ask_price", "spread_pct",
-                ]
-                df = df[[c for c in target_cols if c in df.columns]]
-                total_inserted += ch_insert_df("ticker_24h", df)
-            except Exception as exc:
-                errors += 1
-                logger.error("[Load] ticker %s/%s: %s", symbol, month, exc)
-
-    if total_inserted == 0 and errors > 0:
-        raise LoadError(f"ticker_24h: all {errors} partition(s) failed, 0 loaded")
-
-    logger.info("Loaded %s NEW ticker rows (%d errors)", f"{total_inserted:,}", errors)
+    _load_table(
+        symbols, BUCKET_RAW, "ticker_24h", "ticker_24h", "snapshot_time",
+        ["symbol", "snapshot_time", "price_change", "price_change_pct",
+         "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
+         "trade_count", "bid_price", "ask_price", "spread_pct"],
+        {"trade_count": "uint32"}, month_str,
+    )
 
 
 def load_order_book(
@@ -207,61 +195,48 @@ def load_order_book(
     month_str: str | None = None,
 ) -> None:
     """Load order book snapshots into ClickHouse (per-partition)."""
-    symbols = symbols or SYMBOLS
-    wm_map = get_table_watermarks("order_book_snapshot", "timestamp", symbols)
+    _load_table(
+        symbols, BUCKET_RAW, "order_book", "order_book_snapshot", "timestamp",
+        ["symbol", "timestamp", "total_bid_volume", "total_ask_volume", "imbalance"],
+        month_str=month_str,
+    )
 
-    total_inserted = 0
-    errors = 0
 
-    for symbol in symbols:
-        months = [month_str] if month_str else _discover_months(BUCKET_RAW, "order_book", symbol)
-        for month in months:
-            key = f"order_book/{symbol}/{month}.parquet"
-            try:
-                table = storage.download_parquet(BUCKET_RAW, key)
-                df = table.to_pandas()
-                del table
+def load_funding_rates(
+    symbols: list[str] | None = None,
+    month_str: str | None = None,
+) -> None:
+    """Load funding rate snapshots into ClickHouse (per-partition)."""
+    _load_table(
+        symbols, BUCKET_RAW, "funding_rates", "funding_rates", "funding_time",
+        ["symbol", "funding_time", "funding_rate", "mark_price"],
+        month_str=month_str,
+    )
 
-                if df.empty:
-                    continue
 
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
-                for col in ["total_bid_volume", "total_ask_volume", "imbalance"]:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-                df = _filter_by_watermark(df, "timestamp", wm_map.get(symbol))
-                if df.empty:
-                    continue
-
-                target_cols = [
-                    "symbol", "timestamp", "total_bid_volume",
-                    "total_ask_volume", "imbalance",
-                ]
-                df = df[[c for c in target_cols if c in df.columns]]
-                total_inserted += ch_insert_df("order_book_snapshot", df)
-            except Exception as exc:
-                errors += 1
-                logger.error("[Load] order_book %s/%s: %s", symbol, month, exc)
-
-    if total_inserted == 0 and errors > 0:
-        raise LoadError(f"order_book_snapshot: all {errors} partition(s) failed, 0 loaded")
-
-    logger.info("Loaded %s NEW order book rows (%d errors)", f"{total_inserted:,}", errors)
+def load_open_interest(
+    symbols: list[str] | None = None,
+    month_str: str | None = None,
+) -> None:
+    """Load open interest snapshots into ClickHouse (per-partition)."""
+    _load_table(
+        symbols, BUCKET_RAW, "open_interest", "open_interest", "timestamp",
+        ["symbol", "timestamp", "open_interest", "open_interest_value"],
+        month_str=month_str,
+    )
 
 
 # --- CLI ---------------------------------------------------------------------
-
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Load data into ClickHouse")
     p.add_argument(
         "--only", nargs="+",
-        choices=["symbols", "klines", "ticker", "orderbook"],
+        choices=["symbols", "klines", "ticker", "orderbook", "funding", "oi"],
         help="Load only these tables",
     )
     p.add_argument(
         "--skip", nargs="*", default=[],
-        choices=["symbols", "klines", "ticker", "orderbook"],
+        choices=["symbols", "klines", "ticker", "orderbook", "funding", "oi"],
         help="Skip these tables",
     )
     p.add_argument(
@@ -279,7 +254,6 @@ def main(
     skip = skip or set()
 
     logger.info("=== Load pipeline started ===")
-    init_schema()
 
     def should_load(name: str) -> bool:
         if only and name not in only:
@@ -294,6 +268,10 @@ def main(
         load_order_book(month_str=month_str)
     if should_load("klines"):
         load_klines(month_str=month_str)
+    if should_load("funding"):
+        load_funding_rates(month_str=month_str)
+    if should_load("oi"):
+        load_open_interest(month_str=month_str)
 
     logger.info("=== Load pipeline complete ===")
 

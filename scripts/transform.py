@@ -1,4 +1,4 @@
-"""Transform raw klines → features with technical indicators.
+"""Transform raw klines -> features with technical indicators.
 
 Reads monthly partitions from MinIO, computes RSI(14) and MACD(12,26,9)
 using ClickHouse context for warm-up, outputs with DB column names.
@@ -29,7 +29,7 @@ from utils.logger import get_logger
 from utils.exceptions import TransformError
 from utils.data_utils import partition_key, features_key
 from utils.db_utils import ch_query_df, get_last_timestamps
-from utils.storage import storage
+from utils.storage import storage, discover_month_partitions
 
 logger = get_logger(__name__)
 
@@ -37,17 +37,34 @@ BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
 TRANSFORM_MAX_WORKERS = PARALLELISM["transform_max_workers"]
 
-# Output columns — already in DB column names
+# Output columns -- already in DB column names
 OUTPUT_COLUMNS = [
     "symbol", "timestamp", "open", "high", "low", "close",
     "volume", "quote_volume", "trades", "rsi_14", "macd", "macd_signal",
 ]
 
 
-def calculate_indicators(pdf: pd.DataFrame) -> pd.DataFrame:
-    """Compute RSI(14) and MACD(12,26,9). Output uses DB column names."""
-    pdf = pdf.sort_values("open_time")
-    close = pdf["close"]
+def calculate_indicators(
+    raw_df: pd.DataFrame,
+    context_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Compute RSI(14) and MACD(12,26,9).
+
+    If context_df is provided, prepend it for indicator warm-up.
+    Returns only rows from raw_df (context rows are dropped).
+
+    Pure function -- no database dependency.
+    """
+    if context_df is not None and not context_df.empty:
+        combined = pd.concat([context_df, raw_df], ignore_index=True)
+    else:
+        combined = raw_df.copy()
+
+    combined = combined.sort_values("open_time").drop_duplicates(
+        subset=["open_time"], keep="last"
+    ).reset_index(drop=True)
+
+    close = combined["close"]
 
     # RSI (14)
     delta = close.diff()
@@ -55,17 +72,23 @@ def calculate_indicators(pdf: pd.DataFrame) -> pd.DataFrame:
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     loss = loss.replace(0, np.nan)
     rs = gain / loss
-    pdf["rsi_14"] = 100 - (100 / (1 + rs))
+    combined["rsi_14"] = 100 - (100 / (1 + rs))
 
     # MACD (12, 26, 9)
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
-    pdf["macd"] = ema12 - ema26
-    pdf["macd_signal"] = pdf["macd"].ewm(span=9, adjust=False).mean()
+    combined["macd"] = ema12 - ema26
+    combined["macd_signal"] = combined["macd"].ewm(span=9, adjust=False).mean()
 
     # Fill NaN
-    pdf = pdf.ffill().bfill().fillna(0)
-    return pdf
+    combined = combined.ffill().bfill().fillna(0)
+
+    # Keep only rows from raw_df (drop context rows)
+    if context_df is not None and not context_df.empty:
+        cutoff = context_df["open_time"].max()
+        combined = combined[combined["open_time"] > cutoff]
+
+    return combined
 
 
 def _get_ch_context(symbol: str, n_rows: int = INDICATOR_CONTEXT_ROWS) -> pd.DataFrame:
@@ -77,7 +100,7 @@ def _get_ch_context(symbol: str, n_rows: int = INDICATOR_CONTEXT_ROWS) -> pd.Dat
         df = ch_query_df(
             f"SELECT timestamp AS open_time, open, high, low, close, volume, "
             f"quote_volume, trades "
-            f"FROM klines "
+            f"FROM klines FINAL "
             f"WHERE symbol = '{symbol}' "
             f"ORDER BY timestamp DESC "
             f"LIMIT {n_rows}"
@@ -127,31 +150,16 @@ def _process_symbol(
     # 3. Get context from ClickHouse for indicator warm-up
     ctx_df = _get_ch_context(symbol)
 
-    # 4. Concat context + raw for indicator calculation
-    raw_cols = list(raw_df.columns)
-    if not ctx_df.empty:
-        ctx_trimmed = ctx_df[[c for c in raw_cols if c in ctx_df.columns]].copy()
-        combined = pd.concat([ctx_trimmed, raw_df], ignore_index=True)
-    else:
-        combined = raw_df.copy()
-
-    combined = combined.sort_values("open_time").drop_duplicates(
-        subset=["open_time"], keep="last"
-    ).reset_index(drop=True)
-    combined["symbol"] = symbol
-
-    # 5. Calculate indicators
-    combined = calculate_indicators(combined)
-
-    # 6. Keep only new rows (after last loaded)
-    if last_loaded_ts is not None:
-        cmp_ts = last_loaded_ts.tz_localize(None) if last_loaded_ts.tzinfo else last_loaded_ts
-        combined = combined[combined["open_time"] > cmp_ts]
+    # 4. Compute indicators (pure function -- context is optional)
+    combined = calculate_indicators(raw_df, context_df=ctx_df)
 
     if combined.empty:
         return None
 
-    # 7. Rename to DB column names and select output columns
+    # 5. Add symbol column
+    combined["symbol"] = symbol
+
+    # 6. Rename to DB column names and select output columns
     combined = combined.rename(columns={"open_time": "timestamp"})
 
     out_cols = [c for c in OUTPUT_COLUMNS if c in combined.columns]
@@ -171,17 +179,6 @@ def _upload_features(symbol: str, pdf: pd.DataFrame, month_str: str) -> None:
 
 
 # --- Main Entry Point --------------------------------------------------------
-
-def _discover_raw_months(symbol: str) -> list[str]:
-    """Find all months with raw klines data for a symbol in MinIO."""
-    keys = storage.list_objects(BUCKET_RAW, prefix=f"klines/{symbol}/")
-    months = []
-    for k in keys:
-        if k.endswith(".parquet"):
-            month = k.split("/")[-1].replace(".parquet", "")
-            months.append(month)
-    return sorted(months)
-
 
 def transform_data(
     symbols: list[str] | None = None,
@@ -216,8 +213,8 @@ def transform_data(
             current_month = pd.Timestamp.now(tz="UTC").strftime("%Y-%m")
             months = sorted(set([last_month, current_month]))
         else:
-            # No data loaded yet — discover all months (first run)
-            months = _discover_raw_months(symbol)
+            # No data loaded yet -- discover all months (first run)
+            months = discover_month_partitions(BUCKET_RAW, "klines", symbol)
 
         sym_rows = 0
         for month in months:
@@ -239,7 +236,7 @@ def transform_data(
                     total_new_rows += n_rows
                     logger.info("[Transform] %s: +%s rows", symbol, f"{n_rows:,}")
             except Exception as exc:
-                logger.error("[Transform] %s: ERROR — %s", sym, exc)
+                logger.error("[Transform] %s: ERROR -- %s", sym, exc)
 
     if total_new_rows == 0:
         logger.info("No new rows to transform")
@@ -253,10 +250,9 @@ def transform_data(
 
 
 # --- CLI ---------------------------------------------------------------------
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Transform raw klines → features Parquet",
+        description="Transform raw klines -> features Parquet",
     )
     parser.add_argument(
         "--symbols", nargs="+", metavar="SYM", default=None,
@@ -273,7 +269,7 @@ if __name__ == "__main__":
     args = _build_parser().parse_args()
     active_symbols = args.symbols or SYMBOLS
 
-    logger.info("Transform started — symbols=%d", len(active_symbols))
+    logger.info("Transform started -- symbols=%d", len(active_symbols))
 
     exit_code = 0
     try:

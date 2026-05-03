@@ -6,6 +6,34 @@
 <title>Crypto Chat Assistant</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+// Simple fallback markdown parser if marked.js CDN is unavailable
+if (typeof marked === 'undefined') {
+  window.marked = {
+    parse: function(md) {
+      return md
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/^\|(.+)\|$/gm, function(match) {
+          var cells = match.split('|').filter(function(c) { return c.trim(); });
+          if (cells.every(function(c) { return /^[\s-:]+$/.test(c); })) return '';
+          var tag = 'td';
+          return '<tr>' + cells.map(function(c) { return '<' + tag + '>' + c.trim() + '</' + tag + '>'; }).join('') + '</tr>';
+        })
+        .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+        .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+        .replace(/\n\n/g, '</p><p>')
+        .replace(/\n/g, '<br>');
+    }
+  };
+}
+</script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -190,6 +218,73 @@
     color: var(--text-primary);
     border: 1px solid var(--border-color);
     border-bottom-left-radius: 4px;
+  }
+
+  /* Markdown rendered content */
+  .msg-bubble p { margin: 0 0 8px 0; }
+  .msg-bubble p:last-child { margin-bottom: 0; }
+  .msg-bubble strong { color: var(--text-accent); font-weight: 600; }
+  .msg-bubble em { color: var(--text-secondary); }
+  .msg-bubble code {
+    background: var(--bg-tertiary);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #f87171;
+  }
+  .msg-bubble pre {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    margin: 6px 0;
+  }
+  .msg-bubble pre code {
+    background: none;
+    padding: 0;
+    color: var(--text-primary);
+    font-size: 12px;
+  }
+  .msg-bubble table {
+    border-collapse: collapse;
+    margin: 6px 0;
+    font-size: 12px;
+    width: 100%;
+  }
+  .msg-bubble th, .msg-bubble td {
+    border: 1px solid var(--border-color);
+    padding: 4px 8px;
+    text-align: left;
+  }
+  .msg-bubble th {
+    background: var(--bg-tertiary);
+    font-weight: 600;
+    color: var(--text-accent);
+  }
+  .msg-bubble ul, .msg-bubble ol {
+    margin: 4px 0;
+    padding-left: 20px;
+  }
+  .msg-bubble li { margin: 2px 0; }
+  .msg-bubble h1, .msg-bubble h2, .msg-bubble h3, .msg-bubble h4 {
+    color: var(--text-accent);
+    margin: 8px 0 4px 0;
+    font-weight: 600;
+  }
+  .msg-bubble h1 { font-size: 15px; }
+  .msg-bubble h2 { font-size: 14px; }
+  .msg-bubble h3 { font-size: 13px; }
+  .msg-bubble blockquote {
+    border-left: 3px solid var(--text-accent);
+    padding-left: 10px;
+    margin: 6px 0;
+    color: var(--text-secondary);
+  }
+  .msg-bubble hr {
+    border: none;
+    border-top: 1px solid var(--border-color);
+    margin: 8px 0;
   }
 
   /* --- Typing indicator --- */
@@ -513,7 +608,11 @@
 
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
-    bubble.textContent = content;
+    if (role === 'assistant' && typeof marked !== 'undefined') {
+      bubble.innerHTML = marked.parse(content);
+    } else {
+      bubble.textContent = content;
+    }
 
     wrapper.appendChild(avatar);
     wrapper.appendChild(bubble);

@@ -40,12 +40,19 @@ BINANCE_ENDPOINTS = {
     "order_book": f"{BINANCE_BASE_URL}/depth",
 }
 
+# Binance Futures API (for derivatives data)
+BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
+BINANCE_FUTURES_ENDPOINTS = {
+    "funding_rate": f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/fundingRate",
+    "open_interest": f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/openInterest",
+}
+
 # Rate limiting & request settings
 API_LIMIT = 1000          # max records per klines request
 ORDER_BOOK_LIMIT = 100    # depth levels for order book
 API_TIMEOUT = 30          # seconds
 API_SLEEP = 0.1           # seconds between API calls
-MONTHS_BACK = 36          # 3-year historical window
+MONTHS_BACK = int(os.getenv("ETL_MONTHS_BACK", "36"))  # historical window in months
 
 # --- MinIO Object Storage ----------------------------------------------------
 

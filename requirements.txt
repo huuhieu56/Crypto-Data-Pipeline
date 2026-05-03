@@ -18,7 +18,6 @@ minio>=7.2.0
 # --- API & Networking ---
 requests>=2.31.0
 python-binance>=1.0.19
-aiohttp>=3.9.0
 
 # --- Apache Airflow ---
 apache-airflow>=2.8.0

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from utils.db_utils import new_ch_client
+from utils.db_utils import new_ch_client, ch_query_df_params
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -48,13 +48,13 @@ def fetch_candles(symbol: str, config: dict) -> pd.DataFrame:
         "argMax(rsi_14, timestamp) AS rsi_14, "
         "argMax(macd, timestamp) AS macd, "
         "argMax(macd_signal, timestamp) AS macd_signal "
-        "FROM klines "
-        f"WHERE symbol = '{_esc(symbol)}' "
+        "FROM klines FINAL "
+        "WHERE symbol = {symbol:String} "
         f"AND timestamp >= now() - INTERVAL {lookback} DAY "
         f"GROUP BY ts ORDER BY ts ASC "
         f"LIMIT {limit}"
     )
-    return _query_df(q)
+    return ch_query_df_params(q, {"symbol": symbol})
 
 
 # ---------------------------------------------------------------------------
@@ -72,23 +72,23 @@ def fetch_ticker_trend(symbol: str, config: dict) -> pd.DataFrame:
         "avg(volume_24h) AS avg_volume_24h, "
         "avg(spread_pct) AS avg_spread_pct, "
         "avg(trade_count) AS avg_trade_count "
-        "FROM ticker_24h "
-        f"WHERE symbol = '{_esc(symbol)}' "
+        "FROM ticker_24h FINAL "
+        "WHERE symbol = {symbol:String} "
         f"AND snapshot_time >= now() - INTERVAL {lookback} DAY "
         "GROUP BY ts ORDER BY ts ASC"
     )
-    return _query_df(q)
+    return ch_query_df_params(q, {"symbol": symbol})
 
 
 def fetch_latest_ticker(symbol: str) -> dict:
     """Fetch the latest ticker_24h snapshot for scalar values."""
     q = (
         "SELECT price_change_pct, volume_24h, spread_pct "
-        "FROM ticker_24h "
-        f"WHERE symbol = '{_esc(symbol)}' "
+        "FROM ticker_24h FINAL "
+        "WHERE symbol = {symbol:String} "
         "ORDER BY snapshot_time DESC LIMIT 1"
     )
-    df = _query_df(q)
+    df = ch_query_df_params(q, {"symbol": symbol})
     if df.empty:
         return {"price_change_pct": 0.0, "volume_24h": 0.0, "spread_pct": 0.0}
 
@@ -118,11 +118,11 @@ def fetch_orderbook_data(symbol: str, config: dict) -> dict:
 def _fetch_ob_latest(symbol: str) -> dict:
     q = (
         "SELECT imbalance, total_bid_volume, total_ask_volume "
-        "FROM order_book_snapshot "
-        f"WHERE symbol = '{_esc(symbol)}' "
+        "FROM order_book_snapshot FINAL "
+        "WHERE symbol = {symbol:String} "
         "ORDER BY timestamp DESC LIMIT 1"
     )
-    df = _query_df(q)
+    df = ch_query_df_params(q, {"symbol": symbol})
     if df.empty:
         return {"mode": "latest_only", "latest_imbalance": 0.5}
     row = df.iloc[0]
@@ -141,11 +141,11 @@ def _fetch_ob_summary(symbol: str) -> dict:
         "min(imbalance) AS min_imbalance, "
         "max(imbalance) AS max_imbalance, "
         "argMax(imbalance, timestamp) AS latest_imbalance "
-        "FROM order_book_snapshot "
-        f"WHERE symbol = '{_esc(symbol)}' "
+        "FROM order_book_snapshot FINAL "
+        "WHERE symbol = {symbol:String} "
         "AND timestamp >= now() - INTERVAL 30 DAY"
     )
-    df = _query_df(q)
+    df = ch_query_df_params(q, {"symbol": symbol})
     if df.empty:
         return {"mode": "summary_30d", "avg_imbalance": 0.5, "latest_imbalance": 0.5}
     row = df.iloc[0]
@@ -167,12 +167,12 @@ def _fetch_ob_trend(symbol: str, config: dict) -> dict:
         "avg(imbalance) AS avg_imbalance, "
         "avg(total_bid_volume) AS avg_bid_vol, "
         "avg(total_ask_volume) AS avg_ask_vol "
-        "FROM order_book_snapshot "
-        f"WHERE symbol = '{_esc(symbol)}' "
+        "FROM order_book_snapshot FINAL "
+        "WHERE symbol = {symbol:String} "
         f"AND timestamp >= now() - INTERVAL {lookback} DAY "
         "GROUP BY ts ORDER BY ts ASC"
     )
-    trend_df = _query_df(q)
+    trend_df = ch_query_df_params(q, {"symbol": symbol})
 
     # Also fetch latest snapshot
     latest = _fetch_ob_latest(symbol)
@@ -182,6 +182,183 @@ def _fetch_ob_trend(symbol: str, config: dict) -> dict:
         "trend_df": trend_df,
         "latest_imbalance": latest.get("latest_imbalance", 0.5),
     }
+
+
+# ---------------------------------------------------------------------------
+# Funding Rates
+# ---------------------------------------------------------------------------
+
+def fetch_funding_rates(symbol: str, config: dict) -> pd.DataFrame:
+    """Fetch recent funding rates from ClickHouse."""
+    lookback = int(config.get("candle_lookback_days", 30))
+    q = (
+        "SELECT funding_time, funding_rate, mark_price "
+        "FROM funding_rates FINAL "
+        "WHERE symbol = {symbol:String} "
+        f"AND funding_time >= now() - INTERVAL {lookback} DAY "
+        "ORDER BY funding_time ASC"
+    )
+    return ch_query_df_params(q, {"symbol": symbol})
+
+
+def fetch_latest_funding(symbol: str) -> dict:
+    """Fetch the latest funding rate snapshot."""
+    q = (
+        "SELECT funding_rate, mark_price "
+        "FROM funding_rates FINAL "
+        "WHERE symbol = {symbol:String} "
+        "ORDER BY funding_time DESC LIMIT 1"
+    )
+    df = ch_query_df_params(q, {"symbol": symbol})
+    if df.empty:
+        return {"funding_rate": 0.0, "mark_price": 0.0}
+    row = df.iloc[0]
+    return {
+        "funding_rate": float(row["funding_rate"]) if pd.notna(row["funding_rate"]) else 0.0,
+        "mark_price": float(row["mark_price"]) if pd.notna(row["mark_price"]) else 0.0,
+    }
+
+
+def format_funding_rates(df: pd.DataFrame) -> str:
+    """Format funding rate data for the LLM prompt."""
+    if df.empty:
+        return "(No funding rate data available)"
+    lines = []
+    for _, row in df.iterrows():
+        ts = pd.Timestamp(row["funding_time"]).strftime("%Y-%m-%d %H:%M")
+        rate = _safe_float(row, "funding_rate", 0.0)
+        pct = rate * 100
+        if rate > 0:
+            tag = "longs pay shorts"
+        elif rate < 0:
+            tag = "shorts pay longs"
+        else:
+            tag = "neutral"
+        lines.append(f"{ts} Rate:{pct:+.4f}% ({tag})")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Open Interest
+# ---------------------------------------------------------------------------
+
+def fetch_open_interest(symbol: str, config: dict) -> pd.DataFrame:
+    """Fetch recent open interest snapshots from ClickHouse."""
+    lookback = int(config.get("candle_lookback_days", 30))
+    q = (
+        "SELECT timestamp, open_interest, open_interest_value "
+        "FROM open_interest FINAL "
+        "WHERE symbol = {symbol:String} "
+        f"AND timestamp >= now() - INTERVAL {lookback} DAY "
+        "ORDER BY timestamp ASC"
+    )
+    return ch_query_df_params(q, {"symbol": symbol})
+
+
+def fetch_latest_oi(symbol: str) -> dict:
+    """Fetch the latest open interest snapshot."""
+    q = (
+        "SELECT open_interest, open_interest_value "
+        "FROM open_interest FINAL "
+        "WHERE symbol = {symbol:String} "
+        "ORDER BY timestamp DESC LIMIT 1"
+    )
+    df = ch_query_df_params(q, {"symbol": symbol})
+    if df.empty:
+        return {"open_interest": 0.0, "open_interest_value": 0.0}
+    row = df.iloc[0]
+    return {
+        "open_interest": float(row["open_interest"]) if pd.notna(row["open_interest"]) else 0.0,
+        "open_interest_value": float(row["open_interest_value"]) if pd.notna(row["open_interest_value"]) else 0.0,
+    }
+
+
+def format_open_interest(df: pd.DataFrame) -> str:
+    """Format open interest data for the LLM prompt."""
+    if df.empty:
+        return "(No open interest data available)"
+    lines = []
+    for _, row in df.iterrows():
+        ts = pd.Timestamp(row["timestamp"]).strftime("%Y-%m-%d %H:%M")
+        oi = _safe_float(row, "open_interest", 0.0)
+        val = _safe_float(row, "open_interest_value", 0.0)
+        lines.append(f"{ts} OI:{oi:,.0f} contracts Value:${val:,.0f}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Signal computation — pre-interpreted signals from raw data
+# ---------------------------------------------------------------------------
+
+def compute_signals(df: pd.DataFrame) -> dict[str, str]:
+    """Compute actionable signals from candle data.
+
+    Returns a dict of signal_name -> human-readable interpretation.
+    Requires columns: rsi_14, macd, macd_signal, high, low, volume.
+    """
+    if df.empty or len(df) < 2:
+        return {}
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    signals: dict[str, str] = {}
+
+    # RSI trend (not just level)
+    rsi = _safe_float(latest, "rsi_14", 50.0)
+    rsi_prev = _safe_float(prev, "rsi_14", 50.0)
+    if rsi > 70:
+        signals["rsi"] = f"OVERBOUGHT ({rsi:.1f}, {'rising' if rsi > rsi_prev else 'falling'})"
+    elif rsi < 30:
+        signals["rsi"] = f"OVERSOLD ({rsi:.1f}, {'falling' if rsi < rsi_prev else 'rising'})"
+    else:
+        signals["rsi"] = f"NEUTRAL ({rsi:.1f}, {'rising' if rsi > rsi_prev else 'falling'})"
+
+    # MACD crossover
+    macd = _safe_float(latest, "macd", 0.0)
+    signal_val = _safe_float(latest, "macd_signal", 0.0)
+    macd_prev = _safe_float(prev, "macd", 0.0)
+    signal_prev = _safe_float(prev, "macd_signal", 0.0)
+    if macd > signal_val and macd_prev <= signal_prev:
+        signals["macd"] = "BULLISH CROSSOVER (just happened)"
+    elif macd < signal_val and macd_prev >= signal_prev:
+        signals["macd"] = "BEARISH CROSSOVER (just happened)"
+    elif macd > signal_val:
+        signals["macd"] = f"BULLISH (MACD above signal, gap: {macd - signal_val:.2f})"
+    else:
+        signals["macd"] = f"BEARISH (MACD below signal, gap: {signal_val - macd:.2f})"
+
+    # Volume trend
+    vol_avg = df["volume"].mean()
+    vol_latest = _safe_float(latest, "volume", 0.0)
+    if vol_avg > 0:
+        vol_ratio = vol_latest / vol_avg
+        signals["volume"] = f"{'ABOVE' if vol_ratio > 1 else 'BELOW'} average ({vol_ratio:.1f}x)"
+    else:
+        signals["volume"] = "NO DATA"
+
+    # Price structure (higher highs / lower lows over last 5 bars)
+    recent_highs = df["high"].tail(5)
+    recent_lows = df["low"].tail(5)
+    if recent_highs.is_monotonic_increasing:
+        signals["structure"] = "HIGHER HIGHS (bullish structure)"
+    elif recent_lows.is_monotonic_decreasing:
+        signals["structure"] = "LOWER LOWS (bearish structure)"
+    else:
+        signals["structure"] = "MIXED (no clear trend structure)"
+
+    return signals
+
+
+def format_signals(signals: dict[str, str]) -> str:
+    """Format computed signals into a text block."""
+    if not signals:
+        return ""
+    lines = ["--- Signals ---"]
+    for key in ("rsi", "macd", "volume", "structure"):
+        if key in signals:
+            lines.append(f"{key.upper()}: {signals[key]}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
