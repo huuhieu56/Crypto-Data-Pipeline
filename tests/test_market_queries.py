@@ -287,30 +287,33 @@ class TestFormatOrderbook:
 # 4.7 fetch_candles() — SQL construction
 # ============================================================================
 class TestFetchCandles:
-    """Tests cho fetch_candles — mock ch_query_df."""
+    """Tests cho fetch_candles — mock ch_query_df_params."""
 
-    @patch("services.chat_api.market_queries.ch_query_df")
-    def test_query_contains_symbol_and_config(self, mock_query, medium_config):
+    @patch("services.chat_api.market_queries.ch_query_df_params")
+    def test_query_contains_config(self, mock_query, medium_config):
         mock_query.return_value = pd.DataFrame()
 
         fetch_candles("BTCUSDT", medium_config)
 
         sql = mock_query.call_args[0][0]
-        assert "BTCUSDT" in sql
+        params = mock_query.call_args[0][1]
         assert "INTERVAL 90 DAY" in sql
         assert "LIMIT 540" in sql
         assert "toStartOfInterval(timestamp, INTERVAL 4 HOUR)" in sql
+        # Symbol is now in params, not in the SQL string
+        assert params["symbol"] == "BTCUSDT"
 
-    @patch("services.chat_api.market_queries.ch_query_df")
-    def test_symbol_with_quotes_escaped(self, mock_query, medium_config):
+    @patch("services.chat_api.market_queries.ch_query_df_params")
+    def test_symbol_passed_as_parameter(self, mock_query, medium_config):
         mock_query.return_value = pd.DataFrame()
 
         fetch_candles("BTC'USDT", medium_config)
 
-        sql = mock_query.call_args[0][0]
-        assert "BTC''USDT" in sql
+        params = mock_query.call_args[0][1]
+        # Symbol is passed as parameter — no escaping needed
+        assert params["symbol"] == "BTC'USDT"
 
-    @patch("services.chat_api.market_queries.ch_query_df")
+    @patch("services.chat_api.market_queries.ch_query_df_params")
     def test_returns_dataframe_from_query(self, mock_query, candle_df, medium_config):
         mock_query.return_value = candle_df
 
@@ -323,18 +326,19 @@ class TestFetchCandles:
 # 4.8 fetch_ticker_trend()
 # ============================================================================
 class TestFetchTickerTrend:
-    """Tests cho fetch_ticker_trend — mock ch_query_df."""
+    """Tests cho fetch_ticker_trend — mock ch_query_df_params."""
 
-    @patch("services.chat_api.market_queries.ch_query_df")
+    @patch("services.chat_api.market_queries.ch_query_df_params")
     def test_query_uses_config_lookback(self, mock_query, medium_config):
         mock_query.return_value = pd.DataFrame()
 
         fetch_ticker_trend("ETHUSDT", medium_config)
 
         sql = mock_query.call_args[0][0]
-        assert "ETHUSDT" in sql
+        params = mock_query.call_args[0][1]
         assert "INTERVAL 30 DAY" in sql
         assert "toDate(snapshot_time)" in sql
+        assert params["symbol"] == "ETHUSDT"
 
 
 # ============================================================================
@@ -343,7 +347,7 @@ class TestFetchTickerTrend:
 class TestFetchLatestTicker:
     """Tests cho fetch_latest_ticker."""
 
-    @patch("services.chat_api.market_queries.ch_query_df")
+    @patch("services.chat_api.market_queries.ch_query_df_params")
     def test_happy_path(self, mock_query):
         mock_query.return_value = pd.DataFrame({
             "price_change_pct": [3.5],
@@ -357,7 +361,7 @@ class TestFetchLatestTicker:
         assert result["volume_24h"] == 5000000.0
         assert result["spread_pct"] == 0.0012
 
-    @patch("services.chat_api.market_queries.ch_query_df")
+    @patch("services.chat_api.market_queries.ch_query_df_params")
     def test_empty_result_returns_defaults(self, mock_query):
         mock_query.return_value = pd.DataFrame()
 

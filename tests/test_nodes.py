@@ -157,10 +157,10 @@ class TestShouldContinue:
 # 2.3 load_history() — node
 # ============================================================================
 class TestLoadHistory:
-    """Tests cho load_history node — mock ClickHouse."""
+    """Tests cho load_history node -- mock ClickHouse."""
 
     @pytest.mark.asyncio
-    @patch("services.chat_api.nodes.ch_query_df")
+    @patch("services.chat_api.nodes.ch_query_df_params")
     async def test_builds_messages_with_history(self, mock_query):
         from services.chat_api.nodes import load_history
 
@@ -189,7 +189,7 @@ class TestLoadHistory:
         assert messages[3].content == "What's the price?"
 
     @pytest.mark.asyncio
-    @patch("services.chat_api.nodes.ch_query_df")
+    @patch("services.chat_api.nodes.ch_query_df_params")
     async def test_empty_history(self, mock_query):
         from services.chat_api.nodes import load_history
 
@@ -210,7 +210,7 @@ class TestLoadHistory:
         assert "ETHUSDT" in messages[0].content
 
     @pytest.mark.asyncio
-    @patch("services.chat_api.nodes.ch_query_df")
+    @patch("services.chat_api.nodes.ch_query_df_params")
     async def test_db_failure_falls_back_gracefully(self, mock_query):
         from services.chat_api.nodes import load_history
 
@@ -229,7 +229,7 @@ class TestLoadHistory:
         assert len(messages) == 2
 
     @pytest.mark.asyncio
-    @patch("services.chat_api.nodes.ch_query_df")
+    @patch("services.chat_api.nodes.ch_query_df_params")
     async def test_system_prompt_contains_symbol(self, mock_query):
         from services.chat_api.nodes import load_history
 
@@ -253,9 +253,11 @@ class TestSaveHistory:
     """Tests cho save_history node — mock ClickHouse insert."""
 
     @pytest.mark.asyncio
-    @patch("services.chat_api.nodes.ch_insert_df")
-    async def test_extracts_reply_and_saves(self, mock_insert):
+    @patch("services.chat_api.nodes.new_ch_client")
+    async def test_extracts_reply_and_saves(self, mock_new_client):
         from services.chat_api.nodes import save_history
+        mock_client = MagicMock()
+        mock_new_client.return_value = mock_client
 
         state = {
             "session_id": "sess-1",
@@ -273,16 +275,18 @@ class TestSaveHistory:
         assert result["reply"] == "BTC is bullish."
         assert result["context_summary"]["symbol"] == "BTCUSDT"
         # Saved 2 rows (user + assistant)
-        mock_insert.assert_called_once()
-        saved_df = mock_insert.call_args[0][1]
+        mock_client.insert_df.assert_called_once()
+        saved_df = mock_client.insert_df.call_args[0][1]
         assert len(saved_df) == 2
         assert saved_df.iloc[0]["role"] == "user"
         assert saved_df.iloc[1]["role"] == "assistant"
 
     @pytest.mark.asyncio
-    @patch("services.chat_api.nodes.ch_insert_df")
-    async def test_fallback_reply_on_empty_messages(self, mock_insert):
+    @patch("services.chat_api.nodes.new_ch_client")
+    async def test_fallback_reply_on_empty_messages(self, mock_new_client):
         from services.chat_api.nodes import save_history
+        mock_client = MagicMock()
+        mock_new_client.return_value = mock_client
 
         state = {
             "session_id": "sess-2",
@@ -299,9 +303,11 @@ class TestSaveHistory:
         assert "could not generate" in result["reply"].lower()
 
     @pytest.mark.asyncio
-    @patch("services.chat_api.nodes.ch_insert_df")
-    async def test_context_summary_tracks_tool_calls(self, mock_insert):
+    @patch("services.chat_api.nodes.new_ch_client")
+    async def test_context_summary_tracks_tool_calls(self, mock_new_client):
         from services.chat_api.nodes import save_history
+        mock_client = MagicMock()
+        mock_new_client.return_value = mock_client
 
         ai_msg = AIMessage(content="", tool_calls=[
             {"name": "get_price_candles", "args": {"symbol": "BTCUSDT", "timeframe": "short"}, "id": "1"},
@@ -326,11 +332,11 @@ class TestSaveHistory:
         assert set(ctx["timeframes"]) == {"short", "medium"}
 
     @pytest.mark.asyncio
-    @patch("services.chat_api.nodes.ch_insert_df")
-    async def test_db_failure_does_not_crash(self, mock_insert):
+    @patch("services.chat_api.nodes.new_ch_client")
+    async def test_db_failure_does_not_crash(self, mock_new_client):
         from services.chat_api.nodes import save_history
 
-        mock_insert.side_effect = Exception("DB down")
+        mock_new_client.side_effect = Exception("DB down")
 
         state = {
             "session_id": "sess-4",
@@ -437,11 +443,13 @@ class TestToolDefinitions:
         assert result == "orderbook formatted"
         mock_mq.fetch_orderbook_data.assert_called_once()
 
-    def test_tools_list_has_three_entries(self):
+    def test_tools_list_has_five_entries(self):
         from services.chat_api.nodes import TOOLS
 
-        assert len(TOOLS) == 3
+        assert len(TOOLS) == 5
         names = [t.name for t in TOOLS]
         assert "get_price_candles" in names
         assert "get_volume_and_liquidity" in names
         assert "get_orderbook_pressure" in names
+        assert "get_funding_rate" in names
+        assert "get_open_interest" in names

@@ -27,7 +27,7 @@ import pytest
 
 @pytest.fixture
 def client():
-    """TestClient cho FastAPI app — mock compiled_graph trước khi import."""
+    """TestClient cho FastAPI app -- mock compiled_graph trước khi import."""
     # Mock graph trước khi import main để tránh LangGraph import chain
     mock_graph = MagicMock()
     mock_graph.ainvoke = AsyncMock(return_value={
@@ -37,14 +37,13 @@ def client():
 
     with patch.dict("sys.modules", {
         "graph": MagicMock(compiled_graph=mock_graph),
-        "market_queries": MagicMock(_esc=lambda x: x.replace("'", "''")),
+        "market_queries": MagicMock(),
         "nodes": MagicMock(),
     }):
         with patch("services.chat_api.main.compiled_graph", mock_graph):
-            with patch("services.chat_api.main._esc", lambda x: x.replace("'", "''")):
-                from services.chat_api.main import app
-                from fastapi.testclient import TestClient
-                yield TestClient(app), mock_graph
+            from services.chat_api.main import app
+            from fastapi.testclient import TestClient
+            yield TestClient(app), mock_graph
 
 
 # ============================================================================
@@ -165,7 +164,7 @@ class TestChatEndpoint:
 class TestHistoryEndpoints:
     """Tests cho GET/DELETE /api/chat/history/{session_id}."""
 
-    @patch("services.chat_api.main.ch_query_df")
+    @patch("services.chat_api.main.ch_query_df_params")
     def test_get_history_returns_messages(self, mock_query, client):
         tc, _ = client
         mock_query.return_value = pd.DataFrame({
@@ -181,7 +180,7 @@ class TestHistoryEndpoints:
         assert data["messages"][0]["role"] == "user"
         assert data["messages"][1]["content"] == "Hello!"
 
-    @patch("services.chat_api.main.ch_query_df")
+    @patch("services.chat_api.main.ch_query_df_params")
     def test_get_history_empty_session(self, mock_query, client):
         tc, _ = client
         mock_query.return_value = pd.DataFrame()
@@ -191,7 +190,7 @@ class TestHistoryEndpoints:
         assert resp.status_code == 200
         assert resp.json()["messages"] == []
 
-    @patch("services.chat_api.main.ch_query_df")
+    @patch("services.chat_api.main.ch_query_df_params")
     def test_get_history_db_error_returns_500(self, mock_query, client):
         tc, _ = client
         mock_query.side_effect = Exception("Connection refused")
@@ -200,11 +199,11 @@ class TestHistoryEndpoints:
 
         assert resp.status_code == 500
 
-    @patch("utils.db_utils.get_ch_client")
-    def test_delete_history(self, mock_get_client, client):
+    @patch("services.chat_api.main.new_ch_client")
+    def test_delete_history(self, mock_new_client, client):
         tc, _ = client
         mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
+        mock_new_client.return_value = mock_client
 
         resp = tc.delete("/api/chat/history/test-session")
 
@@ -214,10 +213,10 @@ class TestHistoryEndpoints:
         assert data["session_id"] == "test-session"
         mock_client.command.assert_called_once()
 
-    @patch("utils.db_utils.get_ch_client")
-    def test_delete_history_db_error_returns_500(self, mock_get_client, client):
+    @patch("services.chat_api.main.new_ch_client")
+    def test_delete_history_db_error_returns_500(self, mock_new_client, client):
         tc, _ = client
-        mock_get_client.side_effect = Exception("DB unreachable")
+        mock_new_client.side_effect = Exception("DB unreachable")
 
         resp = tc.delete("/api/chat/history/err-session")
 

@@ -6,6 +6,8 @@ All modules requiring database access MUST use these helpers.
 
 from __future__ import annotations
 
+import threading
+
 import pandas as pd
 from clickhouse_connect.driver.client import Client
 import clickhouse_connect
@@ -16,24 +18,23 @@ from utils.exceptions import DatabaseConnectionError, SchemaInitError
 
 logger = get_logger(__name__)
 
-# --- ClickHouse Client (singleton) -------------------------------------------
+# --- ClickHouse Client (thread-local) ----------------------------------------
 
-_ch_client: Client | None = None
+_local = threading.local()
 
 
 def get_ch_client() -> Client:
-    """Return a singleton ClickHouse client. Use for synchronous ETL code."""
-    global _ch_client
-    if _ch_client is None:
+    """Return a thread-local ClickHouse client. Use for synchronous ETL code."""
+    if not hasattr(_local, "client"):
         try:
-            _ch_client = clickhouse_connect.get_client(
+            _local.client = clickhouse_connect.get_client(
                 host=CH_CONFIG["host"],
                 port=CH_CONFIG["port"],
                 username=CH_CONFIG["user"],
                 password=CH_CONFIG["password"],
                 database=CH_CONFIG["database"],
             )
-            _ch_client.query("SELECT 1")
+            _local.client.query("SELECT 1")
             logger.info(
                 "ClickHouse connected: %s:%s/%s",
                 CH_CONFIG["host"], CH_CONFIG["port"], CH_CONFIG["database"],
@@ -42,7 +43,7 @@ def get_ch_client() -> Client:
             raise DatabaseConnectionError(
                 f"Cannot connect to ClickHouse: {exc}"
             ) from exc
-    return _ch_client
+    return _local.client
 
 
 def new_ch_client() -> Client:
@@ -79,19 +80,47 @@ def init_schema() -> None:
 
 # --- Insert / Query Helpers --------------------------------------------------
 
-def ch_insert_df(table: str, df: pd.DataFrame) -> int:
-    """Insert a DataFrame into a ClickHouse table. Returns row count."""
+def ch_insert_df(table: str, df: pd.DataFrame, max_retries: int = 3) -> int:
+    """Insert a DataFrame into a ClickHouse table with retry. Returns row count."""
     if df.empty:
         return 0
-    client = get_ch_client()
-    client.insert_df(table, df)
-    return len(df)
+    import time
+    last_exc: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            client = get_ch_client()
+            client.insert_df(table, df)
+            return len(df)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("Insert %s failed (%d/%d): %s", table, attempt, max_retries, exc)
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+    raise DatabaseConnectionError(f"Insert {table} failed after {max_retries} retries: {last_exc}")
 
 
 def ch_query_df(query: str) -> pd.DataFrame:
     """Execute a SELECT query, return results as DataFrame."""
     client = get_ch_client()
     return client.query_df(query)
+
+
+def ch_query_df_params(query: str, params: dict) -> pd.DataFrame:
+    """Execute a parameterized SELECT query using a fresh client (async-safe)."""
+    client = new_ch_client()
+    try:
+        return client.query_df(query, parameters=params)
+    finally:
+        client.close()
+
+
+def ch_command_params(command: str, params: dict) -> None:
+    """Execute a parameterized command (INSERT/DELETE/DDL) using a fresh client."""
+    client = new_ch_client()
+    try:
+        client.command(command, parameters=params)
+    finally:
+        client.close()
 
 
 # --- Batch Helpers -----------------------------------------------------------
