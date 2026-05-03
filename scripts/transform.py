@@ -100,7 +100,7 @@ def _get_ch_context(symbol: str, n_rows: int = INDICATOR_CONTEXT_ROWS) -> pd.Dat
         df = ch_query_df(
             f"SELECT timestamp AS open_time, open, high, low, close, volume, "
             f"quote_volume, trades "
-            f"FROM klines "
+            f"FROM klines FINAL "
             f"WHERE symbol = '{symbol}' "
             f"ORDER BY timestamp DESC "
             f"LIMIT {n_rows}"

@@ -65,7 +65,10 @@ def _load_table(
     symbols = symbols or SYMBOLS
     wm_map = get_table_watermarks(table_name, ts_col, symbols)
     total_inserted = 0
+    total_skipped = 0
     errors = 0
+
+    logger.info("[Load] %s: %d symbols, partitions=%s", table_name, len(symbols), month_str or "auto-discover")
 
     for symbol in symbols:
         months = (
@@ -73,6 +76,10 @@ def _load_table(
             if month_str
             else discover_month_partitions(bucket, prefix, symbol)
         )
+        if not months:
+            logger.debug("[Load] %s %s: no partitions found", table_name, symbol)
+            continue
+
         for month in months:
             key = f"{prefix}/{symbol}/{month}.parquet"
             try:
@@ -81,8 +88,11 @@ def _load_table(
                 del table
 
                 if df.empty:
+                    logger.debug("[Load] %s %s/%s: empty, skipped", table_name, symbol, month)
+                    total_skipped += 1
                     continue
 
+                raw_count = len(df)
                 df[ts_col] = pd.to_datetime(df[ts_col])
                 if type_coercions:
                     for col, dtype in type_coercions.items():
@@ -93,10 +103,14 @@ def _load_table(
 
                 df = _filter_by_watermark(df, ts_col, wm_map.get(symbol))
                 if df.empty:
+                    logger.debug("[Load] %s %s/%s: %d rows filtered (watermark), skipped", table_name, symbol, month, raw_count)
+                    total_skipped += 1
                     continue
 
                 df = df[[c for c in target_cols if c in df.columns]]
-                total_inserted += ch_insert_df(table_name, df)
+                inserted = ch_insert_df(table_name, df)
+                total_inserted += inserted
+                logger.info("[Load] %s %s/%s: %d rows inserted", table_name, symbol, month, inserted)
 
                 try:
                     storage.remove_object(bucket, key)
@@ -105,11 +119,11 @@ def _load_table(
 
             except Exception as exc:
                 errors += 1
-                logger.error("[Load] %s %s/%s: %s", table_name, symbol, month, exc)
+                logger.error("[Load] %s %s/%s: ERROR -- %s", table_name, symbol, month, exc)
 
     if total_inserted == 0 and errors > 0:
         raise LoadError(f"{table_name}: all {errors} partition(s) failed, 0 loaded")
-    logger.info("Loaded %s NEW %s rows (%d errors)", f"{total_inserted:,}", table_name, errors)
+    logger.info("[Load] %s complete: %s inserted, %d skipped, %d errors", table_name, f"{total_inserted:,}", total_skipped, errors)
 
 
 # --- Load Functions -----------------------------------------------------------

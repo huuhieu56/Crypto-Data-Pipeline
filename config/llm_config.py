@@ -20,7 +20,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash-lite")
 
 # Generation params
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
-MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "512"))
+MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "65536"))
 TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
 
 # Market context

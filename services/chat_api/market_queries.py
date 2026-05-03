@@ -48,7 +48,7 @@ def fetch_candles(symbol: str, config: dict) -> pd.DataFrame:
         "argMax(rsi_14, timestamp) AS rsi_14, "
         "argMax(macd, timestamp) AS macd, "
         "argMax(macd_signal, timestamp) AS macd_signal "
-        "FROM klines "
+        "FROM klines FINAL "
         "WHERE symbol = {symbol:String} "
         f"AND timestamp >= now() - INTERVAL {lookback} DAY "
         f"GROUP BY ts ORDER BY ts ASC "
@@ -72,7 +72,7 @@ def fetch_ticker_trend(symbol: str, config: dict) -> pd.DataFrame:
         "avg(volume_24h) AS avg_volume_24h, "
         "avg(spread_pct) AS avg_spread_pct, "
         "avg(trade_count) AS avg_trade_count "
-        "FROM ticker_24h "
+        "FROM ticker_24h FINAL "
         "WHERE symbol = {symbol:String} "
         f"AND snapshot_time >= now() - INTERVAL {lookback} DAY "
         "GROUP BY ts ORDER BY ts ASC"
@@ -84,7 +84,7 @@ def fetch_latest_ticker(symbol: str) -> dict:
     """Fetch the latest ticker_24h snapshot for scalar values."""
     q = (
         "SELECT price_change_pct, volume_24h, spread_pct "
-        "FROM ticker_24h "
+        "FROM ticker_24h FINAL "
         "WHERE symbol = {symbol:String} "
         "ORDER BY snapshot_time DESC LIMIT 1"
     )
@@ -118,7 +118,7 @@ def fetch_orderbook_data(symbol: str, config: dict) -> dict:
 def _fetch_ob_latest(symbol: str) -> dict:
     q = (
         "SELECT imbalance, total_bid_volume, total_ask_volume "
-        "FROM order_book_snapshot "
+        "FROM order_book_snapshot FINAL "
         "WHERE symbol = {symbol:String} "
         "ORDER BY timestamp DESC LIMIT 1"
     )
@@ -141,7 +141,7 @@ def _fetch_ob_summary(symbol: str) -> dict:
         "min(imbalance) AS min_imbalance, "
         "max(imbalance) AS max_imbalance, "
         "argMax(imbalance, timestamp) AS latest_imbalance "
-        "FROM order_book_snapshot "
+        "FROM order_book_snapshot FINAL "
         "WHERE symbol = {symbol:String} "
         "AND timestamp >= now() - INTERVAL 30 DAY"
     )
@@ -167,7 +167,7 @@ def _fetch_ob_trend(symbol: str, config: dict) -> dict:
         "avg(imbalance) AS avg_imbalance, "
         "avg(total_bid_volume) AS avg_bid_vol, "
         "avg(total_ask_volume) AS avg_ask_vol "
-        "FROM order_book_snapshot "
+        "FROM order_book_snapshot FINAL "
         "WHERE symbol = {symbol:String} "
         f"AND timestamp >= now() - INTERVAL {lookback} DAY "
         "GROUP BY ts ORDER BY ts ASC"
@@ -193,7 +193,7 @@ def fetch_funding_rates(symbol: str, config: dict) -> pd.DataFrame:
     lookback = int(config.get("candle_lookback_days", 30))
     q = (
         "SELECT funding_time, funding_rate, mark_price "
-        "FROM funding_rates "
+        "FROM funding_rates FINAL "
         "WHERE symbol = {symbol:String} "
         f"AND funding_time >= now() - INTERVAL {lookback} DAY "
         "ORDER BY funding_time ASC"
@@ -205,7 +205,7 @@ def fetch_latest_funding(symbol: str) -> dict:
     """Fetch the latest funding rate snapshot."""
     q = (
         "SELECT funding_rate, mark_price "
-        "FROM funding_rates "
+        "FROM funding_rates FINAL "
         "WHERE symbol = {symbol:String} "
         "ORDER BY funding_time DESC LIMIT 1"
     )
@@ -247,7 +247,7 @@ def fetch_open_interest(symbol: str, config: dict) -> pd.DataFrame:
     lookback = int(config.get("candle_lookback_days", 30))
     q = (
         "SELECT timestamp, open_interest, open_interest_value "
-        "FROM open_interest "
+        "FROM open_interest FINAL "
         "WHERE symbol = {symbol:String} "
         f"AND timestamp >= now() - INTERVAL {lookback} DAY "
         "ORDER BY timestamp ASC"
@@ -259,7 +259,7 @@ def fetch_latest_oi(symbol: str) -> dict:
     """Fetch the latest open interest snapshot."""
     q = (
         "SELECT open_interest, open_interest_value "
-        "FROM open_interest "
+        "FROM open_interest FINAL "
         "WHERE symbol = {symbol:String} "
         "ORDER BY timestamp DESC LIMIT 1"
     )
