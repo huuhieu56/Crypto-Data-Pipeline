@@ -185,16 +185,60 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "quote_volume_24h"
+              "options": "Coin"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "24h %"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Vol $B"
             },
             "properties": [
               {
                 "id": "unit",
-                "value": "currencyUSD"
+                "value": "short"
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 115
               },
               {
                 "id": "decimals",
-                "value": 0
+                "value": 2
               }
             ]
           }
@@ -202,13 +246,13 @@
       },
       "gridPos": {
         "h": 7,
-        "w": 6,
+        "w": 7,
         "x": 0,
         "y": 9
       },
       "id": 3,
       "options": {
-        "cellHeight": "sm",
+        "cellHeight": "xs",
         "footer": {
           "countRows": false,
           "enablePagination": false,
@@ -229,7 +273,7 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS coin,\n  t.price_change_pct,\n  t.quote_volume_24h\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct > 0\nORDER BY t.price_change_pct DESC\nLIMIT 5",
+          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h / 1000000000, 2) AS `Vol $B`\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct > 0\nORDER BY t.price_change_pct DESC\nLIMIT 5",
           "refId": "A"
         }
       ],
@@ -272,16 +316,60 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "quote_volume_24h"
+              "options": "Coin"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "24h %"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Vol $B"
             },
             "properties": [
               {
                 "id": "unit",
-                "value": "currencyUSD"
+                "value": "short"
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 115
               },
               {
                 "id": "decimals",
-                "value": 0
+                "value": 2
               }
             ]
           }
@@ -289,13 +377,13 @@
       },
       "gridPos": {
         "h": 7,
-        "w": 6,
-        "x": 6,
+        "w": 7,
+        "x": 7,
         "y": 9
       },
       "id": 4,
       "options": {
-        "cellHeight": "sm",
+        "cellHeight": "xs",
         "footer": {
           "countRows": false,
           "enablePagination": false,
@@ -316,7 +404,7 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS coin,\n  t.price_change_pct,\n  t.quote_volume_24h\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct < 0\nORDER BY t.price_change_pct ASC\nLIMIT 5",
+          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h / 1000000000, 2) AS `Vol $B`\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct < 0\nORDER BY t.price_change_pct ASC\nLIMIT 5",
           "refId": "A"
         }
       ],
@@ -357,8 +445,8 @@
       },
       "gridPos": {
         "h": 7,
-        "w": 12,
-        "x": 12,
+        "w": 10,
+        "x": 14,
         "y": 9
       },
       "id": 9,
@@ -421,27 +509,38 @@
             "mode": "thresholds"
           },
           "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "mode": "color-background",
-              "type": "color-background"
-            },
-            "inspect": false
+            "fillOpacity": 85,
+            "lineWidth": 0
           },
+          "decimals": 1,
+          "max": 100,
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "#006d3c",
                 "value": null
               },
               {
-                "color": "yellow",
+                "color": "#35a853",
+                "value": 20
+              },
+              {
+                "color": "#f2cc60",
                 "value": 30
               },
               {
-                "color": "red",
+                "color": "#ff9830",
+                "value": 50
+              },
+              {
+                "color": "#e02f44",
                 "value": 70
+              },
+              {
+                "color": "#8f1d2c",
+                "value": 80
               }
             ]
           },
@@ -457,17 +556,18 @@
       },
       "id": 11,
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "enablePagination": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
+        "colWidth": 0.9,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
         },
-        "showHeader": true
+        "rowHeight": 0.8,
+        "showValue": "always",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
@@ -478,12 +578,12 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS coin,\n  k.rsi_14\nFROM symbols s\nJOIN (\n  SELECT symbol, argMax(rsi_14, timestamp) AS rsi_14\n  FROM klines FINAL\n  GROUP BY symbol\n) k ON k.symbol = s.symbol\nORDER BY k.rsi_14 DESC",
+          "rawSql": "SELECT\n  fromUnixTimestamp64Milli(toInt64(${__from})) AS time,\n  fromUnixTimestamp64Milli(toInt64(${__to})) AS end_time,\n  s.base_asset AS Coin,\n  round(k.rsi_14, 1) AS RSI\nFROM (\n  SELECT DISTINCT symbol, base_asset\n  FROM symbols\n) s\nJOIN (\n  SELECT symbol, argMax(rsi_14, timestamp) AS rsi_14\n  FROM klines FINAL\n  GROUP BY symbol\n) k ON k.symbol = s.symbol\nORDER BY k.rsi_14 DESC\nLIMIT 30",
           "refId": "A"
         }
       ],
       "title": "RSI Heatmap (Latest)",
-      "type": "table"
+      "type": "status-history"
     }
   ],
   "refresh": "1m",
