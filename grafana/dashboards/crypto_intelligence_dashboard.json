@@ -343,7 +343,7 @@
             "lineInterpolation": "linear",
             "lineWidth": 2,
             "pointSize": 3,
-            "showPoints": "never",
+            "showPoints": "always",
             "spanNulls": true,
             "stacking": {
               "group": "A",
@@ -383,7 +383,7 @@
           "editorMode": "code",
           "format": 1,
           "rawQuery": true,
-          "rawSql": "SELECT\n  toStartOfDay(timestamp) AS time,\n  avg(imbalance) AS imbalance\nFROM order_book_snapshot FINAL\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nGROUP BY time\nORDER BY time",
+          "rawSql": "SELECT\n  toStartOfInterval(timestamp, INTERVAL 5 minute) AS time,\n  avg(imbalance) AS imbalance\nFROM order_book_snapshot FINAL\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nGROUP BY time\nORDER BY time",
           "refId": "A"
         }
       ],
