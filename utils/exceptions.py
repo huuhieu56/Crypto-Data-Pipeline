@@ -46,10 +46,6 @@ class DatabaseConnectionError(LoadError):
     """Failed to connect to ClickHouse."""
 
 
-class SchemaInitError(LoadError):
-    """Error during database schema initialization."""
-
-
 # --- Model / Inference Layer -------------------------------------------------
 
 # --- LLM Layer ---------------------------------------------------------------
