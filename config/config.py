@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-SQL_DIR = PROJECT_ROOT / "sql"
 # --- Database (ClickHouse) ---------------------------------------------------
 
 CH_CONFIG = {
@@ -95,4 +94,3 @@ KLINES_COLUMNS = [
     "symbol", "timestamp", "open", "high", "low", "close",
     "volume", "quote_volume", "trades", "rsi_14", "macd", "macd_signal",
 ]
-
