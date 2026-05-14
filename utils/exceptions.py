@@ -30,12 +30,6 @@ class APIRequestError(ExtractError):
         super().__init__(msg)
 
 
-# --- Transform Layer ---------------------------------------------------------
-
-class TransformError(PipelineError):
-    """Error during Spark/Pandas transformation."""
-
-
 # --- Load Layer --------------------------------------------------------------
 
 class LoadError(PipelineError):
@@ -45,8 +39,6 @@ class LoadError(PipelineError):
 class DatabaseConnectionError(LoadError):
     """Failed to connect to ClickHouse."""
 
-
-# --- Model / Inference Layer -------------------------------------------------
 
 # --- LLM Layer ---------------------------------------------------------------
 
