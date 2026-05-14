@@ -57,27 +57,6 @@ def new_ch_client() -> Client:
     )
 
 
-def init_schema() -> None:
-    """Execute sql/schema.sql to initialize database tables."""
-    client = get_ch_client()
-    schema_path = SQL_DIR / "schema.sql"
-
-    if not schema_path.exists():
-        logger.warning("Schema file not found: %s — skipping", schema_path)
-        return
-
-    logger.info("Initializing schema from %s", schema_path.name)
-    try:
-        sql = schema_path.read_text(encoding="utf-8")
-        for statement in sql.split(";"):
-            statement = statement.strip()
-            if statement and not statement.startswith("--"):
-                client.command(statement)
-        logger.info("Schema initialized successfully")
-    except Exception as exc:
-        raise SchemaInitError(f"Failed to init schema: {exc}") from exc
-
-
 # --- Insert / Query Helpers --------------------------------------------------
 
 def ch_insert_df(table: str, df: pd.DataFrame, max_retries: int = 3) -> int:
