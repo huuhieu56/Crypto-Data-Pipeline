@@ -42,7 +42,7 @@ python scripts/load.py       # Load into ClickHouse
 ```
 Binance REST API ──extract──▶ Parquet files (data/raw/) ──transform──▶ Parquet (data/processed/) ──load──▶ ClickHouse
 ```
-- **Extract** (`scripts/extract.py`): Fetches 1-min klines, 24h ticker, order book snapshots. First run auto-bootstraps 3 years of historical data from Binance Data Vision; subsequent runs are incremental (~50 rows/min).
+- **Extract** (`scripts/extract.py` entrypoint, `scripts/extract_modules/` implementations): Fetches 1-min klines, 24h ticker, order book snapshots. First run auto-bootstraps 3 years of historical data from Binance Data Vision; subsequent runs are incremental (~50 rows/min).
 - **Transform** (`scripts/transform.py`): PySpark computes RSI(14) and MACD(12/26/9) on 1-min candles.
 - **Load** (`scripts/load.py`): Writes to ClickHouse via `clickhouse-connect`. Supports `--only klines|ticker|orderbook|symbols` flags for selective loading.
 

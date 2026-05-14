@@ -28,7 +28,8 @@ Crypto-Data-Pipeline/
 │   └── symbols.py                      # Danh sách 50 coins (single source of truth)
 │
 ├── scripts/                            # ETL scripts (auto-bootstrap + incremental)
-│   ├── extract.py                      # Thu thập từ Binance API & Data Vision (auto-bootstrap 3 năm)
+│   ├── extract.py                      # Entry point/orchestrator cho extract
+│   ├── extract_modules/                # Logic extract theo klines, ticker, order book
 │   ├── transform.py                    # Xử lý với Spark (RSI, MACD trên 1-min)
 │   └── load.py                         # Ghi vào ClickHouse (clickhouse-connect)
 │

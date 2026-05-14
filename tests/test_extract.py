@@ -27,7 +27,6 @@ from scripts.extract import (
     extract_ticker_24h,
     extract_order_book_snapshot,
     extract_minutely,
-    append_to_partition,
 )
 from utils.exceptions import ExtractError
 
@@ -161,10 +160,10 @@ class TestDownloadDataVision:
         self.mock_download = MagicMock(return_value=sample_klines_df)
         self.mock_storage_upload = MagicMock()
         monkeypatch.setattr(
-            "scripts.extract.download_klines_month", self.mock_download,
+            "scripts.extract_modules.extract_klines.download_klines_month", self.mock_download,
         )
         monkeypatch.setattr(
-            "scripts.extract.storage.upload_parquet", self.mock_storage_upload,
+            "scripts.extract_modules.extract_klines.storage.upload_parquet", self.mock_storage_upload,
         )
 
     # --- Happy Path ---
@@ -246,10 +245,10 @@ class TestExtractBulk:
         self.mock_dv = MagicMock(return_value=5000)
         self.mock_months = MagicMock(return_value=[(2024, 1)])
         monkeypatch.setattr(
-            "scripts.extract.download_data_vision", self.mock_dv,
+            "scripts.extract_modules.extract_klines.download_data_vision", self.mock_dv,
         )
         monkeypatch.setattr(
-            "scripts.extract.get_target_months", self.mock_months,
+            "scripts.extract_modules.extract_klines.get_target_months", self.mock_months,
         )
         # extract_bulk calls extract_ticker_24h and extract_order_book_snapshot
         monkeypatch.setattr(
@@ -314,16 +313,16 @@ class TestExtractRecentKlines:
         self.mock_write = MagicMock()
 
         monkeypatch.setattr(
-            "scripts.extract.get_last_timestamps", self.mock_last_ts,
+            "scripts.extract_modules.extract_klines.get_last_timestamps", self.mock_last_ts,
         )
         monkeypatch.setattr(
-            "scripts.extract.get_target_end", self.mock_target_end,
+            "scripts.extract_modules.extract_klines.get_target_end", self.mock_target_end,
         )
         monkeypatch.setattr(
-            "scripts.extract.fetch_klines_paginated", self.mock_fetch,
+            "scripts.extract_modules.extract_klines.fetch_klines_paginated", self.mock_fetch,
         )
         monkeypatch.setattr(
-            "scripts.extract.append_to_partition", self.mock_write,
+            "scripts.extract_modules.extract_klines.append_to_partition", self.mock_write,
         )
 
     # --- Happy Path ---
@@ -420,13 +419,13 @@ class TestExtractTicker24h:
         self.mock_book = MagicMock(return_value=SAMPLE_BOOK_TICKER_RAW)
         self.mock_append = MagicMock()
         monkeypatch.setattr(
-            "scripts.extract.get_ticker_24h", self.mock_ticker,
+            "scripts.extract_modules.extract_ticker.get_ticker_24h", self.mock_ticker,
         )
         monkeypatch.setattr(
-            "scripts.extract.get_book_ticker", self.mock_book,
+            "scripts.extract_modules.extract_ticker.get_book_ticker", self.mock_book,
         )
         monkeypatch.setattr(
-            "scripts.extract.append_to_partition", self.mock_append,
+            "scripts.extract_modules.extract_ticker.append_to_partition", self.mock_append,
         )
 
     # --- Happy Path ---
@@ -553,16 +552,16 @@ class TestExtractOrderBookSnapshot:
         """Setup chung: mock get_order_book, sleep, append_to_partition."""
         self.tmp_path = tmp_path
         monkeypatch.setattr(
-            "scripts.extract.sleep_between_requests", lambda: None,
+            "scripts.extract_modules.extract_order_book.sleep_between_requests", lambda: None,
         )
         self.mock_append = MagicMock()
         monkeypatch.setattr(
-            "scripts.extract.append_to_partition", self.mock_append,
+            "scripts.extract_modules.extract_order_book.append_to_partition", self.mock_append,
         )
 
         self.mock_ob = MagicMock(return_value=SAMPLE_ORDER_BOOK)
         monkeypatch.setattr(
-            "scripts.extract.get_order_book", self.mock_ob,
+            "scripts.extract_modules.extract_order_book.get_order_book", self.mock_ob,
         )
 
     # --- Happy Path ---
@@ -671,7 +670,7 @@ class TestExtractOrderBookSnapshot:
 
     def test_get_order_book_called_with_limit(self, monkeypatch):
         """get_order_book phải được gọi với limit=ORDER_BOOK_LIMIT."""
-        monkeypatch.setattr("scripts.extract.ORDER_BOOK_LIMIT", 50)
+        monkeypatch.setattr("scripts.extract_modules.extract_order_book.ORDER_BOOK_LIMIT", 50)
 
         extract_order_book_snapshot(["BTCUSDT"])
 
