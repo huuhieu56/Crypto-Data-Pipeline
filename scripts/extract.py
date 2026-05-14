@@ -1,319 +1,43 @@
 """Extract data from Binance.
 
 Two modes:
-  bulk     — Full historical download via Data Vision (monthly ZIP files)
-  minutely — Incremental update via REST API + Ticker 24h + Order Book
+  bulk     - Full historical download via Data Vision (monthly ZIP files)
+  minutely - Incremental update via REST API + Ticker 24h + Order Book
 
-On first run (empty DB), extract_recent_klines auto-bootstraps by downloading
-3 years of historical data via Data Vision, then fills the gap to present.
-Subsequent runs only fetch new 1-min candles incrementally.
+This file stays as the stable CLI/orchestrator entrypoint. Extract
+implementations live under scripts.extract_modules.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import argparse
-import pandas as pd
-import pyarrow as pa
-from datetime import datetime, timezone
-
-from config.config import (
-    ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG,
-)
+from config.config import MONTHS_BACK
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
-from utils.logger import get_logger
-from utils.exceptions import ExtractError
-from utils.storage import storage, append_to_partition
-from utils.db_utils import get_last_timestamps
-from utils.data_utils import partition_key, get_target_end, get_target_months
-from utils.binance_utils import (
-    get_ticker_24h,
-    get_book_ticker,
-    get_order_book,
-    fetch_klines_paginated,
-    download_klines_month,
-    sleep_between_requests,
+from scripts.extract_modules import (
+    download_data_vision,
+    extract_bulk,
+    extract_order_book_snapshot,
+    extract_recent_klines,
+    extract_ticker_24h,
 )
+from utils.logger import get_logger
 
 logger = get_logger(__name__)
-BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 
+__all__ = [
+    "download_data_vision",
+    "extract_bulk",
+    "extract_recent_klines",
+    "extract_ticker_24h",
+    "extract_order_book_snapshot",
+    "extract_minutely",
+]
 
-# --- Data Vision (bulk download) ---------------------------------------------
-
-def download_data_vision(
-    symbol: str,
-    months: list[tuple[int, int]],
-) -> int | None:
-    """Download klines from Data Vision month-by-month.
-
-    Each month is written to MinIO immediately after download to avoid
-    accumulating all months in memory.  Writes monthly partitions:
-    klines/{SYMBOL}/{YYYY-MM}.parquet
-
-    Returns total record count, or None if no data was downloaded.
-    """
-    sorted_months = sorted(months)
-    if not sorted_months:
-        return None
-
-    total = 0
-    for y, m in sorted_months:
-        try:
-            df = download_klines_month(symbol, y, m)
-            if df is not None and not df.empty:
-                month_str = f"{y}-{m:02d}"
-                key = partition_key(symbol, month_str)
-                df = df.sort_values("open_time")
-                for c in df.columns:
-                    if pd.api.types.is_datetime64_any_dtype(df[c]):
-                        df[c] = df[c].dt.as_unit("us")
-                table = pa.Table.from_pandas(df, preserve_index=False)
-                storage.upload_parquet(BUCKET_RAW, key, table)
-                logger.info("[%s] %d-%02d: %s rows", symbol, y, m, f"{len(df):,}")
-                total += len(df)
-        except Exception as exc:
-            logger.error("[%s] %d-%02d: ERROR %s", symbol, y, m, exc)
-
-    logger.info(
-        "[%s] Bulk complete: %d/%d months, %s records",
-        symbol, len(sorted_months), len(sorted_months), f"{total:,}",
-    )
-    return total if total > 0 else None
-
-
-def extract_bulk(
-    symbols: list[str] | None = None,
-    months_back: int = MONTHS_BACK,
-) -> dict[str, int]:
-    """Force re-download all symbols from Data Vision."""
-    symbols = symbols or SYMBOLS
-    target_months = get_target_months(months_back)
-    results: dict[str, int] = {}
-
-    logger.info(
-        "=== Bulk Extract: %d symbols × %d months ===",
-        len(symbols), months_back,
-    )
-
-    for sym in symbols:
-        try:
-            total = download_data_vision(sym, target_months)
-            if total is not None:
-                results[sym] = total
-                logger.info("[%s] %s records", sym, f"{total:,}")
-        except Exception as exc:
-            logger.error("[%s] FAILED — %s", sym, exc)
-
-    return results
-
-
-# --- REST API (incremental) --------------------------------------------------
-
-def extract_recent_klines(
-    symbols: list[str],
-) -> dict[str, pd.DataFrame]:
-    """Incremental klines update via REST API.
-
-    On first run (empty DB): auto-bootstraps by downloading historical data
-    via Data Vision, then fills the gap to present via REST API.
-    """
-    if not symbols:
-        return {}
-
-    results: dict[str, pd.DataFrame] = {}
-
-    # 1 batch query for all symbols instead of N file downloads
-    last_timestamps = get_last_timestamps(symbols)
-
-    # --- Bootstrap: empty DB → bulk download 3 years from Data Vision --------
-    symbols_needing_bootstrap = [s for s in symbols if s not in last_timestamps]
-    if symbols_needing_bootstrap:
-        logger.info(
-            "=== Bootstrap: %d/%d symbols have no data — "
-            "downloading %d months of history via Data Vision ===",
-            len(symbols_needing_bootstrap), len(symbols), MONTHS_BACK,
-        )
-        target_months = get_target_months(MONTHS_BACK)
-
-        for sym in symbols_needing_bootstrap:
-            try:
-                total = download_data_vision(sym, target_months)
-                if total is not None:
-                    logger.info("[BOOTSTRAP] %s: %s records", sym, f"{total:,}")
-            except Exception as exc:
-                logger.error("[BOOTSTRAP] %s: FAILED — %s", sym, exc)
-
-        # Refresh watermarks after bulk download
-        last_timestamps = get_last_timestamps(symbols)
-        logger.info("=== Bootstrap complete — filling gap to present ===")
-
-    # --- Incremental: fill from last watermark to now ------------------------
-    for idx, symbol in enumerate(symbols, 1):
-        try:
-            last_ts = last_timestamps.get(symbol)
-            if last_ts is None:
-                continue
-
-            target_end = get_target_end(symbol)
-            end_time = int(target_end.timestamp() * 1000)
-
-            if last_ts >= end_time:
-                continue
-
-            new_df = fetch_klines_paginated(symbol, last_ts, end_time)
-            if new_df is None or new_df.empty:
-                continue
-
-            append_to_partition(BUCKET_RAW, "klines", symbol, new_df, dedup_col="open_time")
-            results[symbol] = new_df
-            logger.info(
-                "[%d/%d] %s: +%d rows",
-                idx, len(symbols), symbol, len(new_df),
-            )
-        except Exception as exc:
-            logger.error("[%d/%d] %s: %s", idx, len(symbols), symbol, exc)
-
-    return results
-
-
-# --- Ticker 24h & Order Book -------------------------------------------------
-
-def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
-    """Fetch ticker/24hr + bookTicker, append to CSV."""
-    if not symbols:
-        return None
-
-    symbols_set = set(symbols)
-    snapshot_time = datetime.now(timezone.utc)
-
-    try:
-        ticker_raw = get_ticker_24h()
-    except Exception as exc:
-        raise ExtractError(f"Failed to fetch ticker/24hr: {exc}") from exc
-
-    ticker_df = pd.DataFrame(ticker_raw)
-    ticker_df = ticker_df[ticker_df["symbol"].isin(symbols_set)].copy()
-    ticker_df = ticker_df.rename(columns={
-        "priceChange": "price_change",
-        "priceChangePercent": "price_change_pct",
-        "highPrice": "high_24h",
-        "lowPrice": "low_24h",
-        "volume": "volume_24h",
-        "quoteVolume": "quote_volume_24h",
-        "count": "trade_count",
-    })
-    ticker_df = ticker_df[[
-        "symbol", "price_change", "price_change_pct",
-        "high_24h", "low_24h", "volume_24h", "quote_volume_24h", "trade_count",
-    ]]
-
-    try:
-        book_raw = get_book_ticker()
-    except Exception as exc:
-        raise ExtractError(f"Failed to fetch bookTicker: {exc}") from exc
-
-    book_df = pd.DataFrame(book_raw)
-    book_df = book_df[book_df["symbol"].isin(symbols_set)].copy()
-    book_df = book_df.rename(columns={"bidPrice": "bid_price", "askPrice": "ask_price"})
-    book_df = book_df[["symbol", "bid_price", "ask_price"]]
-
-    merged = ticker_df.merge(book_df, on="symbol", how="left")
-
-    float_cols = [
-        "price_change", "price_change_pct", "high_24h", "low_24h",
-        "volume_24h", "quote_volume_24h", "bid_price", "ask_price",
-    ]
-    for col in float_cols:
-        merged[col] = pd.to_numeric(merged[col], errors="coerce")
-
-    merged["trade_count"] = pd.to_numeric(
-        merged["trade_count"], errors="coerce",
-    ).astype("Int64")
-    merged["spread_pct"] = (
-        (merged["ask_price"] - merged["bid_price"]) / merged["ask_price"] * 100
-    )
-    merged.insert(1, "snapshot_time", snapshot_time)
-
-    merged = merged[[
-        "symbol", "snapshot_time", "price_change", "price_change_pct",
-        "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
-        "trade_count", "bid_price", "ask_price", "spread_pct",
-    ]]
-
-    # Write per-symbol monthly partitions (same pattern as klines)
-    for symbol, group_df in merged.groupby("symbol"):
-        append_to_partition(
-            BUCKET_RAW, "ticker_24h", symbol,
-            group_df.reset_index(drop=True), dedup_col="snapshot_time",
-        )
-    logger.info("Saved ticker_24h (+%d records, %d symbols)", len(merged), merged["symbol"].nunique())
-    return merged
-
-
-def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
-    """Fetch order book depth and compute imbalance."""
-    if not symbols:
-        return None
-
-    timestamp = datetime.now(timezone.utc)
-    records = []
-
-    for symbol in symbols:
-        try:
-            data = get_order_book(symbol, limit=ORDER_BOOK_LIMIT)
-
-            bid_vol = sum(
-                float(b[1]) for b in data.get("bids", [])
-                if len(b) > 1 and _is_float(b[1])
-            )
-            ask_vol = sum(
-                float(a[1]) for a in data.get("asks", [])
-                if len(a) > 1 and _is_float(a[1])
-            )
-            total = bid_vol + ask_vol
-
-            records.append({
-                "symbol": symbol,
-                "timestamp": timestamp,
-                "total_bid_volume": bid_vol,
-                "total_ask_volume": ask_vol,
-                "imbalance": bid_vol / total if total > 0 else 0.0,
-            })
-        except Exception as exc:
-            logger.error("Order book failed for %s: %s", symbol, exc)
-
-    sleep_between_requests()
-
-    if not records:
-        logger.error("No order book data collected")
-        return None
-
-    df = pd.DataFrame(records)
-
-    # Write per-symbol monthly partitions (same pattern as klines)
-    for symbol, group_df in df.groupby("symbol"):
-        append_to_partition(
-            BUCKET_RAW, "order_book", symbol,
-            group_df.reset_index(drop=True), dedup_col="timestamp",
-        )
-    logger.info("Saved order_book_snapshot (+%d records, %d symbols)", len(df), df["symbol"].nunique())
-    return df
-
-
-def _is_float(s: str) -> bool:
-    try:
-        float(s)
-        return True
-    except (ValueError, TypeError):
-        return False
-
-
-# --- Entry Points ------------------------------------------------------------
 
 def extract_minutely(symbols: list[str] | None = None) -> None:
     """Minutely extract: REST API klines + ticker + order book."""
@@ -334,8 +58,6 @@ def extract_minutely(symbols: list[str] | None = None) -> None:
     extract_order_book_snapshot(trading)
     logger.info("=== Minutely Extract finished ===")
 
-
-# --- CLI ---------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
