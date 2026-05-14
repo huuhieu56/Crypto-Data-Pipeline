@@ -6,8 +6,6 @@ All modules requiring database access MUST use these helpers.
 
 from __future__ import annotations
 
-import threading
-
 import pandas as pd
 from clickhouse_connect.driver.client import Client
 import clickhouse_connect
@@ -18,23 +16,24 @@ from utils.exceptions import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
-# --- ClickHouse Client (thread-local) ----------------------------------------
+# --- ClickHouse Client (singleton) -------------------------------------------
 
-_local = threading.local()
+_client: Client | None = None
 
 
 def get_ch_client() -> Client:
-    """Return a thread-local ClickHouse client. Use for synchronous ETL code."""
-    if not hasattr(_local, "client"):
+    """Return a lazily initialized ClickHouse client for synchronous ETL code."""
+    global _client
+    if _client is None:
         try:
-            _local.client = clickhouse_connect.get_client(
+            _client = clickhouse_connect.get_client(
                 host=CH_CONFIG["host"],
                 port=CH_CONFIG["port"],
                 username=CH_CONFIG["user"],
                 password=CH_CONFIG["password"],
                 database=CH_CONFIG["database"],
             )
-            _local.client.query("SELECT 1")
+            _client.query("SELECT 1")
             logger.info(
                 "ClickHouse connected: %s:%s/%s",
                 CH_CONFIG["host"], CH_CONFIG["port"], CH_CONFIG["database"],
@@ -43,7 +42,7 @@ def get_ch_client() -> Client:
             raise DatabaseConnectionError(
                 f"Cannot connect to ClickHouse: {exc}"
             ) from exc
-    return _local.client
+    return _client
 
 
 def new_ch_client() -> Client:

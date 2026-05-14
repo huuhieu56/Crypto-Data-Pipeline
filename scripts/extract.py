@@ -20,10 +20,9 @@ import argparse
 import pandas as pd
 import pyarrow as pa
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.config import (
-    ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM,
+    ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG,
 )
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
@@ -41,20 +40,16 @@ from utils.binance_utils import (
 )
 
 logger = get_logger(__name__)
-KLINES_MAX_WORKERS = PARALLELISM["klines_max_workers"]
-ORDERBOOK_MAX_WORKERS = PARALLELISM["orderbook_max_workers"]
-BULK_DOWNLOAD_WORKERS = PARALLELISM["bulk_download_workers"]
-BULK_SYMBOL_WORKERS = PARALLELISM["bulk_symbol_workers"]
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 
 
-# --- Data Vision (parallel bulk download) ------------------------------------
+# --- Data Vision (bulk download) ---------------------------------------------
 
 def download_data_vision(
     symbol: str,
     months: list[tuple[int, int]],
 ) -> int | None:
-    """Download klines from Data Vision with parallel month downloads.
+    """Download klines from Data Vision month-by-month.
 
     Each month is written to MinIO immediately after download to avoid
     accumulating all months in memory.  Writes monthly partitions:
@@ -67,32 +62,22 @@ def download_data_vision(
         return None
 
     total = 0
-    max_workers = min(BULK_DOWNLOAD_WORKERS, len(sorted_months))
-
-    def _download_and_write(ym: tuple[int, int]) -> int:
-        y, m = ym
-        df = download_klines_month(symbol, y, m)
-        if df is not None and not df.empty:
-            month_str = f"{y}-{m:02d}"
-            key = partition_key(symbol, month_str)
-            df = df.sort_values("open_time")
-            for c in df.columns:
-                if pd.api.types.is_datetime64_any_dtype(df[c]):
-                    df[c] = df[c].dt.as_unit("us")
-            table = pa.Table.from_pandas(df, preserve_index=False)
-            storage.upload_parquet(BUCKET_RAW, key, table)
-            logger.info("[%s] %d-%02d: %s rows", symbol, y, m, f"{len(df):,}")
-            return len(df)
-        return 0
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {pool.submit(_download_and_write, ym): ym for ym in sorted_months}
-        for future in as_completed(future_map):
-            ym = future_map[future]
-            try:
-                total += future.result()
-            except Exception as exc:
-                logger.error("[%s] %d-%02d: ERROR %s", symbol, ym[0], ym[1], exc)
+    for y, m in sorted_months:
+        try:
+            df = download_klines_month(symbol, y, m)
+            if df is not None and not df.empty:
+                month_str = f"{y}-{m:02d}"
+                key = partition_key(symbol, month_str)
+                df = df.sort_values("open_time")
+                for c in df.columns:
+                    if pd.api.types.is_datetime64_any_dtype(df[c]):
+                        df[c] = df[c].dt.as_unit("us")
+                table = pa.Table.from_pandas(df, preserve_index=False)
+                storage.upload_parquet(BUCKET_RAW, key, table)
+                logger.info("[%s] %d-%02d: %s rows", symbol, y, m, f"{len(df):,}")
+                total += len(df)
+        except Exception as exc:
+            logger.error("[%s] %d-%02d: ERROR %s", symbol, y, m, exc)
 
     logger.info(
         "[%s] Bulk complete: %d/%d months, %s records",
@@ -101,18 +86,11 @@ def download_data_vision(
     return total if total > 0 else None
 
 
-def _download_data_vision_for_symbol(
-    symbol: str,
-    target_months: list[tuple[int, int]],
-) -> tuple[str, int | None]:
-    return symbol, download_data_vision(symbol, target_months)
-
-
 def extract_bulk(
     symbols: list[str] | None = None,
     months_back: int = MONTHS_BACK,
 ) -> dict[str, int]:
-    """Force re-download all symbols from Data Vision (parallel)."""
+    """Force re-download all symbols from Data Vision."""
     symbols = symbols or SYMBOLS
     target_months = get_target_months(months_back)
     results: dict[str, int] = {}
@@ -122,21 +100,14 @@ def extract_bulk(
         len(symbols), months_back,
     )
 
-    max_workers = min(BULK_SYMBOL_WORKERS, len(symbols))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {
-            pool.submit(_download_data_vision_for_symbol, sym, target_months): sym
-            for sym in symbols
-        }
-        for future in as_completed(future_map):
-            symbol = future_map[future]
-            try:
-                sym, total = future.result()
-                if total is not None:
-                    results[sym] = total
-                    logger.info("[%s] %s records", sym, f"{total:,}")
-            except Exception as exc:
-                logger.error("[%s] FAILED — %s", symbol, exc)
+    for sym in symbols:
+        try:
+            total = download_data_vision(sym, target_months)
+            if total is not None:
+                results[sym] = total
+                logger.info("[%s] %s records", sym, f"{total:,}")
+        except Exception as exc:
+            logger.error("[%s] FAILED — %s", sym, exc)
 
     return results
 
@@ -169,62 +140,43 @@ def extract_recent_klines(
         )
         target_months = get_target_months(MONTHS_BACK)
 
-        max_workers = min(BULK_SYMBOL_WORKERS, len(symbols_needing_bootstrap))
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            future_map = {
-                pool.submit(_download_data_vision_for_symbol, sym, target_months): sym
-                for sym in symbols_needing_bootstrap
-            }
-            for future in as_completed(future_map):
-                sym = future_map[future]
-                try:
-                    sym, total = future.result()
-                    if total is not None:
-                        logger.info("[BOOTSTRAP] %s: %s records", sym, f"{total:,}")
-                except Exception as exc:
-                    logger.error("[BOOTSTRAP] %s: FAILED — %s", sym, exc)
+        for sym in symbols_needing_bootstrap:
+            try:
+                total = download_data_vision(sym, target_months)
+                if total is not None:
+                    logger.info("[BOOTSTRAP] %s: %s records", sym, f"{total:,}")
+            except Exception as exc:
+                logger.error("[BOOTSTRAP] %s: FAILED — %s", sym, exc)
 
         # Refresh watermarks after bulk download
         last_timestamps = get_last_timestamps(symbols)
         logger.info("=== Bootstrap complete — filling gap to present ===")
 
     # --- Incremental: fill from last watermark to now ------------------------
-    def _extract_one(symbol: str) -> tuple[str, pd.DataFrame | None]:
-        last_ts = last_timestamps.get(symbol)
-        if last_ts is None:
-            return symbol, None
+    for idx, symbol in enumerate(symbols, 1):
+        try:
+            last_ts = last_timestamps.get(symbol)
+            if last_ts is None:
+                continue
 
-        target_end = get_target_end(symbol)
-        end_time = int(target_end.timestamp() * 1000)
+            target_end = get_target_end(symbol)
+            end_time = int(target_end.timestamp() * 1000)
 
-        if last_ts >= end_time:
-            return symbol, None
+            if last_ts >= end_time:
+                continue
 
-        new_df = fetch_klines_paginated(symbol, last_ts, end_time)
-        if new_df is None or new_df.empty:
-            return symbol, None
+            new_df = fetch_klines_paginated(symbol, last_ts, end_time)
+            if new_df is None or new_df.empty:
+                continue
 
-        append_to_partition(BUCKET_RAW, "klines", symbol, new_df, dedup_col="open_time")
-        return symbol, new_df
-
-    max_workers = min(KLINES_MAX_WORKERS, len(symbols))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {
-            pool.submit(_extract_one, symbol): (idx, symbol)
-            for idx, symbol in enumerate(symbols, 1)
-        }
-        for future in as_completed(future_map):
-            idx, symbol = future_map[future]
-            try:
-                symbol, new_df = future.result()
-                if new_df is not None:
-                    results[symbol] = new_df
-                    logger.info(
-                        "[%d/%d] %s: +%d rows",
-                        idx, len(symbols), symbol, len(new_df),
-                    )
-            except Exception as exc:
-                logger.error("[%d/%d] %s: %s", idx, len(symbols), symbol, exc)
+            append_to_partition(BUCKET_RAW, "klines", symbol, new_df, dedup_col="open_time")
+            results[symbol] = new_df
+            logger.info(
+                "[%d/%d] %s: +%d rows",
+                idx, len(symbols), symbol, len(new_df),
+            )
+        except Exception as exc:
+            logger.error("[%d/%d] %s: %s", idx, len(symbols), symbol, exc)
 
     return results
 
@@ -311,7 +263,7 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
     timestamp = datetime.now(timezone.utc)
     records = []
 
-    def _extract_one(symbol: str) -> dict | None:
+    for symbol in symbols:
         try:
             data = get_order_book(symbol, limit=ORDER_BOOK_LIMIT)
 
@@ -325,27 +277,15 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
             )
             total = bid_vol + ask_vol
 
-            return {
+            records.append({
                 "symbol": symbol,
                 "timestamp": timestamp,
                 "total_bid_volume": bid_vol,
                 "total_ask_volume": ask_vol,
                 "imbalance": bid_vol / total if total > 0 else 0.0,
-            }
+            })
         except Exception as exc:
             logger.error("Order book failed for %s: %s", symbol, exc)
-            return None
-
-    max_workers = min(ORDERBOOK_MAX_WORKERS, len(symbols))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {pool.submit(_extract_one, s): s for s in symbols}
-        for future in as_completed(future_map):
-            try:
-                rec = future.result()
-                if rec is not None:
-                    records.append(rec)
-            except Exception as exc:
-                logger.error("Order book future failed: %s", exc)
 
     sleep_between_requests()
 

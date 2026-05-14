@@ -9,7 +9,7 @@
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import pandas as pd
@@ -382,6 +382,35 @@ class TestTransformDataIntegration:
         assert result is not None
         assert len(result) == 2
         assert result["timestamp"].min() == pd.Timestamp("2024-01-01 00:01:00")
+
+    def test_one_symbol_fails_in_transform_others_succeed(self, monkeypatch):
+        """One symbol error should not abort the rest of transform_data."""
+        from scripts import transform as transform_module
+
+        result_df = pd.DataFrame({
+            "timestamp": [pd.Timestamp("2024-01-01")],
+            "symbol": ["BTCUSDT"],
+        })
+
+        def _process(symbol, month, last_loaded):
+            if symbol == "ETHUSDT":
+                raise RuntimeError("boom")
+            return result_df
+
+        monkeypatch.setattr(transform_module, "get_last_timestamps", lambda symbols: {})
+        monkeypatch.setattr(
+            transform_module,
+            "discover_month_partitions",
+            lambda bucket, prefix, symbol: ["2024-01"],
+        )
+        upload_mock = MagicMock()
+        monkeypatch.setattr(transform_module, "_upload_features", upload_mock)
+        monkeypatch.setattr(transform_module, "_process_symbol", _process)
+
+        result = transform_module.transform_data(symbols=["BTCUSDT", "ETHUSDT"])
+
+        assert result == "features/"
+        upload_mock.assert_called_once()
 
 
 # =============================================================================

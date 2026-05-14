@@ -179,7 +179,7 @@ class TestDownloadDataVision:
         assert self.mock_storage_upload.call_count == 3
 
     def test_months_processed_in_chronological_order(self):
-        """Months phải được download đầy đủ (order may vary due to parallelism)."""
+        """Months phải được download đầy đủ theo thứ tự thời gian."""
         # Truyền months không đúng thứ tự
         months = [(2024, 3), (2024, 1), (2024, 2)]
         download_data_vision("BTCUSDT", months)
@@ -212,6 +212,20 @@ class TestDownloadDataVision:
         assert result is not None
         assert result > 0
         assert self.mock_storage_upload.call_count == 2  # chỉ 2 tháng OK
+
+    def test_one_month_fails_others_succeed(self):
+        """Một tháng raise exception → các tháng khác vẫn được xử lý."""
+        self.mock_download.side_effect = [
+            self.sample_df,
+            RuntimeError("boom"),
+            self.sample_df,
+        ]
+
+        result = download_data_vision("BTCUSDT", [(2024, 1), (2024, 2), (2024, 3)])
+
+        assert result == len(self.sample_df) * 2
+        assert self.mock_download.call_count == 3
+        assert self.mock_storage_upload.call_count == 2
 
     def test_empty_months_list_returns_none(self):
         """Danh sách months rỗng → trả về None."""
@@ -271,6 +285,15 @@ class TestExtractBulk:
 
         assert result == {"BTCUSDT": 10000}
         assert "ETHUSDT" not in result
+
+    def test_one_symbol_fails_in_bulk_others_succeed(self):
+        """Một symbol raise exception → symbol khác vẫn có kết quả."""
+        self.mock_dv.side_effect = [10000, RuntimeError("boom")]
+
+        result = extract_bulk(symbols=TEST_SYMBOLS, months_back=1)
+
+        assert result == {"BTCUSDT": 10000}
+        assert self.mock_dv.call_count == 2
 
 
 # ============================================================================
@@ -360,6 +383,26 @@ class TestExtractRecentKlines:
         assert "BTCUSDT" in result
         self.mock_target_end.assert_called_once_with("BTCUSDT")
         self.mock_fetch.assert_called_once_with("BTCUSDT", 1704067200000, target_end_ms)
+
+    def test_one_symbol_raises_in_recent_klines_others_succeed(self):
+        """Một symbol raise exception → symbols còn lại vẫn được xử lý."""
+        self.mock_last_ts.return_value = {
+            "BTCUSDT": 1704067200000,
+            "ETHUSDT": 1704067200000,
+        }
+
+        def _fetch(symbol, start_time, end_time):
+            if symbol == "ETHUSDT":
+                raise RuntimeError("boom")
+            return self.sample_df
+
+        self.mock_fetch.side_effect = _fetch
+
+        result = extract_recent_klines(TEST_SYMBOLS)
+
+        assert list(result) == ["BTCUSDT"]
+        assert self.mock_fetch.call_count == 2
+        assert self.mock_write.call_count == 1
 
 
 # ============================================================================
