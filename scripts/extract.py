@@ -24,7 +24,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.config import (
     ORDER_BOOK_LIMIT, MONTHS_BACK, MINIO_CONFIG, PARALLELISM,
-    BINANCE_FUTURES_ENDPOINTS,
 )
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.logger import get_logger
@@ -367,76 +366,6 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
     return df
 
 
-def extract_funding_rates(symbols: list[str]) -> int:
-    """Fetch latest funding rates for symbols from Binance Futures API.
-
-    Funding rates are published every 8h.  Each call returns the most recent
-    funding rate per symbol.  Results are appended to monthly MinIO partitions.
-    """
-    if not symbols:
-        return 0
-
-    from utils.binance_utils import make_request
-
-    total = 0
-    for symbol in symbols:
-        try:
-            data = make_request(
-                BINANCE_FUTURES_ENDPOINTS["funding_rate"],
-                params={"symbol": symbol, "limit": 1},
-            )
-            if not data:
-                continue
-            row = data[0]
-            df = pd.DataFrame([{
-                "symbol": symbol,
-                "funding_time": pd.to_datetime(row["fundingTime"], unit="ms"),
-                "funding_rate": float(row["fundingRate"]),
-                "mark_price": float(row["markPrice"]),
-            }])
-            append_to_partition(BUCKET_RAW, "funding_rates", symbol, df, dedup_col="funding_time")
-            total += 1
-        except Exception as exc:
-            logger.warning("Funding rate failed for %s: %s", symbol, exc)
-
-    logger.info("Saved funding_rates (+%d symbols)", total)
-    return total
-
-
-def extract_open_interest(symbols: list[str]) -> int:
-    """Fetch current open interest for symbols from Binance Futures API.
-
-    Open interest snapshots are taken on demand.  Results are appended to
-    monthly MinIO partitions.
-    """
-    if not symbols:
-        return 0
-
-    from utils.binance_utils import make_request
-    timestamp = datetime.now(timezone.utc)
-
-    total = 0
-    for symbol in symbols:
-        try:
-            data = make_request(
-                BINANCE_FUTURES_ENDPOINTS["open_interest"],
-                params={"symbol": symbol},
-            )
-            df = pd.DataFrame([{
-                "symbol": symbol,
-                "timestamp": timestamp,
-                "open_interest": float(data["openInterest"]),
-                "open_interest_value": float(data.get("openInterestValue", 0)),
-            }])
-            append_to_partition(BUCKET_RAW, "open_interest", symbol, df, dedup_col="timestamp")
-            total += 1
-        except Exception as exc:
-            logger.warning("Open interest failed for %s: %s", symbol, exc)
-
-    logger.info("Saved open_interest (+%d symbols)", total)
-    return total
-
-
 def _is_float(s: str) -> bool:
     try:
         float(s)
@@ -448,7 +377,7 @@ def _is_float(s: str) -> bool:
 # --- Entry Points ------------------------------------------------------------
 
 def extract_minutely(symbols: list[str] | None = None) -> None:
-    """Minutely extract: REST API klines + ticker + order book + derivatives."""
+    """Minutely extract: REST API klines + ticker + order book."""
     symbols = symbols or SYMBOLS
     trading = [s for s in symbols if SYMBOLS_STATUS.get(s, "TRADING") == "TRADING"]
 
@@ -464,8 +393,6 @@ def extract_minutely(symbols: list[str] | None = None) -> None:
 
     extract_ticker_24h(trading)
     extract_order_book_snapshot(trading)
-    extract_funding_rates(trading)
-    extract_open_interest(trading)
     logger.info("=== Minutely Extract finished ===")
 
 

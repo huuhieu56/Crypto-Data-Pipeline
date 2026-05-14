@@ -63,27 +63,7 @@ CREATE TABLE IF NOT EXISTS crypto_db.order_book_snapshot (
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (symbol, timestamp);
 
--- 5) Fact: Funding rates (perpetual futures, every 8h)
-CREATE TABLE IF NOT EXISTS crypto_db.funding_rates (
-    symbol String,
-    funding_time DateTime,
-    funding_rate Float64,
-    mark_price Float64
-) ENGINE = ReplacingMergeTree()
-PARTITION BY toYYYYMM(funding_time)
-ORDER BY (symbol, funding_time);
-
--- 6) Fact: Open interest snapshots
-CREATE TABLE IF NOT EXISTS crypto_db.open_interest (
-    symbol String,
-    timestamp DateTime,
-    open_interest Float64,
-    open_interest_value Float64
-) ENGINE = ReplacingMergeTree()
-PARTITION BY toYYYYMM(timestamp)
-ORDER BY (symbol, timestamp);
-
--- 7) Chat history for AI chatbot
+-- 5) Chat history for AI chatbot
 CREATE TABLE IF NOT EXISTS crypto_db.chat_history (
     session_id String,
     message_id String,
@@ -96,5 +76,4 @@ CREATE TABLE IF NOT EXISTS crypto_db.chat_history (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (session_id, timestamp);
-
 

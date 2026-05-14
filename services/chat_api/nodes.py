@@ -199,68 +199,8 @@ def get_orderbook_pressure(symbol: str, timeframe: str) -> str:
     return mq.format_orderbook(data)
 
 
-@tool
-def get_funding_rate(symbol: str, timeframe: str) -> str:
-    """Fetch perpetual futures funding rate history.
-
-    Funding rates indicate whether the market is net long (positive rate,
-    longs pay shorts) or net short (negative rate, shorts pay longs).
-    Extreme negative rates with rising open interest often signal a
-    short squeeze setup.
-
-    Args:
-        symbol: Crypto trading pair (e.g. BTCUSDT, ETHUSDT).
-        timeframe: One of 'short', 'medium', 'long', 'very_long'.
-    """
-    config = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["medium"])
-    df = mq.fetch_funding_rates(symbol, config)
-    result = mq.format_funding_rates(df)
-
-    latest = mq.fetch_latest_funding(symbol)
-    rate = latest["funding_rate"]
-    pct = rate * 100
-    if rate > 0:
-        tag = "longs pay shorts (market is net long)"
-    elif rate < 0:
-        tag = "shorts pay longs (market is net short)"
-    else:
-        tag = "neutral"
-
-    result += (
-        f"\n\n--- Latest ---"
-        f"\nFunding rate: {pct:+.4f}% ({tag})"
-        f"\nMark price: {latest['mark_price']:.2f}"
-    )
-    return result
-
-
-@tool
-def get_open_interest(symbol: str, timeframe: str) -> str:
-    """Fetch open interest history for a symbol.
-
-    Open interest represents the total number of outstanding derivative
-    contracts.  Rising OI with rising price confirms trend strength.
-    Rising OI with falling price suggests new short positions opening.
-
-    Args:
-        symbol: Crypto trading pair (e.g. BTCUSDT, ETHUSDT).
-        timeframe: One of 'short', 'medium', 'long', 'very_long'.
-    """
-    config = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["medium"])
-    df = mq.fetch_open_interest(symbol, config)
-    result = mq.format_open_interest(df)
-
-    latest = mq.fetch_latest_oi(symbol)
-    result += (
-        f"\n\n--- Latest ---"
-        f"\nOpen interest: {latest['open_interest']:,.0f} contracts"
-        f"\nNotional value: ${latest['open_interest_value']:,.0f}"
-    )
-    return result
-
-
 # List used by the graph to bind tools to the LLM.
-TOOLS = [get_price_candles, get_volume_and_liquidity, get_orderbook_pressure, get_funding_rate, get_open_interest]
+TOOLS = [get_price_candles, get_volume_and_liquidity, get_orderbook_pressure]
 
 
 # ---------------------------------------------------------------------------
@@ -287,11 +227,9 @@ SYSTEM_PROMPT = (
     "AVAILABLE TOOLS:\n"
     "- get_price_candles: OHLCV with RSI/MACD and computed signals\n"
     "- get_volume_and_liquidity: Volume trends, spread, trade count\n"
-    "- get_orderbook_pressure: Buy/sell pressure and imbalance\n"
-    "- get_funding_rate: Perpetual futures funding rates (leverage sentiment)\n"
-    "- get_open_interest: Outstanding derivative contracts (trend confirmation)\n\n"
-    "For comprehensive analysis, combine price/volume data with derivatives "
-    "data (funding + OI) to assess leverage positioning and squeeze potential.\n\n"
+    "- get_orderbook_pressure: Buy/sell pressure and imbalance\n\n"
+    "For comprehensive analysis, combine price action, volume/liquidity, and "
+    "order book pressure to assess market conditions.\n\n"
     "RULES:\n"
     "- ALWAYS call at least one tool before answering market questions.\n"
     "- Base analysis ONLY on data returned by your tools.\n"
