@@ -26,7 +26,6 @@ from config.config import (
 )
 from config.symbols import SYMBOLS
 from utils.logger import get_logger
-from utils.exceptions import TransformError
 from utils.data_utils import partition_key, features_key
 from utils.db_utils import ch_query_df, get_last_timestamps
 from utils.storage import storage, discover_month_partitions
@@ -275,9 +274,6 @@ if __name__ == "__main__":
     exit_code = 0
     try:
         out_path = transform_data(symbols=active_symbols, month_str=args.month)
-    except TransformError as exc:
-        logger.error("Transform failed: %s", exc)
-        exit_code = 1
     except Exception as exc:
         logger.error("Unexpected error: %s", exc, exc_info=True)
         exit_code = 1
