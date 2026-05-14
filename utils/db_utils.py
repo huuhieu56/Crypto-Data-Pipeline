@@ -93,15 +93,6 @@ def ch_query_df_params(query: str, params: dict) -> pd.DataFrame:
         client.close()
 
 
-def ch_command_params(command: str, params: dict) -> None:
-    """Execute a parameterized command (INSERT/DELETE/DDL) using a fresh client."""
-    client = new_ch_client()
-    try:
-        client.command(command, parameters=params)
-    finally:
-        client.close()
-
-
 # --- Batch Helpers -----------------------------------------------------------
 
 def get_table_watermarks(
