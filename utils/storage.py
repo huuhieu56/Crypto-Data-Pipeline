@@ -75,15 +75,6 @@ class MinIOStorage:
 
     # ---- JSON I/O ---------------------------------------------------------
 
-    def upload_json(self, bucket: str, key: str, data: Any) -> None:
-        """Write JSON data to MinIO."""
-        buf = io.BytesIO(json.dumps(data, default=str).encode("utf-8"))
-        buf.seek(0)
-        self.client.put_object(
-            bucket, key, buf, length=buf.getbuffer().nbytes,
-            content_type="application/json",
-        )
-
     def download_json(self, bucket: str, key: str) -> Any:
         """Read a JSON file from MinIO."""
         response = self.client.get_object(bucket, key)
