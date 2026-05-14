@@ -50,15 +50,6 @@ class MinIOStorage:
             )
         return self._client
 
-    # ---- Bucket operations ------------------------------------------------
-
-    def ensure_buckets(self) -> None:
-        """Create configured buckets if they don't exist."""
-        for bucket in (MINIO_CONFIG["bucket_raw"], MINIO_CONFIG["bucket_processed"]):
-            if not self.client.bucket_exists(bucket):
-                self.client.make_bucket(bucket)
-                logger.info("Created bucket: %s", bucket)
-
     # ---- Parquet I/O ------------------------------------------------------
 
     def upload_parquet(self, bucket: str, key: str, table: pa.Table) -> None:
