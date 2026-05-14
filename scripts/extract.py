@@ -101,6 +101,13 @@ def download_data_vision(
     return total if total > 0 else None
 
 
+def _download_data_vision_for_symbol(
+    symbol: str,
+    target_months: list[tuple[int, int]],
+) -> tuple[str, int | None]:
+    return symbol, download_data_vision(symbol, target_months)
+
+
 def extract_bulk(
     symbols: list[str] | None = None,
     months_back: int = MONTHS_BACK,
@@ -115,12 +122,12 @@ def extract_bulk(
         len(symbols), months_back,
     )
 
-    def _bulk_one(symbol: str) -> tuple[str, int | None]:
-        return symbol, download_data_vision(symbol, target_months)
-
     max_workers = min(BULK_SYMBOL_WORKERS, len(symbols))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {pool.submit(_bulk_one, sym): sym for sym in symbols}
+        future_map = {
+            pool.submit(_download_data_vision_for_symbol, sym, target_months): sym
+            for sym in symbols
+        }
         for future in as_completed(future_map):
             symbol = future_map[future]
             try:
@@ -138,7 +145,6 @@ def extract_bulk(
 
 def extract_recent_klines(
     symbols: list[str],
-    end_times: dict[str, int] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Incremental klines update via REST API.
 
@@ -148,7 +154,6 @@ def extract_recent_klines(
     if not symbols:
         return {}
 
-    end_times = end_times or {}
     results: dict[str, pd.DataFrame] = {}
 
     # 1 batch query for all symbols instead of N file downloads
@@ -164,13 +169,10 @@ def extract_recent_klines(
         )
         target_months = get_target_months(MONTHS_BACK)
 
-        def _bulk_one(symbol: str) -> tuple[str, int | None]:
-            return symbol, download_data_vision(symbol, target_months)
-
         max_workers = min(BULK_SYMBOL_WORKERS, len(symbols_needing_bootstrap))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             future_map = {
-                pool.submit(_bulk_one, sym): sym
+                pool.submit(_download_data_vision_for_symbol, sym, target_months): sym
                 for sym in symbols_needing_bootstrap
             }
             for future in as_completed(future_map):
@@ -192,11 +194,8 @@ def extract_recent_klines(
         if last_ts is None:
             return symbol, None
 
-        if symbol in end_times:
-            end_time = end_times[symbol]
-        else:
-            target_end = get_target_end(symbol)
-            end_time = int(target_end.timestamp() * 1000)
+        target_end = get_target_end(symbol)
+        end_time = int(target_end.timestamp() * 1000)
 
         if last_ts >= end_time:
             return symbol, None

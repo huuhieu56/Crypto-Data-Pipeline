@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.transform import (
     calculate_indicators,
     OUTPUT_COLUMNS,
+    _process_symbol,
 )
 
 
@@ -352,6 +353,35 @@ class TestTransformDataIntegration:
         result = transform_data(symbols=["BTCUSDT"])
 
         assert result is None
+
+    @patch("scripts.transform._get_ch_context", return_value=pd.DataFrame())
+    @patch("scripts.transform._read_monthly_partition")
+    def test_process_symbol_filters_rows_after_watermark(self, mock_read, mock_ctx):
+        """Rows at or before the ClickHouse watermark should not be transformed."""
+        dates = pd.date_range("2024-01-01", periods=3, freq="min")
+        mock_read.return_value = pd.DataFrame({
+            "open_time": dates,
+            "open": [100.0, 101.0, 102.0],
+            "high": [101.0, 102.0, 103.0],
+            "low": [99.0, 100.0, 101.0],
+            "close": [100.0, 101.0, 102.0],
+            "volume": [1000.0] * 3,
+            "close_time": dates + pd.Timedelta(minutes=1),
+            "quote_volume": [50000.0] * 3,
+            "trades": [10, 11, 12],
+            "taker_buy_base": [500.0] * 3,
+            "taker_buy_quote": [25000.0] * 3,
+        })
+
+        result = _process_symbol(
+            "BTCUSDT",
+            "2024-01",
+            pd.Timestamp("2024-01-01 00:00:00", tz="UTC"),
+        )
+
+        assert result is not None
+        assert len(result) == 2
+        assert result["timestamp"].min() == pd.Timestamp("2024-01-01 00:01:00")
 
 
 # =============================================================================

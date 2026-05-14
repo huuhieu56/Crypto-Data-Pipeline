@@ -350,7 +350,7 @@ ORDER BY s.symbol;
 │   └────────┬────────┘   └──────────┬──────────┘   └────────────┬────────────┘   └─────────┬─────────┘ │
 │            │                       │                           │                           │           │
 │            ▼                       ▼                           ▼                           ▼           │
-│      symbols.json          MinIO: crypto-raw/           ticker_24h.csv           order_book_snapshot.csv │
+│    config/symbols.py       MinIO: crypto-raw/           ticker_24h.csv           order_book_snapshot.csv │
 └────────────┬───────────────────────┬───────────────────────────┬───────────────────────────┬───────────┘
              │                       │                           │
              │              ┌────────┴────────┐                  │
@@ -377,13 +377,13 @@ ORDER BY s.symbol;
 
 ### 6.2. Extract - Thu thập dữ liệu
 
-#### 6.2.1. Extract Symbols (1 lần khi setup)
+#### 6.2.1. Symbols Registry (1 lần khi setup)
 
 | Thuộc tính | Giá trị                 |
 | ---------- | ----------------------- |
-| API        | `/api/v3/exchangeInfo`  |
+| API        | Không gọi API; đọc `SYMBOL_REGISTRY` |
 | Tần suất   | 1 lần (initial setup)   |
-| Output     | `data/raw/symbols.json` |
+| Output     | Bảng `symbols`          |
 | Ghi vào    | Bảng `symbols`          |
 
 #### 6.2.2. Extract Klines (Minutely)
@@ -440,7 +440,7 @@ ORDER BY s.symbol;
 
 | Bảng                  | Input                   | Mode   | Ghi chú                              |
 | --------------------- | ----------------------- | ------ | ------------------------------------- |
-| `symbols`             | symbols.json            | Upsert | 1 lần setup, update nếu cần           |
+| `symbols`             | `SYMBOL_REGISTRY`       | Upsert | 1 lần setup, update nếu cần           |
 | `klines`              | features/{YYYY-MM}.parquet | Append | 50 records/phút (minutely_etl)        |
 | `ticker_24h`          | ticker_24h.csv          | Append | 50 records/phút (minutely_etl)        |
 | `order_book_snapshot`  | order_book_snapshot.csv | Append | 50 records/phút (minutely_etl)        |
