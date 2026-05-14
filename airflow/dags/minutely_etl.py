@@ -108,11 +108,6 @@ with DAG(
 
 	# --- Load ------------------------------------------------------------
 
-	load_symbols_task = BashOperator(
-		task_id="load_symbols",
-		bash_command=f"cd {project_root} && python scripts/load.py --only symbols",
-	)
-
 	load_klines_task = BashOperator(
 		task_id="load_klines",
 		bash_command=f"cd {project_root} && python scripts/load.py --only klines",
@@ -130,7 +125,6 @@ with DAG(
 
 	# --- Dependencies ----------------------------------------------------
 
-	load_symbols_task
 	extract_klines_task >> transform_task >> load_klines_task
 	extract_ticker_task >> load_ticker_task
 	extract_order_book_task >> load_order_book_task
