@@ -64,21 +64,3 @@ def get_target_months(months_back: int) -> list[tuple[int, int]]:
          (end_date - relativedelta(months=i)).month)
         for i in range(months_back)
     ]
-
-
-def get_months_between(
-    start_dt: datetime,
-    end_dt: datetime,
-) -> list[tuple[int, int]]:
-    """Complete months between *start_dt* and *end_dt*."""
-    months: list[tuple[int, int]] = []
-    cursor = start_dt.replace(
-        day=1, hour=0, minute=0, second=0, microsecond=0,
-    ) + relativedelta(months=1)
-    while True:
-        next_month = cursor + relativedelta(months=1)
-        if next_month > end_dt:
-            break
-        months.append((cursor.year, cursor.month))
-        cursor = next_month
-    return months
