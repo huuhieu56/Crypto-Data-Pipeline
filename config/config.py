@@ -71,7 +71,6 @@ PARALLELISM = {
 # --- Pipeline Tuning ---------------------------------------------------------
 
 INDICATOR_CONTEXT_ROWS = 120        # warm-up rows for indicator calculation
-GAP_WARNING_DAYS = 1                # pre_extract: gap warning threshold
 PARTITION_MONTH_FORMAT = "%Y-%m"    # monthly partition key format
 
 # --- Klines Schema -----------------------------------------------------------
