@@ -596,7 +596,6 @@ crypto-pipeline/
 ├── models/
 │   └── .gitkeep                # Placeholder (reserved for future use)
 ├── scripts/
-│   ├── pre_extract.py          # Self-healing gap detection + recovery (chạy thủ công)
 │   ├── extract.py              # Data Vision bulk + REST API
 │   ├── transform.py            # Spark: RSI-14, MACD-12/26/9 trên 1-min
 │   └── load.py                 # ClickHouse insert (clickhouse-connect)
