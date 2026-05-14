@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-SQL_DIR = PROJECT_ROOT / "sql"
 # --- Database (ClickHouse) ---------------------------------------------------
 
 CH_CONFIG = {
@@ -72,8 +71,6 @@ PARALLELISM = {
 # --- Pipeline Tuning ---------------------------------------------------------
 
 INDICATOR_CONTEXT_ROWS = 120        # warm-up rows for indicator calculation
-GAP_THRESHOLD_DAYS = 30             # pre_extract: gap → backfill threshold
-GAP_WARNING_DAYS = 1                # pre_extract: gap warning threshold
 PARTITION_MONTH_FORMAT = "%Y-%m"    # monthly partition key format
 
 # --- Klines Schema -----------------------------------------------------------
@@ -88,11 +85,3 @@ NUMERIC_COLUMNS = [
     "open", "high", "low", "close", "volume",
     "quote_volume", "taker_buy_base", "taker_buy_quote",
 ]
-
-# --- Feature Columns (shared by Transform & Load) ----------------------------
-
-KLINES_COLUMNS = [
-    "symbol", "timestamp", "open", "high", "low", "close",
-    "volume", "quote_volume", "trades", "rsi_14", "macd", "macd_signal",
-]
-

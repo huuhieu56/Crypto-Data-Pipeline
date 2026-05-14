@@ -12,9 +12,9 @@ import pandas as pd
 from clickhouse_connect.driver.client import Client
 import clickhouse_connect
 
-from config.config import CH_CONFIG, SQL_DIR
+from config.config import CH_CONFIG
 from utils.logger import get_logger
-from utils.exceptions import DatabaseConnectionError, SchemaInitError
+from utils.exceptions import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
@@ -57,27 +57,6 @@ def new_ch_client() -> Client:
     )
 
 
-def init_schema() -> None:
-    """Execute sql/schema.sql to initialize database tables."""
-    client = get_ch_client()
-    schema_path = SQL_DIR / "schema.sql"
-
-    if not schema_path.exists():
-        logger.warning("Schema file not found: %s — skipping", schema_path)
-        return
-
-    logger.info("Initializing schema from %s", schema_path.name)
-    try:
-        sql = schema_path.read_text(encoding="utf-8")
-        for statement in sql.split(";"):
-            statement = statement.strip()
-            if statement and not statement.startswith("--"):
-                client.command(statement)
-        logger.info("Schema initialized successfully")
-    except Exception as exc:
-        raise SchemaInitError(f"Failed to init schema: {exc}") from exc
-
-
 # --- Insert / Query Helpers --------------------------------------------------
 
 def ch_insert_df(table: str, df: pd.DataFrame, max_retries: int = 3) -> int:
@@ -110,15 +89,6 @@ def ch_query_df_params(query: str, params: dict) -> pd.DataFrame:
     client = new_ch_client()
     try:
         return client.query_df(query, parameters=params)
-    finally:
-        client.close()
-
-
-def ch_command_params(command: str, params: dict) -> None:
-    """Execute a parameterized command (INSERT/DELETE/DDL) using a fresh client."""
-    client = new_ch_client()
-    try:
-        client.command(command, parameters=params)
     finally:
         client.close()
 

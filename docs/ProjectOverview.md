@@ -350,7 +350,7 @@ ORDER BY s.symbol;
 │   └────────┬────────┘   └──────────┬──────────┘   └────────────┬────────────┘   └─────────┬─────────┘ │
 │            │                       │                           │                           │           │
 │            ▼                       ▼                           ▼                           ▼           │
-│      symbols.json          MinIO: crypto-raw/           ticker_24h.csv           order_book_snapshot.csv │
+│    config/symbols.py       MinIO: crypto-raw/           ticker_24h.csv           order_book_snapshot.csv │
 └────────────┬───────────────────────┬───────────────────────────┬───────────────────────────┬───────────┘
              │                       │                           │
              │              ┌────────┴────────┐                  │
@@ -377,13 +377,13 @@ ORDER BY s.symbol;
 
 ### 6.2. Extract - Thu thập dữ liệu
 
-#### 6.2.1. Extract Symbols (1 lần khi setup)
+#### 6.2.1. Symbols Registry (1 lần khi setup)
 
 | Thuộc tính | Giá trị                 |
 | ---------- | ----------------------- |
-| API        | `/api/v3/exchangeInfo`  |
+| API        | Không gọi API; đọc `SYMBOL_REGISTRY` |
 | Tần suất   | 1 lần (initial setup)   |
-| Output     | `data/raw/symbols.json` |
+| Output     | Bảng `symbols`          |
 | Ghi vào    | Bảng `symbols`          |
 
 #### 6.2.2. Extract Klines (Minutely)
@@ -440,7 +440,7 @@ ORDER BY s.symbol;
 
 | Bảng                  | Input                   | Mode   | Ghi chú                              |
 | --------------------- | ----------------------- | ------ | ------------------------------------- |
-| `symbols`             | symbols.json            | Upsert | 1 lần setup, update nếu cần           |
+| `symbols`             | `SYMBOL_REGISTRY`       | Upsert | 1 lần setup, update nếu cần           |
 | `klines`              | features/{YYYY-MM}.parquet | Append | 50 records/phút (minutely_etl)        |
 | `ticker_24h`          | ticker_24h.csv          | Append | 50 records/phút (minutely_etl)        |
 | `order_book_snapshot`  | order_book_snapshot.csv | Append | 50 records/phút (minutely_etl)        |
@@ -596,7 +596,6 @@ crypto-pipeline/
 ├── models/
 │   └── .gitkeep                # Placeholder (reserved for future use)
 ├── scripts/
-│   ├── pre_extract.py          # Self-healing gap detection + recovery (chạy thủ công)
 │   ├── extract.py              # Data Vision bulk + REST API
 │   ├── transform.py            # Spark: RSI-14, MACD-12/26/9 trên 1-min
 │   └── load.py                 # ClickHouse insert (clickhouse-connect)
@@ -865,61 +864,3 @@ ORDER BY rsi_14 DESC;
 | LLM response invalid      | Thấp       | Parse error     | Retry 3 lần, báo lỗi format trên giao diện        |
 | ClickHouse slow query     | Thấp       | Dashboard lag   | Partition by month, ORDER BY tối ưu                |
 | Airflow scheduler crash   | Thấp       | Jobs không chạy | Auto-restart với Docker, monitoring               |
-
-### 13.1. Self-Healing Extract (`pre_extract`)
-
-Script `pre_extract.py` phát hiện và phục hồi gap dữ liệu. Chạy thủ công khi cần (không nằm trong minutely_etl DAG).
-
-#### Khái niệm chính — `target_end_time`
-
-| Trạng thái symbol | Target          | Ý nghĩa                                        |
-| ------------------ | --------------- | ----------------------------------------------- |
-| **TRADING**        | `now()`         | Luôn fetch đến hiện tại                          |
-| **BREAK**          | `break_date`    | Chỉ fetch đến ngày delist/migrate, sau đó dừng hẳn |
-
-> Khi `last_timestamp >= target_end_time` → symbol **DONE**, không xử lý thêm.
-
-#### Quy trình phân loại (Step 1)
-
-```
-Với mỗi symbol:
-  ├── Không có CSV?
-  │     ├── TRADING → bulk download từ Data Vision
-  │     └── BREAK   → tạo placeholder (skip bulk vì hay 404)
-  ├── last_ts >= target_end?
-  │     └── DONE (up-to-date hoặc data complete)
-  ├── Gap < 30 ngày?
-  │     └── REST API (end_time = target_end)
-  └── Gap ≥ 30 ngày?
-        └── Data Vision backfill các tháng trọn vẹn + REST API phần còn lại
-```
-
-#### Chiến lược phục hồi (Step 2)
-
-| Tình huống | Hành động | Ví dụ |
-| --- | --- | --- |
-| Không có CSV (TRADING) | Data Vision bulk N tháng → REST API fill phần còn lại | Symbol mới thêm vào hệ thống |
-| Không có CSV (BREAK) | Tạo file CSV rỗng (placeholder) | Coin đã chết trước khi được track |
-| Gap < 30 ngày | REST API paginate từ `last_ts` → `target_end` | Downtime ngắn, bảo trì server |
-| Gap ≥ 30 ngày | Data Vision backfill tháng trọn vẹn + REST API tháng lẻ | Downtime dài, mất dữ liệu nhiều tháng |
-
-#### Xử lý tháng trọn vẹn (`_get_months_between`)
-
-Chỉ download những tháng **đã kết thúc hoàn toàn** từ Data Vision:
-
-```
-Ví dụ: last_ts = 15/01, target_end = 15/04
-  → Tháng 1: bỏ qua (đang dở)  → REST API fill 15/01 → 31/01
-  → Tháng 2: trọn vẹn          → Data Vision ZIP
-  → Tháng 3: trọn vẹn          → Data Vision ZIP
-  → Tháng 4: chưa hết          → REST API fill 01/04 → 15/04
-```
-
-#### Xử lý lỗi & cảnh báo
-
-| Tình huống | Hành vi |
-| --- | --- |
-| Data Vision 404 | Skip ngay (không retry), fallback sang REST API |
-| REST API trả rỗng | Log INFO, không crash |
-| Gap vẫn còn sau cả 2 nguồn | Log WARNING với số ngày còn thiếu |
-| BREAK coin đã đủ data | Đánh dấu DONE vĩnh viễn, không bao giờ gọi API lại |

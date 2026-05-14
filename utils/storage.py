@@ -14,8 +14,6 @@ Usage::
 from __future__ import annotations
 
 import io
-import json
-from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -50,15 +48,6 @@ class MinIOStorage:
             )
         return self._client
 
-    # ---- Bucket operations ------------------------------------------------
-
-    def ensure_buckets(self) -> None:
-        """Create configured buckets if they don't exist."""
-        for bucket in (MINIO_CONFIG["bucket_raw"], MINIO_CONFIG["bucket_processed"]):
-            if not self.client.bucket_exists(bucket):
-                self.client.make_bucket(bucket)
-                logger.info("Created bucket: %s", bucket)
-
     # ---- Parquet I/O ------------------------------------------------------
 
     def upload_parquet(self, bucket: str, key: str, table: pa.Table) -> None:
@@ -81,26 +70,6 @@ class MinIOStorage:
             response.close()
             response.release_conn()
         return pq.read_table(buf)
-
-    # ---- JSON I/O ---------------------------------------------------------
-
-    def upload_json(self, bucket: str, key: str, data: Any) -> None:
-        """Write JSON data to MinIO."""
-        buf = io.BytesIO(json.dumps(data, default=str).encode("utf-8"))
-        buf.seek(0)
-        self.client.put_object(
-            bucket, key, buf, length=buf.getbuffer().nbytes,
-            content_type="application/json",
-        )
-
-    def download_json(self, bucket: str, key: str) -> Any:
-        """Read a JSON file from MinIO."""
-        response = self.client.get_object(bucket, key)
-        try:
-            return json.loads(response.read().decode("utf-8"))
-        finally:
-            response.close()
-            response.release_conn()
 
     # ---- Utility ----------------------------------------------------------
 

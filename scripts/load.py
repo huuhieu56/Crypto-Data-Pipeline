@@ -132,27 +132,17 @@ def load_symbols() -> None:
     """Load symbols into ClickHouse from SYMBOL_REGISTRY."""
     logger.info("Loading symbols into database")
     try:
-        key = "symbols.json"
-        if storage.object_exists(BUCKET_RAW, key):
-            data = storage.download_json(BUCKET_RAW, key)
-            if isinstance(data, dict) and "symbols" in data:
-                df = pd.DataFrame(data["symbols"])
-            else:
-                df = pd.DataFrame(data)
-            target_cols = ["symbol", "base_asset", "quote_asset", "status"]
-            df = df[[c for c in target_cols if c in df.columns]]
-        else:
-            records = []
-            for sym, info in SYMBOL_REGISTRY.items():
-                quote = "USDT" if sym.endswith("USDT") else ""
-                base = sym[: -len(quote)] if quote else sym
-                records.append({
-                    "symbol": sym,
-                    "base_asset": base,
-                    "quote_asset": quote,
-                    "status": info.get("status", "TRADING"),
-                })
-            df = pd.DataFrame(records)
+        records = []
+        for sym, info in SYMBOL_REGISTRY.items():
+            quote = "USDT" if sym.endswith("USDT") else ""
+            base = sym[: -len(quote)] if quote else sym
+            records.append({
+                "symbol": sym,
+                "base_asset": base,
+                "quote_asset": quote,
+                "status": info.get("status", "TRADING"),
+            })
+        df = pd.DataFrame(records)
 
         if "created_at" in df.columns:
             df = df.drop(columns=["created_at"])

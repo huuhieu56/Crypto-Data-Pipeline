@@ -69,7 +69,7 @@ Star schema with `ReplacingMergeTree` engines, partitioned by month:
 ### Configuration
 - `config/config.py`: Central config — ClickHouse, Binance API, MinIO, parallelism settings, column schemas. All modules import from here.
 - `config/llm_config.py`: LLM provider/model/params, timeframe configs (short/medium/long/very_long) with ClickHouse aggregation queries and LLM guidance per timeframe.
-- `config/symbols.py`: `SYMBOL_REGISTRY` is the single source of truth for the 50 tracked coins. Derived views: `SYMBOLS`, `ACTIVE_SYMBOLS`, `SYMBOLS_STATUS`, `BREAK_DATES`.
+- `config/symbols.py`: `SYMBOL_REGISTRY` is the single source of truth for the 50 tracked coins. Derived views: `SYMBOLS`, `SYMBOLS_STATUS`, `BREAK_DATES`.
 
 ### Utilities (`utils/`)
 - `db_utils.py`: ClickHouse client helpers (`get_ch_client`, `ch_query_df`, insert functions)

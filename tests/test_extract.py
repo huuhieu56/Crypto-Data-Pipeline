@@ -352,15 +352,14 @@ class TestExtractRecentKlines:
 
         assert result == {}
 
-    def test_end_times_override(self):
-        """end_times param được ưu tiên thay vì get_target_end()."""
-        custom_end = 1704200000000
-        result = extract_recent_klines(
-            ["BTCUSDT"], end_times={"BTCUSDT": custom_end},
-        )
+    def test_target_end_drives_fetch_end_time(self):
+        """get_target_end() controls the REST API end_time."""
+        target_end_ms = 1704153600000
+        result = extract_recent_klines(["BTCUSDT"])
 
         assert "BTCUSDT" in result
-        self.mock_fetch.assert_called_once_with("BTCUSDT", 1704067200000, custom_end)
+        self.mock_target_end.assert_called_once_with("BTCUSDT")
+        self.mock_fetch.assert_called_once_with("BTCUSDT", 1704067200000, target_end_ms)
 
 
 # ============================================================================
