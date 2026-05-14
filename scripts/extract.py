@@ -101,6 +101,13 @@ def download_data_vision(
     return total if total > 0 else None
 
 
+def _download_data_vision_for_symbol(
+    symbol: str,
+    target_months: list[tuple[int, int]],
+) -> tuple[str, int | None]:
+    return symbol, download_data_vision(symbol, target_months)
+
+
 def extract_bulk(
     symbols: list[str] | None = None,
     months_back: int = MONTHS_BACK,
@@ -115,12 +122,12 @@ def extract_bulk(
         len(symbols), months_back,
     )
 
-    def _bulk_one(symbol: str) -> tuple[str, int | None]:
-        return symbol, download_data_vision(symbol, target_months)
-
     max_workers = min(BULK_SYMBOL_WORKERS, len(symbols))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {pool.submit(_bulk_one, sym): sym for sym in symbols}
+        future_map = {
+            pool.submit(_download_data_vision_for_symbol, sym, target_months): sym
+            for sym in symbols
+        }
         for future in as_completed(future_map):
             symbol = future_map[future]
             try:
@@ -162,13 +169,10 @@ def extract_recent_klines(
         )
         target_months = get_target_months(MONTHS_BACK)
 
-        def _bulk_one(symbol: str) -> tuple[str, int | None]:
-            return symbol, download_data_vision(symbol, target_months)
-
         max_workers = min(BULK_SYMBOL_WORKERS, len(symbols_needing_bootstrap))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             future_map = {
-                pool.submit(_bulk_one, sym): sym
+                pool.submit(_download_data_vision_for_symbol, sym, target_months): sym
                 for sym in symbols_needing_bootstrap
             }
             for future in as_completed(future_map):
