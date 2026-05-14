@@ -14,8 +14,6 @@ Usage::
 from __future__ import annotations
 
 import io
-import json
-from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -72,17 +70,6 @@ class MinIOStorage:
             response.close()
             response.release_conn()
         return pq.read_table(buf)
-
-    # ---- JSON I/O ---------------------------------------------------------
-
-    def download_json(self, bucket: str, key: str) -> Any:
-        """Read a JSON file from MinIO."""
-        response = self.client.get_object(bucket, key)
-        try:
-            return json.loads(response.read().decode("utf-8"))
-        finally:
-            response.close()
-            response.release_conn()
 
     # ---- Utility ----------------------------------------------------------
 
