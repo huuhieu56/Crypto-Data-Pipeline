@@ -81,8 +81,3 @@ BREAK_DATES: dict[str, str] = {
     for s, info in SYMBOL_REGISTRY.items()
     if "break_date" in info
 }
-
-ACTIVE_SYMBOLS: list[str] = [
-    s for s, info in SYMBOL_REGISTRY.items()
-    if info["status"] == "TRADING"
-]
