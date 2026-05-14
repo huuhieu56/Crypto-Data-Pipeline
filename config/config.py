@@ -85,10 +85,3 @@ NUMERIC_COLUMNS = [
     "open", "high", "low", "close", "volume",
     "quote_volume", "taker_buy_base", "taker_buy_quote",
 ]
-
-# --- Feature Columns (shared by Transform & Load) ----------------------------
-
-KLINES_COLUMNS = [
-    "symbol", "timestamp", "open", "high", "low", "close",
-    "volume", "quote_volume", "trades", "rsi_14", "macd", "macd_signal",
-]
