@@ -104,23 +104,9 @@ storage = MinIOStorage()
 
 # --- Partition I/O (module-level functions using singleton) -------------------
 
-import threading
-
 import pandas as pd
 from datetime import datetime, timezone
 from config.config import PARTITION_MONTH_FORMAT
-
-
-_partition_locks: dict[str, threading.Lock] = {}
-_locks_lock = threading.Lock()
-
-
-def _get_lock(key: str) -> threading.Lock:
-    """Return a per-key lock to prevent concurrent read-modify-write races."""
-    with _locks_lock:
-        if key not in _partition_locks:
-            _partition_locks[key] = threading.Lock()
-        return _partition_locks[key]
 
 
 def _normalize_timestamp_unit(table: pa.Table, unit: str = "us") -> pa.Table:
@@ -150,36 +136,33 @@ def append_to_partition(
 
     File is capped at ~44,640 rows/month (1 row/min × 31 days)
     and resets automatically when the month changes.
-
-    Thread-safe: per-key lock prevents concurrent writes to the same partition.
     """
     month_str = month_str or datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
     key = f"{prefix}/{symbol}/{month_str}.parquet"
 
-    with _get_lock(key):
-        # Normalize timestamps to microseconds for stable Arrow concat
-        for c in new_df.columns:
-            if pd.api.types.is_datetime64_any_dtype(new_df[c]):
-                new_df[c] = new_df[c].dt.as_unit("us")
+    # Normalize timestamps to microseconds for stable Arrow concat
+    for c in new_df.columns:
+        if pd.api.types.is_datetime64_any_dtype(new_df[c]):
+            new_df[c] = new_df[c].dt.as_unit("us")
 
-        new_table = pa.Table.from_pandas(new_df, preserve_index=False)
-        new_table = _normalize_timestamp_unit(new_table, unit="us")
+    new_table = pa.Table.from_pandas(new_df, preserve_index=False)
+    new_table = _normalize_timestamp_unit(new_table, unit="us")
 
-        if storage.object_exists(bucket, key):
-            existing = storage.download_parquet(bucket, key)
-            existing = _normalize_timestamp_unit(existing, unit="us")
-            table = pa.concat_tables([existing, new_table])
+    if storage.object_exists(bucket, key):
+        existing = storage.download_parquet(bucket, key)
+        existing = _normalize_timestamp_unit(existing, unit="us")
+        table = pa.concat_tables([existing, new_table])
 
-            # Dedup: keep last (newest) value for each timestamp
-            pdf = table.to_pandas()
-            pdf = pdf.drop_duplicates(subset=[dedup_col], keep="last")
-            pdf = pdf.sort_values(dedup_col).reset_index(drop=True)
-            table = pa.Table.from_pandas(pdf, preserve_index=False)
-            del pdf
-        else:
-            table = new_table
+        # Dedup: keep last (newest) value for each timestamp
+        pdf = table.to_pandas()
+        pdf = pdf.drop_duplicates(subset=[dedup_col], keep="last")
+        pdf = pdf.sort_values(dedup_col).reset_index(drop=True)
+        table = pa.Table.from_pandas(pdf, preserve_index=False)
+        del pdf
+    else:
+        table = new_table
 
-        storage.upload_parquet(bucket, key, table)
+    storage.upload_parquet(bucket, key, table)
 
 
 def discover_month_partitions(bucket: str, prefix: str, symbol: str) -> list[str]:

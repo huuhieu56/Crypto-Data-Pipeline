@@ -58,16 +58,6 @@ MINIO_CONFIG = {
     "bucket_processed": os.getenv("MINIO_BUCKET_PROCESSED") or os.getenv("MINIO_PROCESSED_BUCKET", "crypto-processed"),
 }
 
-# --- Parallelism (ThreadPoolExecutor) ----------------------------------------
-
-PARALLELISM = {
-    "bulk_download_workers": 6,     # concurrent month downloads per symbol
-    "bulk_symbol_workers": 4,       # concurrent symbols in extract_bulk
-    "klines_max_workers": 8,        # concurrent REST API klines fetches
-    "orderbook_max_workers": 8,     # concurrent order book fetches
-    "transform_max_workers": 8,     # concurrent symbol indicator calculations
-}
-
 # --- Pipeline Tuning ---------------------------------------------------------
 
 INDICATOR_CONTEXT_ROWS = 120        # warm-up rows for indicator calculation

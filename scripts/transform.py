@@ -13,7 +13,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -22,7 +21,7 @@ import numpy as np
 import pyarrow as pa
 
 from config.config import (
-    MINIO_CONFIG, PARALLELISM, INDICATOR_CONTEXT_ROWS,
+    MINIO_CONFIG, INDICATOR_CONTEXT_ROWS,
 )
 from config.symbols import SYMBOLS
 from utils.logger import get_logger
@@ -34,7 +33,6 @@ logger = get_logger(__name__)
 
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
-TRANSFORM_MAX_WORKERS = PARALLELISM["transform_max_workers"]
 
 # Output columns -- already in DB column names
 OUTPUT_COLUMNS = [
@@ -198,7 +196,6 @@ def transform_data(
 
     total_new_rows = 0
     symbols_updated = 0
-    max_workers = min(TRANSFORM_MAX_WORKERS, len(symbols))
 
     def _do_symbol(symbol: str) -> tuple[str, int]:
         raw_ts = last_ts_map.get(symbol)
@@ -225,18 +222,15 @@ def transform_data(
                 del result_df
         return symbol, sym_rows
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_map = {pool.submit(_do_symbol, sym): sym for sym in symbols}
-        for future in as_completed(future_map):
-            sym = future_map[future]
-            try:
-                symbol, n_rows = future.result()
-                if n_rows > 0:
-                    symbols_updated += 1
-                    total_new_rows += n_rows
-                    logger.info("[Transform] %s: +%s rows", symbol, f"{n_rows:,}")
-            except Exception as exc:
-                logger.error("[Transform] %s: ERROR -- %s", sym, exc)
+    for sym in symbols:
+        try:
+            symbol, n_rows = _do_symbol(sym)
+            if n_rows > 0:
+                symbols_updated += 1
+                total_new_rows += n_rows
+                logger.info("[Transform] %s: +%s rows", symbol, f"{n_rows:,}")
+        except Exception as exc:
+            logger.error("[Transform] %s: ERROR -- %s", sym, exc)
 
     if total_new_rows == 0:
         logger.info("No new rows to transform")
