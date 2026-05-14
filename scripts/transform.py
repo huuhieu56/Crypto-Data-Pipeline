@@ -146,6 +146,7 @@ def _process_symbol(
         new_mask = raw_df["open_time"] > cmp_ts
         if not new_mask.any():
             return None
+        raw_df = raw_df[new_mask].copy()
 
     # 3. Get context from ClickHouse for indicator warm-up
     ctx_df = _get_ch_context(symbol)
