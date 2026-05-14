@@ -14,7 +14,7 @@ import clickhouse_connect
 
 from config.config import CH_CONFIG
 from utils.logger import get_logger
-from utils.exceptions import DatabaseConnectionError, SchemaInitError
+from utils.exceptions import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
