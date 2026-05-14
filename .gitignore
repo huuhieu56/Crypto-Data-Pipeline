@@ -38,3 +38,5 @@ Thumbs.db
 # Secrets
 *.secret
 config/secrets.yaml
+
+.understand-anything/
