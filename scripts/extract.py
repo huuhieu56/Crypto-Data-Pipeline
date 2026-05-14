@@ -138,7 +138,6 @@ def extract_bulk(
 
 def extract_recent_klines(
     symbols: list[str],
-    end_times: dict[str, int] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Incremental klines update via REST API.
 
@@ -148,7 +147,6 @@ def extract_recent_klines(
     if not symbols:
         return {}
 
-    end_times = end_times or {}
     results: dict[str, pd.DataFrame] = {}
 
     # 1 batch query for all symbols instead of N file downloads
@@ -192,11 +190,8 @@ def extract_recent_klines(
         if last_ts is None:
             return symbol, None
 
-        if symbol in end_times:
-            end_time = end_times[symbol]
-        else:
-            target_end = get_target_end(symbol)
-            end_time = int(target_end.timestamp() * 1000)
+        target_end = get_target_end(symbol)
+        end_time = int(target_end.timestamp() * 1000)
 
         if last_ts >= end_time:
             return symbol, None
