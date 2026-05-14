@@ -142,7 +142,7 @@
           "editorMode": "code",
           "format": 1,
           "rawQuery": true,
-          "rawSql": "SELECT\n  toStartOfDay(timestamp) AS time,\n  argMin(open, timestamp) AS open,\n  max(high) AS high,\n  min(low) AS low,\n  argMax(close, timestamp) AS close\nFROM klines FINAL\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nGROUP BY time\nORDER BY time",
+          "rawSql": "SELECT\n  timestamp AS time,\n  open,\n  high,\n  low,\n  close\nFROM klines FINAL\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY time",
           "refId": "A"
         }
       ],
