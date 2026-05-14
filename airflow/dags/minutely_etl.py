@@ -99,28 +99,6 @@ with DAG(
 		),
 	)
 
-	extract_funding_task = BashOperator(
-		task_id="extract_funding",
-		bash_command=(
-			f"cd {project_root} && "
-			"python -c \"from config.symbols import SYMBOLS, SYMBOLS_STATUS; "
-			"from scripts.extract import extract_funding_rates; "
-			"trading=[s for s in SYMBOLS if SYMBOLS_STATUS.get(s, 'TRADING')=='TRADING']; "
-			"extract_funding_rates(trading)\""
-		),
-	)
-
-	extract_oi_task = BashOperator(
-		task_id="extract_oi",
-		bash_command=(
-			f"cd {project_root} && "
-			"python -c \"from config.symbols import SYMBOLS, SYMBOLS_STATUS; "
-			"from scripts.extract import extract_open_interest; "
-			"trading=[s for s in SYMBOLS if SYMBOLS_STATUS.get(s, 'TRADING')=='TRADING']; "
-			"extract_open_interest(trading)\""
-		),
-	)
-
 	# --- Transform -------------------------------------------------------
 
 	transform_task = BashOperator(
@@ -150,21 +128,9 @@ with DAG(
 		bash_command=f"cd {project_root} && python scripts/load.py --only orderbook",
 	)
 
-	load_funding_task = BashOperator(
-		task_id="load_funding",
-		bash_command=f"cd {project_root} && python scripts/load.py --only funding",
-	)
-
-	load_oi_task = BashOperator(
-		task_id="load_oi",
-		bash_command=f"cd {project_root} && python scripts/load.py --only oi",
-	)
-
 	# --- Dependencies ----------------------------------------------------
 
 	load_symbols_task
 	extract_klines_task >> transform_task >> load_klines_task
 	extract_ticker_task >> load_ticker_task
 	extract_order_book_task >> load_order_book_task
-	extract_funding_task >> load_funding_task
-	extract_oi_task >> load_oi_task

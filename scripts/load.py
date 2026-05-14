@@ -202,41 +202,17 @@ def load_order_book(
     )
 
 
-def load_funding_rates(
-    symbols: list[str] | None = None,
-    month_str: str | None = None,
-) -> None:
-    """Load funding rate snapshots into ClickHouse (per-partition)."""
-    _load_table(
-        symbols, BUCKET_RAW, "funding_rates", "funding_rates", "funding_time",
-        ["symbol", "funding_time", "funding_rate", "mark_price"],
-        month_str=month_str,
-    )
-
-
-def load_open_interest(
-    symbols: list[str] | None = None,
-    month_str: str | None = None,
-) -> None:
-    """Load open interest snapshots into ClickHouse (per-partition)."""
-    _load_table(
-        symbols, BUCKET_RAW, "open_interest", "open_interest", "timestamp",
-        ["symbol", "timestamp", "open_interest", "open_interest_value"],
-        month_str=month_str,
-    )
-
-
 # --- CLI ---------------------------------------------------------------------
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Load data into ClickHouse")
     p.add_argument(
         "--only", nargs="+",
-        choices=["symbols", "klines", "ticker", "orderbook", "funding", "oi"],
+        choices=["symbols", "klines", "ticker", "orderbook"],
         help="Load only these tables",
     )
     p.add_argument(
         "--skip", nargs="*", default=[],
-        choices=["symbols", "klines", "ticker", "orderbook", "funding", "oi"],
+        choices=["symbols", "klines", "ticker", "orderbook"],
         help="Skip these tables",
     )
     p.add_argument(
@@ -268,10 +244,6 @@ def main(
         load_order_book(month_str=month_str)
     if should_load("klines"):
         load_klines(month_str=month_str)
-    if should_load("funding"):
-        load_funding_rates(month_str=month_str)
-    if should_load("oi"):
-        load_open_interest(month_str=month_str)
 
     logger.info("=== Load pipeline complete ===")
 

@@ -443,13 +443,11 @@ class TestToolDefinitions:
         assert result == "orderbook formatted"
         mock_mq.fetch_orderbook_data.assert_called_once()
 
-    def test_tools_list_has_five_entries(self):
+    def test_tools_list_has_three_entries(self):
         from services.chat_api.nodes import TOOLS
 
-        assert len(TOOLS) == 5
+        assert len(TOOLS) == 3
         names = [t.name for t in TOOLS]
         assert "get_price_candles" in names
         assert "get_volume_and_liquidity" in names
         assert "get_orderbook_pressure" in names
-        assert "get_funding_rate" in names
-        assert "get_open_interest" in names
