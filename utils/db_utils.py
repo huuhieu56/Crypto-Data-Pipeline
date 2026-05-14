@@ -12,7 +12,7 @@ import pandas as pd
 from clickhouse_connect.driver.client import Client
 import clickhouse_connect
 
-from config.config import CH_CONFIG, SQL_DIR
+from config.config import CH_CONFIG
 from utils.logger import get_logger
 from utils.exceptions import DatabaseConnectionError, SchemaInitError
 
