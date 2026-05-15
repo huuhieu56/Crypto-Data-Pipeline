@@ -2,19 +2,41 @@
 
 from __future__ import annotations
 
+import io
+
 import pandas as pd
-import pyarrow as pa
 
 from config.config import MINIO_CONFIG, MONTHS_BACK
 from config.symbols import SYMBOLS
 from utils.binance_utils import download_klines_month, fetch_klines_paginated
-from utils.data_utils import get_target_end, get_target_months, partition_key
+from utils.data_utils import get_target_end, get_target_months, normalize_epoch_ms_columns
 from utils.db_utils import get_last_timestamps
 from utils.logger import get_logger
-from utils.storage import append_to_partition, storage
+from utils.storage import append_to_partition_csv, storage
 
 logger = get_logger(__name__)
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
+
+
+def _df_to_epoch_ms(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert datetime columns in a klines DataFrame to epoch ms (int64)."""
+    return normalize_epoch_ms_columns(
+        df.drop(columns=["symbol"], errors="ignore"),
+        columns=("open_time", "close_time"),
+    )
+
+
+def _upload_csv_partition(df: pd.DataFrame, symbol: str, month_str: str) -> None:
+    """Upload a single month of klines as CSV to MinIO."""
+    csv_df = _df_to_epoch_ms(df)
+    key = f"klines/{symbol}/{month_str}.csv"
+    buf = io.BytesIO()
+    csv_df.to_csv(buf, index=False)
+    buf.seek(0)
+    storage.client.put_object(
+        BUCKET_RAW, key, buf, buf.getbuffer().nbytes,
+        content_type="text/csv",
+    )
 
 
 def download_data_vision(
@@ -23,9 +45,8 @@ def download_data_vision(
 ) -> int | None:
     """Download klines from Data Vision month-by-month.
 
-    Each month is written to MinIO immediately after download to avoid
-    accumulating all months in memory.  Writes monthly partitions:
-    klines/{SYMBOL}/{YYYY-MM}.parquet
+    Each month is written to MinIO as CSV immediately after download.
+    Writes monthly partitions: klines/{SYMBOL}/{YYYY-MM}.csv
 
     Returns total record count, or None if no data was downloaded.
     """
@@ -39,13 +60,8 @@ def download_data_vision(
             df = download_klines_month(symbol, y, m)
             if df is not None and not df.empty:
                 month_str = f"{y}-{m:02d}"
-                key = partition_key(symbol, month_str)
                 df = df.sort_values("open_time")
-                for c in df.columns:
-                    if pd.api.types.is_datetime64_any_dtype(df[c]):
-                        df[c] = df[c].dt.as_unit("us")
-                table = pa.Table.from_pandas(df, preserve_index=False)
-                storage.upload_parquet(BUCKET_RAW, key, table)
+                _upload_csv_partition(df, symbol, month_str)
                 logger.info("[%s] %d-%02d: %s rows", symbol, y, m, f"{len(df):,}")
                 total += len(df)
         except Exception as exc:
@@ -139,7 +155,8 @@ def extract_recent_klines(
             if new_df is None or new_df.empty:
                 continue
 
-            append_to_partition(BUCKET_RAW, "klines", symbol, new_df, dedup_col="open_time")
+            # Append to CSV partitions grouped by open_time month
+            append_to_partition_csv(BUCKET_RAW, "klines", symbol, new_df, dedup_col="open_time")
             results[symbol] = new_df
             logger.info(
                 "[%d/%d] %s: +%d rows",

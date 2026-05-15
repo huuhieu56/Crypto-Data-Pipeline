@@ -28,6 +28,7 @@ from scripts.extract import (
     extract_order_book_snapshot,
     extract_minutely,
 )
+from scripts.extract_modules.extract_klines import _df_to_epoch_ms
 from utils.exceptions import ExtractError
 
 
@@ -123,6 +124,21 @@ def sample_klines_df():
     return pd.DataFrame(_KLINES_DF_DATA).copy()
 
 
+def test_df_to_epoch_ms_normalizes_microsecond_ints():
+    df = pd.DataFrame({
+        "open_time": [1704067200000000],
+        "close_time": [1704067259999000],
+        "open": [42000.0],
+        "symbol": ["BTCUSDT"],
+    })
+
+    result = _df_to_epoch_ms(df)
+
+    assert result.loc[0, "open_time"] == 1704067200000
+    assert result.loc[0, "close_time"] == 1704067259999
+    assert "symbol" not in result.columns
+
+
 @pytest.fixture
 def tmp_raw_dir(tmp_path):
     """Tạo thư mục raw tạm thời."""
@@ -158,12 +174,12 @@ class TestDownloadDataVision:
         """Setup chung: mock download_klines_month & merge_and_save_klines."""
         self.sample_df = sample_klines_df
         self.mock_download = MagicMock(return_value=sample_klines_df)
-        self.mock_storage_upload = MagicMock()
+        self.mock_storage = MagicMock()
         monkeypatch.setattr(
             "scripts.extract_modules.extract_klines.download_klines_month", self.mock_download,
         )
         monkeypatch.setattr(
-            "scripts.extract_modules.extract_klines.storage.upload_parquet", self.mock_storage_upload,
+            "scripts.extract_modules.extract_klines.storage", self.mock_storage,
         )
 
     # --- Happy Path ---
@@ -175,7 +191,7 @@ class TestDownloadDataVision:
         assert result is not None
         assert result > 0
         assert self.mock_download.call_count == 3
-        assert self.mock_storage_upload.call_count == 3
+        assert self.mock_storage.client.put_object.call_count == 3
 
     def test_months_processed_in_chronological_order(self):
         """Months phải được download đầy đủ theo thứ tự thời gian."""
@@ -210,7 +226,7 @@ class TestDownloadDataVision:
 
         assert result is not None
         assert result > 0
-        assert self.mock_storage_upload.call_count == 2  # chỉ 2 tháng OK
+        assert self.mock_storage.client.put_object.call_count == 2  # chỉ 2 tháng OK
 
     def test_one_month_fails_others_succeed(self):
         """Một tháng raise exception → các tháng khác vẫn được xử lý."""
@@ -224,7 +240,7 @@ class TestDownloadDataVision:
 
         assert result == len(self.sample_df) * 2
         assert self.mock_download.call_count == 3
-        assert self.mock_storage_upload.call_count == 2
+        assert self.mock_storage.client.put_object.call_count == 2
 
     def test_empty_months_list_returns_none(self):
         """Danh sách months rỗng → trả về None."""
@@ -322,7 +338,7 @@ class TestExtractRecentKlines:
             "scripts.extract_modules.extract_klines.fetch_klines_paginated", self.mock_fetch,
         )
         monkeypatch.setattr(
-            "scripts.extract_modules.extract_klines.append_to_partition", self.mock_write,
+            "scripts.extract_modules.extract_klines.append_to_partition_csv", self.mock_write,
         )
 
     # --- Happy Path ---

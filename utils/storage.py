@@ -107,6 +107,7 @@ storage = MinIOStorage()
 import pandas as pd
 from datetime import datetime, timezone
 from config.config import PARTITION_MONTH_FORMAT
+from utils.data_utils import normalize_epoch_ms_columns
 
 
 def _normalize_timestamp_unit(table: pa.Table, unit: str = "us") -> pa.Table:
@@ -165,12 +166,74 @@ def append_to_partition(
     storage.upload_parquet(bucket, key, table)
 
 
-def discover_month_partitions(bucket: str, prefix: str, symbol: str) -> list[str]:
-    """Find all month partitions for a symbol in MinIO."""
+def append_to_partition_csv(
+    bucket: str,
+    prefix: str,
+    symbol: str,
+    new_df: pd.DataFrame,
+    dedup_col: str,
+) -> None:
+    """Append rows to CSV monthly partitions with dedup, grouped by open_time month.
+
+    Unlike append_to_partition (which writes to a single month), this function
+    groups new_df rows by the YYYY-MM derived from open_time and appends each
+    group to the correct {prefix}/{SYMBOL}/{YYYY-MM}.csv file.
+
+    Handles microsecond timestamps from Data Vision by normalizing to ms.
+    Converts datetime columns to epoch ms before writing for consistent CSV format.
+    """
+    import io
+
+    # Ensure open_time is numeric epoch ms
+    ts_series = normalize_epoch_ms_columns(new_df[[dedup_col]], columns=(dedup_col,))[dedup_col]
+
+    # Derive YYYY-MM from epoch ms
+    month_series = pd.to_datetime(ts_series, unit="ms", utc=True).dt.strftime(PARTITION_MONTH_FORMAT)
+
+    # Normalize timestamp columns to epoch ms for consistent CSV output
+    out_df = normalize_epoch_ms_columns(new_df, columns=("open_time", "close_time"))
+
+    for month_str, group_df in out_df.groupby(month_series):
+        key = f"{prefix}/{symbol}/{month_str}.csv"
+        group_df = group_df.copy()
+
+        if storage.object_exists(bucket, key):
+            response = storage.client.get_object(bucket, key)
+            try:
+                existing_df = pd.read_csv(io.BytesIO(response.read()))
+            finally:
+                response.close()
+                response.release_conn()
+
+            combined = pd.concat([existing_df, group_df], ignore_index=True)
+            combined = combined.drop_duplicates(subset=[dedup_col], keep="last")
+            combined = combined.sort_values(dedup_col).reset_index(drop=True)
+        else:
+            combined = group_df
+
+        csv_buf = io.BytesIO()
+        combined.to_csv(csv_buf, index=False)
+        csv_buf.seek(0)
+        storage.client.put_object(
+            bucket, key, csv_buf, csv_buf.getbuffer().nbytes,
+            content_type="text/csv",
+        )
+        logger.debug("Appended %d rows to %s/%s", len(group_df), bucket, key)
+
+
+def discover_month_partitions(bucket: str, prefix: str, symbol: str, extension: str = ".parquet") -> list[str]:
+    """Find all month partitions for a symbol in MinIO.
+
+    Args:
+        bucket: MinIO bucket name.
+        prefix: Object prefix (e.g. "klines", "ticker_24h").
+        symbol: Trading pair symbol.
+        extension: File extension to filter (default ".parquet").
+    """
     keys = storage.list_objects(bucket, prefix=f"{prefix}/{symbol}/")
     months = []
     for k in keys:
-        if k.endswith(".parquet"):
-            month = k.split("/")[-1].replace(".parquet", "")
+        if k.endswith(extension):
+            month = k.rsplit("/", 1)[-1].replace(extension, "")
             months.append(month)
     return sorted(months)

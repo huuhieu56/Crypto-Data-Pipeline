@@ -1,7 +1,7 @@
-"""Load script — write processed data to ClickHouse.
+"""Load script — write data to ClickHouse (ELT: load runs before transform).
 
-Reads monthly features Parquet from MinIO, batch inserts
-into ClickHouse via native clickhouse-connect protocol.
+Klines: raw OHLCV CSV from MinIO → ClickHouse klines (indicators NULL).
+Ticker & order book: raw Parquet from MinIO → ClickHouse direct insert.
 
 Usage:
     python scripts/load.py
@@ -19,17 +19,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse
 import pandas as pd
 
-from config.config import MINIO_CONFIG
+from config.config import MINIO_CONFIG, CLICKHOUSE_S3_ENDPOINT
 from config.symbols import SYMBOLS, SYMBOL_REGISTRY
 from utils.logger import get_logger
 from utils.exceptions import LoadError
-from utils.db_utils import ch_insert_df, get_table_watermarks
+from utils.data_utils import validate_month_str
+from utils.db_utils import (
+    ch_insert_df,
+    get_ch_client,
+    get_table_watermarks,
+)
 from utils.storage import storage, discover_month_partitions
 
 logger = get_logger(__name__)
 
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
-BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
 
 
 # --- Helpers ------------------------------------------------------------------
@@ -63,6 +67,8 @@ def _load_table(
 ) -> None:
     """Generic loader: MinIO Parquet -> ClickHouse with watermark filtering."""
     symbols = symbols or SYMBOLS
+    if month_str is not None:
+        month_str = validate_month_str(month_str)
     wm_map = get_table_watermarks(table_name, ts_col, symbols)
     total_inserted = 0
     total_skipped = 0
@@ -148,17 +154,104 @@ def load_symbols() -> None:
         raise LoadError(f"Failed to load symbols: {exc}") from exc
 
 
+def _load_raw_csv_to_klines(
+    symbol: str,
+    month: str,
+    watermark_ms: int,
+) -> int:
+    """Load raw OHLCV from MinIO CSV into klines (no indicators).
+
+    Returns number of rows inserted.
+    """
+    s3_access = MINIO_CONFIG["access_key"]
+    s3_secret = MINIO_CONFIG["secret_key"]
+
+    sql = (
+        f"INSERT INTO crypto_db.klines "
+        f"(symbol, timestamp, open, high, low, close, volume, quote_volume, trades, "
+        f" rsi_14, macd, macd_signal) "
+        f"SELECT "
+        f"'{symbol}' AS symbol, "
+        f"toDateTime(intDiv("
+        f"  toInt64(if(open_time > 1000000000000000, intDiv(open_time, 1000), open_time)), "
+        f"  1000"
+        f"), 'UTC') AS timestamp, "
+        f"open, high, low, close, volume, quote_volume, "
+        f"toUInt32(trades) AS trades, "
+        f"NULL AS rsi_14, NULL AS macd, NULL AS macd_signal "
+        f"FROM s3("
+        f"'{CLICKHOUSE_S3_ENDPOINT}/{BUCKET_RAW}/klines/{symbol}/{month}.csv', "
+        f"'{s3_access}', '{s3_secret}', "
+        f"'CSVWithNames', "
+        f"'open_time Int64, open Float64, high Float64, low Float64, close Float64, "
+        f" volume Float64, close_time Int64, quote_volume Float64, trades Int64, "
+        f" taker_buy_base Float64, taker_buy_quote Float64'"
+        f") "
+        f"WHERE toInt64(if(open_time > 1000000000000000, intDiv(open_time, 1000), open_time)) "
+        f"      > {watermark_ms}"
+    )
+
+    client = get_ch_client()
+    client.query(sql)
+
+    result = client.query(
+        f"SELECT count() AS n FROM crypto_db.klines FINAL "
+        f"WHERE symbol = '{symbol}' AND toYYYYMM(timestamp) = {month.replace('-', '')}"
+    )
+    return result.result_rows[0][0] if result.result_rows else 0
+
+
 def load_klines(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Load klines features into ClickHouse (per-partition to avoid OOM)."""
-    _load_table(
-        symbols, BUCKET_PROCESSED, "features", "klines", "timestamp",
-        ["symbol", "timestamp", "open", "high", "low", "close",
-         "volume", "quote_volume", "trades", "rsi_14", "macd", "macd_signal"],
-        {"trades": "uint32"}, month_str,
-    )
+    """Load raw OHLCV from MinIO CSV into ClickHouse klines (ELT: load before transform).
+
+    Inserts raw candle data without indicators (rsi_14/macd/macd_signal = NULL).
+    The transform step (scripts/transform.py) computes indicators afterwards.
+    """
+    symbols = symbols or SYMBOLS
+    if month_str is not None:
+        month_str = validate_month_str(month_str)
+    wm_map = get_table_watermarks("klines", "timestamp", symbols)
+    total_inserted = 0
+    errors = 0
+
+    logger.info("[Load] klines: %d symbols, raw CSV -> ClickHouse", len(symbols))
+
+    for symbol in symbols:
+        watermark_ms = wm_map.get(symbol, 0)
+
+        months = (
+            [month_str]
+            if month_str
+            else discover_month_partitions(BUCKET_RAW, "klines", symbol, extension=".csv")
+        )
+        if not months:
+            logger.debug("[Load] klines %s: no raw CSV partitions found", symbol)
+            continue
+
+        if watermark_ms > 0:
+            watermark_month = pd.to_datetime(watermark_ms, unit="ms", utc=True).strftime("%Y-%m")
+            months = [m for m in months if m >= watermark_month]
+
+        for month in months:
+            key = f"klines/{symbol}/{month}.csv"
+            if not storage.object_exists(BUCKET_RAW, key):
+                logger.debug("[Load] klines %s/%s: no raw CSV, skipped", symbol, month)
+                continue
+
+            try:
+                n = _load_raw_csv_to_klines(symbol, month, watermark_ms)
+                logger.info("[Load] klines %s/%s: %d raw rows loaded", symbol, month, n)
+                total_inserted += n
+            except Exception as exc:
+                errors += 1
+                logger.error("[Load] klines %s/%s: ERROR -- %s", symbol, month, exc)
+
+    if total_inserted == 0 and errors > 0:
+        raise LoadError(f"klines: all {errors} partition(s) failed, 0 loaded")
+    logger.info("[Load] klines complete: %s raw rows across %d symbols, %d errors", f"{total_inserted:,}", len(symbols), errors)
 
 
 def load_ticker(
@@ -201,7 +294,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip these tables",
     )
     p.add_argument(
-        "--month", type=str, default=None,
+        "--month", type=validate_month_str, default=None,
         help="Process specific month (YYYY-MM). Default: auto-discover all months.",
     )
     return p

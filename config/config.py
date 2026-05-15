@@ -58,6 +58,12 @@ MINIO_CONFIG = {
     "bucket_processed": os.getenv("MINIO_BUCKET_PROCESSED") or os.getenv("MINIO_PROCESSED_BUCKET", "crypto-processed"),
 }
 
+# Internal S3 endpoint for ClickHouse to reach MinIO (Docker network)
+CLICKHOUSE_S3_ENDPOINT = os.getenv(
+    "CH_S3_ENDPOINT",
+    f"http://{os.getenv('MINIO_ENDPOINT', 'minio:9000')}",
+)
+
 # --- Pipeline Tuning ---------------------------------------------------------
 
 INDICATOR_CONTEXT_ROWS = 120        # warm-up rows for indicator calculation

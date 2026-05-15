@@ -142,7 +142,7 @@
           "editorMode": "code",
           "format": 1,
           "rawQuery": true,
-          "rawSql": "SELECT\n  time,\n  open,\n  high,\n  low,\n  close\nFROM (\n  SELECT\n    timestamp AS time,\n    open,\n    high,\n    low,\n    close\n  FROM klines FINAL\n  WHERE symbol = '${symbol}'\n    AND $__timeFilter(timestamp)\n    AND (toInt64(${__to}) - toInt64(${__from})) < 30 * 24 * 60 * 60 * 1000\n\n  UNION ALL\n\n  SELECT\n    toStartOfInterval(timestamp, INTERVAL 4 hour, 'UTC') AS time,\n    argMin(open, timestamp) AS open,\n    max(high) AS high,\n    min(low) AS low,\n    argMax(close, timestamp) AS close\n  FROM klines FINAL\n  WHERE symbol = '${symbol}'\n    AND $__timeFilter(timestamp)\n    AND (toInt64(${__to}) - toInt64(${__from})) >= 30 * 24 * 60 * 60 * 1000\n    AND (toInt64(${__to}) - toInt64(${__from})) < 90 * 24 * 60 * 60 * 1000\n  GROUP BY time\n\n  UNION ALL\n\n  SELECT\n    toStartOfDay(timestamp, 'UTC') AS time,\n    argMin(open, timestamp) AS open,\n    max(high) AS high,\n    min(low) AS low,\n    argMax(close, timestamp) AS close\n  FROM klines FINAL\n  WHERE symbol = '${symbol}'\n    AND $__timeFilter(timestamp)\n    AND (toInt64(${__to}) - toInt64(${__from})) >= 90 * 24 * 60 * 60 * 1000\n  GROUP BY time\n)\nORDER BY time",
+          "rawSql": "WITH\n  fromUnixTimestamp64Milli(toInt64(${__from})) AS from_time,\n  fromUnixTimestamp64Milli(toInt64(${__to})) AS to_time,\n  dateDiff('second', from_time, to_time) AS range_seconds,\n  multiIf(\n    range_seconds <= 6 * 3600, 60,\n    range_seconds <= 24 * 3600, 300,\n    range_seconds <= 3 * 24 * 3600, 900,\n    range_seconds <= 7 * 24 * 3600, 3600,\n    range_seconds <= 30 * 24 * 3600, 14400,\n    range_seconds <= 90 * 24 * 3600, 43200,\n    range_seconds <= 365 * 24 * 3600, 86400,\n    604800\n  ) AS bucket_seconds\nSELECT\n  toStartOfInterval(timestamp, toIntervalSecond(bucket_seconds)) AS time,\n  argMin(open, timestamp) AS open,\n  max(high) AS high,\n  min(low) AS low,\n  argMax(close, timestamp) AS close\nFROM klines FINAL\nWHERE symbol = '${symbol}'\n  AND timestamp >= from_time\n  AND timestamp <= to_time\nGROUP BY time\nORDER BY time",
           "refId": "A"
         }
       ],
@@ -273,7 +273,7 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h / 1000000000, 2) AS `Vol $B`\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct > 0\nORDER BY t.price_change_pct DESC\nLIMIT 5",
+          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h / 1000000000, 2) AS `Vol $B`\nFROM (\n  SELECT\n    symbol,\n    argMax(price_change_pct, snapshot_time) AS price_change_pct,\n    argMax(quote_volume_24h, snapshot_time) AS quote_volume_24h\n  FROM ticker_24h FINAL\n  GROUP BY symbol\n) t\nJOIN symbols s ON t.symbol = s.symbol\nORDER BY t.price_change_pct DESC\nLIMIT 5",
           "refId": "A"
         }
       ],
