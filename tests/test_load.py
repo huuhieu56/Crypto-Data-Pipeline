@@ -77,10 +77,13 @@ def test_load_klines_inserts_raw_csv_to_klines(monkeypatch):
     assert f"/{load_module.BUCKET_RAW}/klines/BTCUSDT/2026-05.csv" in sql_call
     assert "CSVWithNames" in sql_call
 
-    # Raw OHLCV load should set indicators to 0
+    # Raw OHLCV load should leave indicators NULL until transform computes them.
     assert "rsi_14" in sql_call
     assert "macd" in sql_call
     assert "macd_signal" in sql_call
+    assert "NULL AS rsi_14" in sql_call
+    assert "NULL AS macd" in sql_call
+    assert "NULL AS macd_signal" in sql_call
 
     # Should NOT contain indicator computation (that's transform's job)
     assert "exponentialMovingAverage" not in sql_call

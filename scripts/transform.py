@@ -28,7 +28,7 @@ from config.config import (
 )
 from config.symbols import SYMBOLS
 from utils.data_utils import validate_month_str
-from utils.db_utils import get_ch_client, get_table_watermarks
+from utils.db_utils import get_ch_client
 from utils.exceptions import TransformError
 from utils.logger import get_logger
 from utils.storage import discover_month_partitions
@@ -36,6 +36,46 @@ from utils.storage import discover_month_partitions
 logger = get_logger(__name__)
 
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
+
+
+def _get_indicator_watermarks(symbols: list[str]) -> dict[str, int]:
+    """Return last timestamp per symbol that has computed indicators.
+
+    Raw klines are inserted with NULL indicators. Older local databases may
+    still have raw rows with all-zero indicators, so all-zero rows are treated
+    as untransformed for recovery/backfill.
+    """
+    if not symbols:
+        return {}
+
+    sym_list = "', '".join(symbols)
+    client = get_ch_client()
+    result = client.query(
+        f"""
+        SELECT
+            symbol,
+            maxIf(
+                toInt64(toUnixTimestamp(timestamp)) * 1000,
+                isNotNull(rsi_14)
+                AND isNotNull(macd)
+                AND isNotNull(macd_signal)
+                AND (
+                    ifNull(rsi_14, 0) != 0
+                    OR ifNull(macd, 0) != 0
+                    OR ifNull(macd_signal, 0) != 0
+                )
+            ) AS max_ts_ms
+        FROM klines FINAL
+        WHERE symbol IN ('{sym_list}')
+        GROUP BY symbol
+        """
+    )
+
+    watermarks: dict[str, int] = {}
+    for symbol, max_ts_ms in result.result_rows:
+        if max_ts_ms:
+            watermarks[symbol] = int(max_ts_ms)
+    return watermarks
 
 
 def transform_klines(
@@ -51,7 +91,7 @@ def transform_klines(
     symbols = symbols or SYMBOLS
     if month_str is not None:
         month_str = validate_month_str(month_str)
-    wm_map = get_table_watermarks("klines", "timestamp", symbols)
+    wm_map = _get_indicator_watermarks(symbols)
     total_processed = 0
     errors = 0
 
@@ -95,10 +135,16 @@ def transform_klines(
                 client = get_ch_client()
                 client.query(sql)
                 result = client.query(
-                    f"SELECT count() AS n FROM crypto_db.klines FINAL "
+                    f"SELECT count() AS n, max(timestamp) AS max_ts "
+                    f"FROM crypto_db.klines FINAL "
                     f"WHERE symbol = '{symbol}' AND toYYYYMM(timestamp) = {month_int}"
                 )
-                n = result.result_rows[0][0] if result.result_rows else 0
+                n, max_ts = result.result_rows[0] if result.result_rows else (0, None)
+                if max_ts is not None:
+                    watermark_ts = pd.Timestamp(max_ts)
+                    if watermark_ts.tzinfo is None:
+                        watermark_ts = watermark_ts.tz_localize("UTC")
+                    watermark_ms = int(watermark_ts.timestamp() * 1000)
                 logger.info(
                     "[Transform] klines %s/%s: %d rows in partition",
                     symbol, month, n,

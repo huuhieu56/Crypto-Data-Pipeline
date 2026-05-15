@@ -1,6 +1,6 @@
 """Load script — write data to ClickHouse (ELT: load runs before transform).
 
-Klines: raw OHLCV CSV from MinIO → ClickHouse klines (no indicators yet).
+Klines: raw OHLCV CSV from MinIO → ClickHouse klines (indicators NULL).
 Ticker & order book: raw Parquet from MinIO → ClickHouse direct insert.
 
 Usage:
@@ -178,7 +178,7 @@ def _load_raw_csv_to_klines(
         f"), 'UTC') AS timestamp, "
         f"open, high, low, close, volume, quote_volume, "
         f"toUInt32(trades) AS trades, "
-        f"0 AS rsi_14, 0 AS macd, 0 AS macd_signal "
+        f"NULL AS rsi_14, NULL AS macd, NULL AS macd_signal "
         f"FROM s3("
         f"'{CLICKHOUSE_S3_ENDPOINT}/{BUCKET_RAW}/klines/{symbol}/{month}.csv', "
         f"'{s3_access}', '{s3_secret}', "
@@ -207,7 +207,7 @@ def load_klines(
 ) -> None:
     """Load raw OHLCV from MinIO CSV into ClickHouse klines (ELT: load before transform).
 
-    Inserts raw candle data without indicators (rsi_14/macd/macd_signal = 0).
+    Inserts raw candle data without indicators (rsi_14/macd/macd_signal = NULL).
     The transform step (scripts/transform.py) computes indicators afterwards.
     """
     symbols = symbols or SYMBOLS

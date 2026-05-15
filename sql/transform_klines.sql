@@ -23,6 +23,7 @@ context AS (
         open, high, low, close, volume, quote_volume, trades
     FROM crypto_db.klines FINAL
     WHERE symbol = '{symbol}'
+      AND toInt64(toUnixTimestamp(timestamp)) * 1000 <= {watermark_ms}
     ORDER BY timestamp DESC
     LIMIT {context_rows}
 ),
