@@ -101,10 +101,7 @@ with DAG(
 
 	# --- Transform -------------------------------------------------------
 
-	transform_task = BashOperator(
-		task_id="transform",
-		bash_command=f"cd {project_root} && python scripts/transform.py",
-	)
+	# (removed — RSI/MACD now computed in ClickHouse SQL during load)
 
 	# --- Load ------------------------------------------------------------
 
@@ -125,6 +122,6 @@ with DAG(
 
 	# --- Dependencies ----------------------------------------------------
 
-	extract_klines_task >> transform_task >> load_klines_task
+	extract_klines_task >> load_klines_task
 	extract_ticker_task >> load_ticker_task
 	extract_order_book_task >> load_order_book_task

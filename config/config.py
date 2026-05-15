@@ -55,8 +55,13 @@ MINIO_CONFIG = {
     "secret_key": os.getenv("MINIO_ROOT_PASSWORD", "minioadmin123"),
     "secure": os.getenv("MINIO_SECURE", "false").lower() == "true",
     "bucket_raw": os.getenv("MINIO_BUCKET_RAW") or os.getenv("MINIO_RAW_BUCKET", "crypto-raw"),
-    "bucket_processed": os.getenv("MINIO_BUCKET_PROCESSED") or os.getenv("MINIO_PROCESSED_BUCKET", "crypto-processed"),
 }
+
+# Internal S3 endpoint for ClickHouse to reach MinIO (Docker network)
+CLICKHOUSE_S3_ENDPOINT = os.getenv(
+    "CH_S3_ENDPOINT",
+    f"http://{os.getenv('MINIO_ENDPOINT', 'minio:9000')}",
+)
 
 # --- Pipeline Tuning ---------------------------------------------------------
 

@@ -39,19 +39,14 @@ def _resolve_month(dt: datetime | str | None = None) -> str:
     return dt.strftime(PARTITION_MONTH_FORMAT)
 
 
-def minio_key(prefix: str, symbol: str, dt: datetime | str | None = None) -> str:
-    """MinIO key: {prefix}/{SYMBOL}/{YYYY-MM}.parquet"""
-    return f"{prefix}/{symbol}/{_resolve_month(dt)}.parquet"
+def minio_key(prefix: str, symbol: str, dt: datetime | str | None = None, extension: str = ".parquet") -> str:
+    """MinIO key: {prefix}/{SYMBOL}/{YYYY-MM}{extension}"""
+    return f"{prefix}/{symbol}/{_resolve_month(dt)}{extension}"
 
 
 def partition_key(symbol: str, dt: datetime | str | None = None) -> str:
-    """MinIO key for raw klines: klines/{SYMBOL}/{YYYY-MM}.parquet"""
-    return minio_key("klines", symbol, dt)
-
-
-def features_key(symbol: str, dt: datetime | str | None = None) -> str:
-    """MinIO key for processed features: features/{SYMBOL}/{YYYY-MM}.parquet"""
-    return minio_key("features", symbol, dt)
+    """MinIO key for raw klines: klines/{SYMBOL}/{YYYY-MM}.csv"""
+    return minio_key("klines", symbol, dt, extension=".csv")
 
 
 # --- Date / Month Utilities (Data Vision) -----------------------------------

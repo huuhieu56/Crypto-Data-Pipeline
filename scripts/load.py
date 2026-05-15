@@ -1,7 +1,7 @@
-"""Load script — write processed data to ClickHouse.
+"""Load script — write data to ClickHouse.
 
-Reads monthly features Parquet from MinIO, batch inserts
-into ClickHouse via native clickhouse-connect protocol.
+Klines: ELT pipeline — raw CSV in MinIO → ClickHouse SQL transform → klines table.
+Ticker & order book: EL pipeline — MinIO Parquet → ClickHouse direct insert.
 
 Usage:
     python scripts/load.py
@@ -19,17 +19,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse
 import pandas as pd
 
-from config.config import MINIO_CONFIG
+from config.config import (
+    MINIO_CONFIG,
+    CLICKHOUSE_S3_ENDPOINT,
+    INDICATOR_CONTEXT_ROWS,
+)
 from config.symbols import SYMBOLS, SYMBOL_REGISTRY
 from utils.logger import get_logger
 from utils.exceptions import LoadError
-from utils.db_utils import ch_insert_df, get_table_watermarks
+from utils.db_utils import (
+    ch_insert_df,
+    ch_query_df,
+    get_ch_client,
+    get_table_watermarks,
+)
 from utils.storage import storage, discover_month_partitions
 
 logger = get_logger(__name__)
 
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
-BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
 
 
 # --- Helpers ------------------------------------------------------------------
@@ -152,13 +160,79 @@ def load_klines(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Load klines features into ClickHouse (per-partition to avoid OOM)."""
-    _load_table(
-        symbols, BUCKET_PROCESSED, "features", "klines", "timestamp",
-        ["symbol", "timestamp", "open", "high", "low", "close",
-         "volume", "quote_volume", "trades", "rsi_14", "macd", "macd_signal"],
-        {"trades": "uint32"}, month_str,
-    )
+    """Load klines via ClickHouse SQL transform (ELT).
+
+    For each symbol: reads raw CSV from MinIO via s3(), fetches context
+    rows from ClickHouse for indicator warm-up, computes RSI(14) + MACD(12,26,9)
+    in SQL, and inserts only new rows.
+    """
+    symbols = symbols or SYMBOLS
+    wm_map = get_table_watermarks("klines", "timestamp", symbols)
+    total_inserted = 0
+    errors = 0
+
+    logger.info("[Load] klines: %d symbols, ELT via ClickHouse SQL", len(symbols))
+
+    # Read SQL template
+    sql_path = Path(__file__).resolve().parent.parent / "sql" / "transform_klines.sql"
+    sql_template = sql_path.read_text()
+
+    s3_access = MINIO_CONFIG["access_key"]
+    s3_secret = MINIO_CONFIG["secret_key"]
+
+    for symbol in symbols:
+        watermark_ms = wm_map.get(symbol, 0)  # 0 for bootstrap (no data yet)
+        context_rows = INDICATOR_CONTEXT_ROWS
+
+        months = (
+            [month_str]
+            if month_str
+            else discover_month_partitions(BUCKET_RAW, "klines", symbol, extension=".csv")
+        )
+        if not months:
+            logger.debug("[Load] klines %s: no CSV partitions found", symbol)
+            continue
+
+        # Only process months that could have new data
+        if watermark_ms > 0:
+            watermark_month = pd.to_datetime(watermark_ms, unit="ms", utc=True).strftime("%Y-%m")
+            months = [m for m in months if m >= watermark_month]
+
+        for month in months:
+            key = f"klines/{symbol}/{month}.csv"
+            if not storage.object_exists(BUCKET_RAW, key):
+                logger.debug("[Load] klines %s/%s: no CSV file, skipped", symbol, month)
+                continue
+
+            # Build and execute SQL
+            sql = sql_template.format(
+                symbol=symbol,
+                month=month,
+                watermark_ms=watermark_ms,
+                context_rows=context_rows,
+                s3_endpoint=CLICKHOUSE_S3_ENDPOINT,
+                s3_access_key=s3_access,
+                s3_secret_key=s3_secret,
+            )
+
+            try:
+                client = get_ch_client()
+                client.query(sql)
+                # Query row count inserted (approximate)
+                result = client.query(
+                    f"SELECT count() AS n FROM crypto_db.klines FINAL "
+                    f"WHERE symbol = '{symbol}' AND toYYYYMM(timestamp) = {month.replace('-', '')}"
+                )
+                n = result.result_rows[0][0] if result.result_rows else 0
+                logger.info("[Load] klines %s/%s: transform + insert complete (%d rows in partition)", symbol, month, n)
+                total_inserted += n
+            except Exception as exc:
+                errors += 1
+                logger.error("[Load] klines %s/%s: ERROR -- %s", symbol, month, exc)
+
+    if total_inserted == 0 and errors > 0:
+        raise LoadError(f"klines: all {errors} partition(s) failed, 0 loaded")
+    logger.info("[Load] klines complete: %s rows across %d symbols, %d errors", f"{total_inserted:,}", len(symbols), errors)
 
 
 def load_ticker(
