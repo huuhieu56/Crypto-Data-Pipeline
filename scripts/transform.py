@@ -52,10 +52,17 @@ def calculate_indicators(
 
     Pure function -- no database dependency.
     """
+    raw_df = raw_df.copy()
+    raw_df["open_time"] = pd.to_datetime(raw_df["open_time"]).astype("datetime64[ns]")
+
     if context_df is not None and not context_df.empty:
+        context_df = context_df.copy()
+        context_df["open_time"] = pd.to_datetime(
+            context_df["open_time"],
+        ).astype("datetime64[ns]")
         combined = pd.concat([context_df, raw_df], ignore_index=True)
     else:
-        combined = raw_df.copy()
+        combined = raw_df
 
     combined = combined.sort_values("open_time").drop_duplicates(
         subset=["open_time"], keep="last"

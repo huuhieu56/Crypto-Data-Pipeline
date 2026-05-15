@@ -101,16 +101,27 @@ Crypto-Data-Pipeline/
 cp .env.example .env
 
 # 2. Khởi chạy toàn bộ hệ thống
-docker compose up -d
+docker compose up -d 
 
-# 3. Truy cập các services:
+# 3. Chạy lần đầu:
+#Bulk dữ liệu theo ETL_MONTHS_BACK:
+python scripts/extract.py
+python scripts/transform.py
+python scripts/load.py
+
+#Fill dữ liệu từ đầu tháng đến hiện tại:
+python scripts/extract.py --mode minutely
+python scripts/transform.py
+python scripts/load.py
+
+# 4. Truy cập các services:
 #    Grafana (+ AI Chatbox):  http://localhost:3000
 #    Chat API:                http://localhost:8501/chat-ui?symbol=BTCUSDT
 #    Airflow UI:              http://localhost:8080
 #    MinIO Console:           http://localhost:9001
 ```
 
-ETL pipeline chạy tự động qua Airflow DAG (`minutely_etl`) — không cần chạy script thủ công.
+ETL pipeline sau đó chạy tự động qua Airflow DAG (`minutely_etl`) (mở Airflow UI và trigger DAG) — không cần chạy script thủ công.
 
 ## Testing
 
