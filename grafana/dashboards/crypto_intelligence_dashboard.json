@@ -142,7 +142,7 @@
           "editorMode": "code",
           "format": 1,
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  open,\n  high,\n  low,\n  close\nFROM klines FINAL\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nORDER BY time",
+          "rawSql": "WITH\n  fromUnixTimestamp64Milli(toInt64(${__from})) AS from_time,\n  fromUnixTimestamp64Milli(toInt64(${__to})) AS to_time,\n  dateDiff('second', from_time, to_time) AS range_seconds,\n  multiIf(\n    range_seconds <= 6 * 3600, 60,\n    range_seconds <= 24 * 3600, 300,\n    range_seconds <= 3 * 24 * 3600, 900,\n    range_seconds <= 7 * 24 * 3600, 3600,\n    range_seconds <= 30 * 24 * 3600, 14400,\n    range_seconds <= 90 * 24 * 3600, 43200,\n    range_seconds <= 365 * 24 * 3600, 86400,\n    604800\n  ) AS bucket_seconds\nSELECT\n  toStartOfInterval(timestamp, toIntervalSecond(bucket_seconds)) AS time,\n  argMin(open, timestamp) AS open,\n  max(high) AS high,\n  min(low) AS low,\n  argMax(close, timestamp) AS close\nFROM klines FINAL\nWHERE symbol = '${symbol}'\n  AND timestamp >= from_time\n  AND timestamp <= to_time\nGROUP BY time\nORDER BY time",
           "refId": "A"
         }
       ],

@@ -720,23 +720,65 @@ ORDER BY t.price_change_pct ASC
 LIMIT 5;
 ```
 
-#### Panel 4: BTC Price Chart (Time Series)
+#### Panel 4: Price Chart (Candlestick)
 
-| Thuộc tính | Giá trị      |
-| ---------- | ------------ |
-| Loại       | Time series  |
-| Time range | Last 7 days  |
+| Thuộc tính | Giá trị                         |
+| ---------- | ------------------------------- |
+| Loại       | Candlestick                     |
+| Symbol     | Theo biến Grafana `$symbol`     |
+| Time range | Theo Grafana global time picker |
 
-> **Lưu ý:** Dữ liệu klines cập nhật mỗi phút (minutely_etl DAG). Chart hiển thị dữ liệu 1-min từ ClickHouse.
+> **Lưu ý:** Dữ liệu gốc là nến 1 phút từ `klines`, cập nhật bởi `minutely_etl` DAG. Panel tự aggregate OHLC theo time range người dùng chọn để chart không quá dày khi xem range dài.
+
+**Adaptive candle interval**
+
+| Grafana time range | Candle hiển thị |
+| ------------------ | --------------- |
+| `<= 6h`            | `1m`            |
+| `<= 24h`           | `5m`            |
+| `<= 3d`            | `15m`           |
+| `<= 7d`            | `1h`            |
+| `<= 30d`           | `4h`            |
+| `<= 90d`           | `12h`           |
+| `<= 365d`          | `1d`            |
+| `> 365d`           | `1w`            |
+
+OHLC được tính từ nến 1 phút:
+
+| Field   | Cách aggregate              |
+| ------- | --------------------------- |
+| `open`  | `argMin(open, timestamp)`   |
+| `high`  | `max(high)`                 |
+| `low`   | `min(low)`                  |
+| `close` | `argMax(close, timestamp)`  |
 
 ```sql
+WITH
+  fromUnixTimestamp64Milli(toInt64(${__from})) AS from_time,
+  fromUnixTimestamp64Milli(toInt64(${__to})) AS to_time,
+  dateDiff('second', from_time, to_time) AS range_seconds,
+  multiIf(
+    range_seconds <= 6 * 3600, 60,
+    range_seconds <= 24 * 3600, 300,
+    range_seconds <= 3 * 24 * 3600, 900,
+    range_seconds <= 7 * 24 * 3600, 3600,
+    range_seconds <= 30 * 24 * 3600, 14400,
+    range_seconds <= 90 * 24 * 3600, 43200,
+    range_seconds <= 365 * 24 * 3600, 86400,
+    604800
+  ) AS bucket_seconds
 SELECT
-    timestamp,
-    close AS price
-FROM klines
-WHERE symbol = $symbol
-  AND timestamp >= now() - INTERVAL 7 DAY
-ORDER BY timestamp;
+  toStartOfInterval(timestamp, toIntervalSecond(bucket_seconds)) AS time,
+  argMin(open, timestamp) AS open,
+  max(high) AS high,
+  min(low) AS low,
+  argMax(close, timestamp) AS close
+FROM klines FINAL
+WHERE symbol = '${symbol}'
+  AND timestamp >= from_time
+  AND timestamp <= to_time
+GROUP BY time
+ORDER BY time;
 ```
 
 #### Panel 5: AI Chat Assistant (Text/HTML)
@@ -770,7 +812,6 @@ ORDER BY rsi_14 DESC;
 | Variable     | Query                                 | Mục đích                  |
 | ------------ | ------------------------------------- | ------------------------- |
 | `$symbol`    | `SELECT DISTINCT symbol FROM symbols` | Chọn coin để xem chi tiết |
-| `$timerange` | `1h, 6h, 24h, 7d, 30d`                | Chọn khoảng thời gian     |
 
 ### 10.4. Alerts (Cảnh báo)
 
@@ -783,7 +824,7 @@ ORDER BY rsi_14 DESC;
 
 | Panel type        | Refresh interval | Giải thích                                       |
 | ----------------- | ---------------- | ------------------------------------------------ |
-| Price charts      | 1 phút           | Klines cập nhật minutely, near real-time          |
+| Price charts      | 1 phút           | Klines cập nhật minutely; candle interval tự đổi theo Grafana time range |
 | Volume/Gainers    | 1 phút           | Ticker snapshot cập nhật mỗi phút                 |
 | RSI Heatmap       | 1 phút           | RSI trên 1-min, cập nhật theo klines mỗi phút    |
 
