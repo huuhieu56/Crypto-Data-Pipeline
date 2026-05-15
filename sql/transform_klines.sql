@@ -21,8 +21,7 @@ WITH
 -- 1. Context rows from ClickHouse for indicator warm-up -----------------------
 context AS (
     SELECT
-        toUnixTimestamp(timestamp) * 1000 AS open_time_ms,
-        intDiv(toUnixTimestamp(timestamp) * 1000, 60000) AS minute_idx,
+        toInt64(toUnixTimestamp(timestamp)) * 1000 AS open_time_ms,
         open, high, low, close, volume, quote_volume, trades
     FROM crypto_db.klines FINAL
     WHERE symbol = '{symbol}'
@@ -33,8 +32,8 @@ context AS (
 -- 2. New data from MinIO CSV --------------------------------------------------
 new_raw AS (
     SELECT
-        if(open_time > 1000000000000000, intDiv(open_time, 1000), open_time) AS open_time_ms,
-        open, high, low, close, volume, quote_volume, trades
+        toInt64(if(open_time > 1000000000000000, intDiv(open_time, 1000), open_time)) AS open_time_ms,
+        open, high, low, close, volume, quote_volume, toUInt32(trades) AS trades
     FROM s3(
         '{s3_endpoint}/{bucket_raw}/klines/{symbol}/{month}.csv',
         '{s3_access_key}', '{s3_secret_key}',
@@ -50,7 +49,6 @@ new_raw AS (
 combined AS (
     SELECT
         open_time_ms,
-        intDiv(open_time_ms, 60000) AS minute_idx,
         open, high, low, close, volume, quote_volume, trades
     FROM (
         SELECT * FROM context
@@ -73,7 +71,7 @@ deltas AS (
 --   rows per symbol will be 0 instead of ffill/bfill (acceptable divergence).
 -- MACD halflife = -ln(2)/ln(1 - 2/(span+1)):
 --   EMA(12): halflife=4.149, EMA(26): halflife=9.006
--- Time unit: minute_idx (minutes since epoch, 1 per 1-min candle)
+-- Time unit: row index, matching Pandas row-step EWM even when candles have gaps.
 indicators AS (
     SELECT *,
         coalesce(
@@ -83,11 +81,15 @@ indicators AS (
             )),
             0
         ) AS rsi_14,
-        exponentialMovingAverage(4.149)(close, minute_idx)
-            OVER (ORDER BY minute_idx ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS ema12,
-        exponentialMovingAverage(9.006)(close, minute_idx)
-            OVER (ORDER BY minute_idx ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS ema26
-    FROM deltas
+        exponentialMovingAverage(4.149)(close, ema_idx)
+            OVER (ORDER BY ema_idx ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS ema12,
+        exponentialMovingAverage(9.006)(close, ema_idx)
+            OVER (ORDER BY ema_idx ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS ema26
+    FROM (
+        SELECT *,
+            row_number() OVER (ORDER BY open_time_ms) - 1 AS ema_idx
+        FROM deltas
+    )
     WINDOW rsi_w AS (ORDER BY open_time_ms ROWS BETWEEN 13 PRECEDING AND CURRENT ROW)
 ),
 
@@ -96,8 +98,8 @@ indicators AS (
 with_macd AS (
     SELECT *,
         ema12 - ema26 AS macd,
-        exponentialMovingAverage(3.106)(ema12 - ema26, minute_idx)
-            OVER (ORDER BY minute_idx ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS macd_signal
+        exponentialMovingAverage(3.106)(ema12 - ema26, ema_idx)
+            OVER (ORDER BY ema_idx ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS macd_signal
     FROM indicators
 )
 

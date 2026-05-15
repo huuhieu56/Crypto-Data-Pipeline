@@ -82,6 +82,8 @@ def test_load_klines_uses_clickhouse_sql_transform(monkeypatch):
     assert f"/{load_module.BUCKET_RAW}/klines/BTCUSDT/2026-05.csv" in sql_call
     assert "CSVWithNames" in sql_call
     assert "exponentialMovingAverage" in sql_call
+    assert "row_number() OVER (ORDER BY open_time_ms) - 1 AS ema_idx" in sql_call
+    assert "exponentialMovingAverage(4.149)(close, ema_idx)" in sql_call
 
 
 def test_load_klines_rejects_invalid_month():
