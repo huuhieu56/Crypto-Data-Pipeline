@@ -53,14 +53,14 @@ default_args = {
 # DAG definition
 # ---------------------------------------------------------------------------
 with DAG(
-    dag_id="minutely_etl",
+    dag_id="minutely_elt",
     default_args=default_args,
-    description="Mini-batch ETL mỗi phút: klines, ticker_24h, order_book",
+    description="Mini-batch ELT mỗi phút: klines, ticker_24h, order_book",
     schedule="* * * * *",
     start_date=pendulum.datetime(2024, 1, 1, tz=LOCAL_TZ),
     catchup=False,
     max_active_runs=1,
-    tags=["etl", "minutely", "crypto"],
+    tags=["elt", "minutely", "crypto"],
 ) as dag:
 
     project_root = "{{ var.value.get('project_root', '/opt/project') }}"
