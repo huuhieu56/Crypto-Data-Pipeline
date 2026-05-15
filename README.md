@@ -74,8 +74,8 @@ Crypto-Data-Pipeline/
 │   └── provisioning/                   # Datasource & dashboard provisioning
 │
 ├── data/                               # Data Lake (local cache, synced to MinIO)
-│   ├── raw/                            # Dữ liệu thô (CSV/Parquet)
-│   └── processed/                      # Dữ liệu đã xử lý (Parquet)
+│   ├── raw/                            # Dữ liệu thô (MinIO giữ klines/ticker_24h/order_book sau load)
+│   └── processed/                      # Dữ liệu đã xử lý (MinIO giữ features sau load)
 │
 └── docs/
     └── ProjectOverview.md              # Tài liệu chi tiết dự án
