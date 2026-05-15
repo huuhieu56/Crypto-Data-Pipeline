@@ -3,11 +3,11 @@
 ## Mô tả dự án
 
 Hệ thống End-to-End Data Pipeline thu thập, xử lý và phân tích thị trường cryptocurrency
-sử dụng Apache Spark, Apache Airflow, ClickHouse, MinIO, LLM (DeepSeek/Gemini/OpenAI) và Grafana.
+sử dụng ClickHouse SQL, Apache Airflow, ClickHouse, MinIO, LLM (DeepSeek/Gemini/OpenAI) và Grafana.
 
 - **Extract mỗi phút**: Gọi Binance REST API lấy nến 1-min, ticker 24h, order book cho 50 coins
-- **Transform**: Spark tính RSI(14), MACD(12/26/9) trên 1-min candles
 - **Load**: Ghi vào ClickHouse (clickhouse-connect)
+- **Transform**: ClickHouse SQL tính RSI(14), MACD(12/26/9) trên 1-min candles (ELT pattern)
 - **LLM Chat Assistant**: AI chatbot với LangGraph workflow, DeepSeek reasoning model, tool calling tự động (candles, volume, order book), timeframe-aware analysis
 - **Visualize**: Grafana dashboard real-time + embedded chatbox
 
@@ -23,15 +23,15 @@ Crypto-Data-Pipeline/
 ├── pytest.ini                          # Pytest config (markers)
 │
 ├── config/                             # Cấu hình hệ thống
-│   ├── config.py                       # Main config (paths, DB, API, MinIO, Spark)
+│   ├── config.py                       # Main config (paths, DB, API, MinIO, ClickHouse)
 │   ├── llm_config.py                   # LLM config (provider, base_url, model, timeframes)
 │   └── symbols.py                      # Danh sách 50 coins (single source of truth)
 │
 ├── scripts/                            # ETL scripts (auto-bootstrap + incremental)
 │   ├── extract.py                      # Entry point/orchestrator cho extract
 │   ├── extract_modules/                # Logic extract theo klines, ticker, order book
-│   ├── transform.py                    # Xử lý với Spark (RSI, MACD trên 1-min)
-│   └── load.py                         # Ghi vào ClickHouse (clickhouse-connect)
+│   ├── transform.py                    # ClickHouse SQL (RSI, MACD) → MinIO processed
+│   └── load.py                         # Ghi vào ClickHouse (clickhouse-connect + s3)
 │
 ├── services/                           # Microservices
 │   └── chat_api/                       # LLM Chat Assistant backend
@@ -49,6 +49,7 @@ Crypto-Data-Pipeline/
 │
 ├── sql/                                # Database schemas & queries
 │   ├── schema.sql                      # ClickHouse schema (Star Schema: 1 dim + 3 fact)
+│   ├── transform_klines.sql            # ClickHouse SQL transform (RSI + MACD)
 │   ├── queries.sql                     # Query mẫu cho Grafana
 │   └── init_db.sql                     # Tạo database thủ công (ngoài Docker)
 │
@@ -58,7 +59,7 @@ Crypto-Data-Pipeline/
 │   ├── test_chat_api.py                # Unit tests: FastAPI endpoints
 │   ├── test_ai_eval.py                 # Integration tests: LLM evaluation (live API)
 │   ├── test_extract.py                 # Unit tests: extract pipeline
-│   └── test_transform.py              # Unit tests: transform pipeline
+│   └── test_load.py                    # Unit tests: load + transform pipeline
 │
 ├── utils/                              # Utility functions
 │   ├── binance_utils.py                # Binance API wrappers (retry, rate limit, parse)
@@ -74,8 +75,8 @@ Crypto-Data-Pipeline/
 │   └── provisioning/                   # Datasource & dashboard provisioning
 │
 ├── data/                               # Data Lake (local cache, synced to MinIO)
-│   ├── raw/                            # Dữ liệu thô (MinIO giữ klines/ticker_24h/order_book sau load)
-│   └── processed/                      # Dữ liệu đã xử lý (MinIO giữ features sau load)
+│   ├── raw/                            # Dữ liệu thô: klines/CSV, ticker/Parquet, order_book/Parquet
+│   └── processed/                      # Dữ liệu đã xử lý: klines/Parquet (có RSI + MACD)
 │
 └── docs/
     └── ProjectOverview.md              # Tài liệu chi tiết dự án
@@ -86,7 +87,7 @@ Crypto-Data-Pipeline/
 | Layer | Công nghệ | Mục đích |
 |-------|-----------|----------|
 | **Extract** | Python + Binance API | Thu thập dữ liệu nến 1-min |
-| **Transform** | Apache Spark | Tính RSI(14), MACD(12/26/9) |
+| **Transform** | ClickHouse SQL | Tính RSI(14), MACD(12/26/9) (in-DB) |
 | **Load** | ClickHouse | Data Warehouse (columnar, fast analytics) |
 | **Store** | MinIO (S3-compatible) | Object Storage cho Data Lake |
 | **Orchestrate** | Apache Airflow | Tự động hóa ETL jobs |
@@ -103,18 +104,7 @@ cp .env.example .env
 # 2. Khởi chạy toàn bộ hệ thống
 docker compose up -d 
 
-# 3. Chạy lần đầu:
-#Bulk dữ liệu theo ETL_MONTHS_BACK:
-python scripts/extract.py
-python scripts/transform.py
-python scripts/load.py
-
-#Fill dữ liệu từ đầu tháng đến hiện tại:
-python scripts/extract.py --mode minutely
-python scripts/transform.py
-python scripts/load.py
-
-# 4. Truy cập các services:
+# 3. Truy cập các services:
 #    Grafana (+ AI Chatbox):  http://localhost:3000
 #    Chat API:                http://localhost:8501/chat-ui?symbol=BTCUSDT
 #    Airflow UI:              http://localhost:8080
