@@ -504,48 +504,7 @@
         "uid": "clickhouse_ds"
       },
       "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "fillOpacity": 85,
-            "lineWidth": 0
-          },
-          "decimals": 1,
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#006d3c",
-                "value": null
-              },
-              {
-                "color": "#35a853",
-                "value": 20
-              },
-              {
-                "color": "#f2cc60",
-                "value": 30
-              },
-              {
-                "color": "#ff9830",
-                "value": 50
-              },
-              {
-                "color": "#e02f44",
-                "value": 70
-              },
-              {
-                "color": "#8f1d2c",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
+        "defaults": {},
         "overrides": []
       },
       "gridPos": {
@@ -556,17 +515,34 @@
       },
       "id": 11,
       "options": {
-        "colWidth": 0.9,
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
+        "baidu": {
+          "callback": "bmapReady",
+          "key": ""
         },
-        "rowHeight": 0.8,
-        "showValue": "always",
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
+        "editor": {
+          "format": "auto",
+          "height": 600
+        },
+        "editorMode": "code",
+        "gaode": {
+          "key": "",
+          "plugin": "AMap.Scale,AMap.ToolBar"
+        },
+        "getOption": "const frame = context.panel.data.series.find((series) => series.refId === 'A') || context.panel.data.series[0];\n\nconst getValues = (name) => {\n  const field = frame?.fields.find((item) => item.name === name);\n  const values = field?.values;\n  if (!values) {\n    return [];\n  }\n  if (Array.isArray(values)) {\n    return values;\n  }\n  if (values.toArray) {\n    return values.toArray();\n  }\n  if (values.buffer) {\n    return Array.from(values.buffer);\n  }\n  return Array.from(values);\n};\n\nconst symbols = getValues('symbol');\nconst rows = symbols.map((_, index) => ({\n  symbol: getValues('symbol')[index],\n  base: getValues('base_asset')[index],\n  rsi: Number(getValues('rsi')[index]),\n  prevRsi: Number(getValues('prev_rsi')[index]),\n  delta: Number(getValues('rsi_delta')[index]),\n  zone: getValues('zone')[index],\n  volume: Number(getValues('quote_volume_24h')[index]),\n  change: Number(getValues('price_change_pct')[index]),\n  close: Number(getValues('latest_close')[index]),\n  time: getValues('latest_time')[index],\n})).filter((row) => Number.isFinite(row.rsi) && Number.isFinite(row.volume) && row.volume > 0);\n\nconst zoneColors = {\n  Overbought: '#ef4444',\n  Strong: '#9f2f3f',\n  Neutral: '#9ca3af',\n  Weak: '#34d399',\n  Oversold: '#14b8a6',\n};\n\nconst formatUsd = (value) => {\n  if (!Number.isFinite(Number(value))) {\n    return '-';\n  }\n  const number = Number(value);\n  if (number >= 1e12) return `$${(number / 1e12).toFixed(number >= 10e12 ? 0 : 1)}T`;\n  if (number >= 1e9) return `$${(number / 1e9).toFixed(number >= 10e9 ? 0 : 1)}B`;\n  if (number >= 1e6) return `$${(number / 1e6).toFixed(number >= 10e6 ? 0 : 1)}M`;\n  if (number >= 1e3) return `$${(number / 1e3).toFixed(0)}K`;\n  return `$${number.toFixed(0)}`;\n};\n\nconst formatPrice = (value) => {\n  if (!Number.isFinite(Number(value))) {\n    return '-';\n  }\n  const number = Number(value);\n  if (number >= 1000) return `$${number.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;\n  if (number >= 1) return `$${number.toFixed(2)}`;\n  if (number >= 0.01) return `$${number.toFixed(4)}`;\n  return `$${number.toPrecision(4)}`;\n};\n\nconst pointData = (zone) => rows\n  .filter((row) => row.zone === zone)\n  .map((row) => ({\n    name: row.base,\n    value: [row.volume, row.rsi, row.prevRsi, row.base, row.symbol, row.zone, row.delta, row.change, row.close, row.time],\n    itemStyle: { color: zoneColors[row.zone] },\n  }));\n\nconst zoneSeries = Object.keys(zoneColors).map((zone) => ({\n  name: zone,\n  type: 'scatter',\n  data: pointData(zone),\n  symbolSize: 12,\n  label: {\n    show: true,\n    formatter: '{@[3]}',\n    position: 'top',\n    color: '#e5e7eb',\n    fontSize: 11,\n    fontWeight: 600,\n  },\n  emphasis: {\n    focus: 'series',\n    label: {\n      show: true,\n      fontSize: 13,\n    },\n  },\n  tooltip: {\n    trigger: 'item',\n  },\n}));\n\nreturn {\n  backgroundColor: 'transparent',\n  color: Object.values(zoneColors),\n  grid: {\n    left: 58,\n    right: 44,\n    top: 52,\n    bottom: 52,\n  },\n  legend: {\n    top: 8,\n    left: 'center',\n    itemWidth: 10,\n    itemHeight: 10,\n    data: Object.keys(zoneColors),\n    textStyle: {\n      color: '#d1d5db',\n      fontSize: 11,\n    },\n  },\n  tooltip: {\n    trigger: 'item',\n    confine: true,\n    backgroundColor: 'rgba(17, 24, 39, 0.96)',\n    borderColor: '#374151',\n    textStyle: { color: '#f9fafb' },\n    formatter: (params) => {\n      const value = params.value || [];\n      const delta = Number(value[6]);\n      const deltaText = Number.isFinite(delta) ? `${delta >= 0 ? '+' : ''}${delta.toFixed(2)}` : '-';\n      const change = Number(value[7]);\n      const changeText = Number.isFinite(change) ? `${change >= 0 ? '+' : ''}${change.toFixed(2)}%` : '-';\n      const close = Number(value[8]);\n      const closeText = Number.isFinite(close) ? formatPrice(close) : '-';\n      return [\n        `<b>${value[3]} (${value[4]})</b>`,\n        `Zone: ${value[5]}`,\n        `RSI: ${Number(value[1]).toFixed(2)} (${deltaText})`,\n        `Prev RSI: ${Number(value[2]).toFixed(2)}`,\n        `24h Volume: ${formatUsd(value[0])}`,\n        `24h Change: ${changeText}`,\n        `Latest Close: ${closeText}`,\n        `Latest Time: ${value[9]}`,\n      ].join('<br/>');\n    },\n  },\n  xAxis: {\n    type: 'log',\n    inverse: true,\n    name: '24h Quote Volume (USDT)',\n    nameLocation: 'middle',\n    nameGap: 34,\n    splitLine: {\n      lineStyle: { color: 'rgba(156, 163, 175, 0.28)', type: 'dotted' },\n    },\n    axisLabel: {\n      color: '#9ca3af',\n      formatter: formatUsd,\n    },\n    axisLine: { lineStyle: { color: '#4b5563' } },\n  },\n  yAxis: {\n    type: 'value',\n    min: 10,\n    max: 90,\n    name: 'Relative Strength Index',\n    nameLocation: 'middle',\n    nameGap: 42,\n    splitLine: {\n      lineStyle: { color: 'rgba(156, 163, 175, 0.28)', type: 'dotted' },\n    },\n    axisLabel: { color: '#9ca3af' },\n    axisLine: { lineStyle: { color: '#4b5563' } },\n  },\n  series: [\n    {\n      name: 'RSI Bands',\n      type: 'scatter',\n      data: [],\n      silent: true,\n      markArea: {\n        silent: true,\n        itemStyle: { opacity: 0.24 },\n        label: { color: '#cbd5e1', fontSize: 16, position: 'insideRight' },\n        data: [\n          [{ yAxis: 70, itemStyle: { color: '#7f1d1d' }, label: { formatter: 'OVERBOUGHT' } }, { yAxis: 90 }],\n          [{ yAxis: 60, itemStyle: { color: '#4c1d2b' }, label: { formatter: 'STRONG' } }, { yAxis: 70 }],\n          [{ yAxis: 40, itemStyle: { color: '#1f2937' }, label: { formatter: 'NEUTRAL' } }, { yAxis: 60 }],\n          [{ yAxis: 30, itemStyle: { color: '#064e3b' }, label: { formatter: 'WEAK' } }, { yAxis: 40 }],\n          [{ yAxis: 10, itemStyle: { color: '#115e59' }, label: { formatter: 'OVERSOLD' } }, { yAxis: 30 }],\n        ],\n      },\n      tooltip: { show: false },\n    },\n    {\n      name: 'RSI Change',\n      type: 'custom',\n      silent: true,\n      data: rows.map((row) => [row.volume, row.prevRsi, row.rsi, row.delta >= 0 ? '#14b8a6' : '#ef4444']),\n      renderItem: (params, api) => {\n        const start = api.coord([api.value(0), api.value(1)]);\n        const end = api.coord([api.value(0), api.value(2)]);\n        return {\n          type: 'line',\n          shape: { x1: start[0], y1: start[1], x2: end[0], y2: end[1] },\n          style: { stroke: api.value(3), lineDash: [3, 3], lineWidth: 1, opacity: 0.65 },\n        };\n      },\n      tooltip: { show: false },\n    },\n    ...zoneSeries,\n  ],\n};",
+        "google": {
+          "callback": "gmapReady",
+          "key": ""
+        },
+        "map": "none",
+        "renderer": "canvas",
+        "themeEditor": {
+          "config": "{}",
+          "name": "default"
+        },
+        "visualEditor": {
+          "code": "return {\n  dataset: context.editor.dataset,\n  series: context.editor.series,\n  xAxis: { type: 'value' },\n  yAxis: { type: 'value' }\n};\n",
+          "dataset": [],
+          "series": []
         }
       },
       "targets": [
@@ -578,12 +554,12 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  fromUnixTimestamp64Milli(toInt64(${__from})) AS time,\n  fromUnixTimestamp64Milli(toInt64(${__to})) AS end_time,\n  s.base_asset AS Coin,\n  round(k.rsi_14, 1) AS RSI\nFROM (\n  SELECT DISTINCT symbol, base_asset\n  FROM symbols\n) s\nJOIN (\n  SELECT symbol, argMax(rsi_14, timestamp) AS rsi_14\n  FROM klines FINAL\n  GROUP BY symbol\n) k ON k.symbol = s.symbol\nORDER BY k.rsi_14 DESC\nLIMIT 30",
+          "rawSql": "WITH\n  '${rsi_tf}' AS selected_tf,\n  '${rsi_zone}' AS selected_zone,\n  multiIf(selected_tf = '1h', 3600, selected_tf = '4h', 14400, 86400) AS tf_seconds,\n  (SELECT max(timestamp) FROM klines FINAL) AS latest_ts,\n  latest_ts - toIntervalSecond(tf_seconds * 80) AS from_ts,\n  tf_candles AS (\n    SELECT\n      symbol,\n      toStartOfInterval(timestamp, toIntervalSecond(tf_seconds)) AS bucket,\n      argMax(close, timestamp) AS close\n    FROM klines FINAL\n    WHERE timestamp >= from_ts\n      AND timestamp <= latest_ts\n    GROUP BY symbol, bucket\n  ),\n  deltas AS (\n    SELECT\n      *,\n      close - lagInFrame(close, 1) OVER (PARTITION BY symbol ORDER BY bucket) AS delta\n    FROM tf_candles\n  ),\n  rsi_calc AS (\n    SELECT\n      symbol,\n      bucket,\n      close,\n      multiIf(\n        period_n < 15, NULL,\n        avg_loss = 0 AND avg_gain = 0, 50,\n        avg_loss = 0, 100,\n        100 - (100 / (1 + avg_gain / avg_loss))\n      ) AS rsi\n    FROM (\n      SELECT\n        *,\n        row_number() OVER (PARTITION BY symbol ORDER BY bucket) AS period_n,\n        avg(if(delta > 0, delta, 0)) OVER rsi_w AS avg_gain,\n        avg(if(delta < 0, -delta, 0)) OVER rsi_w AS avg_loss\n      FROM deltas\n      WINDOW rsi_w AS (PARTITION BY symbol ORDER BY bucket ROWS BETWEEN 13 PRECEDING AND CURRENT ROW)\n    )\n  ),\n  ranked AS (\n    SELECT\n      *,\n      row_number() OVER (PARTITION BY symbol ORDER BY bucket DESC) AS rn\n    FROM rsi_calc\n  ),\n  latest_ticker AS (\n    SELECT\n      symbol,\n      argMax(quote_volume_24h, snapshot_time) AS quote_volume_24h,\n      argMax(price_change_pct, snapshot_time) AS price_change_pct\n    FROM ticker_24h FINAL\n    GROUP BY symbol\n  )\nSELECT\n  symbol,\n  base_asset,\n  rsi,\n  prev_rsi,\n  rsi_delta,\n  zone,\n  quote_volume_24h,\n  price_change_pct,\n  latest_close,\n  latest_time\nFROM (\n  SELECT\n    c.symbol AS symbol,\n    s.base_asset AS base_asset,\n    round(c.rsi, 2) AS rsi,\n    round(p.rsi, 2) AS prev_rsi,\n    round(c.rsi - p.rsi, 2) AS rsi_delta,\n    multiIf(\n      c.rsi >= 70, 'Overbought',\n      c.rsi >= 60, 'Strong',\n      c.rsi >= 40, 'Neutral',\n      c.rsi >= 30, 'Weak',\n      'Oversold'\n    ) AS zone,\n    t.quote_volume_24h AS quote_volume_24h,\n    t.price_change_pct AS price_change_pct,\n    c.close AS latest_close,\n    c.bucket AS latest_time\n  FROM ranked c\n  INNER JOIN ranked p ON p.symbol = c.symbol AND p.rn = 2\n  INNER JOIN symbols s FINAL ON s.symbol = c.symbol\n  INNER JOIN latest_ticker t ON t.symbol = c.symbol\n  WHERE c.rn = 1\n    AND s.status = 'TRADING'\n    AND isNotNull(c.rsi)\n    AND isNotNull(p.rsi)\n    AND t.quote_volume_24h > 0\n)\nWHERE selected_zone = 'All' OR lower(zone) = lower(selected_zone)\nORDER BY quote_volume_24h DESC",
           "refId": "A"
         }
       ],
-      "title": "RSI Heatmap (Latest)",
-      "type": "status-history"
+      "title": "Crypto RSI Heatmap",
+      "type": "volkovlabs-echarts-panel"
     }
   ],
   "refresh": "1m",
@@ -619,6 +595,87 @@
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "4h",
+          "value": "4h"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "RSI TF",
+        "multi": false,
+        "name": "rsi_tf",
+        "options": [
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          },
+          {
+            "selected": true,
+            "text": "4h",
+            "value": "4h"
+          },
+          {
+            "selected": false,
+            "text": "1d",
+            "value": "1d"
+          }
+        ],
+        "query": "1h,4h,1d",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "All"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "RSI Zone",
+        "multi": false,
+        "name": "rsi_zone",
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "All"
+          },
+          {
+            "selected": false,
+            "text": "Overbought",
+            "value": "Overbought"
+          },
+          {
+            "selected": false,
+            "text": "Strong",
+            "value": "Strong"
+          },
+          {
+            "selected": false,
+            "text": "Neutral",
+            "value": "Neutral"
+          },
+          {
+            "selected": false,
+            "text": "Weak",
+            "value": "Weak"
+          },
+          {
+            "selected": false,
+            "text": "Oversold",
+            "value": "Oversold"
+          }
+        ],
+        "query": "All,Overbought,Strong,Neutral,Weak,Oversold",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
       }
     ]
   },

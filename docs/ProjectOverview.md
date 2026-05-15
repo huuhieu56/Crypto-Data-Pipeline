@@ -790,21 +790,44 @@ ORDER BY time;
 
 > **Lưu ý:** Panel này kết nối trực tiếp với backend FastAPI để cung cấp trải nghiệm chat tương tác thay vì hiển thị dữ liệu tĩnh. Đòi hỏi Grafana bật `GF_PANELS_DISABLE_SANITIZE_HTML`.
 
-#### Panel 7: RSI Heatmap (Table with color)
+#### Panel 7: Crypto RSI Heatmap (Scatter)
 
-| Thuộc tính | Giá trị                               |
-| ---------- | ------------------------------------- |
-| Loại       | Table với color threshold             |
-| Colors     | Red (>70), Green (<30), White (30-70) |
+| Thuộc tính | Giá trị                                                |
+| ---------- | ------------------------------------------------------ |
+| Loại       | Business Charts / Apache ECharts scatter heatmap       |
+| Trục X     | `quote_volume_24h` theo log scale (proxy market size)  |
+| Trục Y     | RSI(14), min `10`, max `90`                            |
+| Timeframe  | Theo biến `$rsi_tf`: `1h`, `4h`, `1d`                  |
+| Filter     | Theo biến `$rsi_zone`: All/Overbought/Strong/Neutral/Weak/Oversold |
+
+> **Lưu ý:** V1 dùng `quote_volume_24h` thay cho market cap để không cần thêm API/ETL ngoài. Nếu cần giống CoinMarketCap/CoinGlass hơn, phase sau có thể thêm bảng market cap từ CoinGecko hoặc CoinMarketCap.
+
+Panel aggregate nến 1 phút thành timeframe đã chọn, rồi tính lại RSI(14) trên close của timeframe đó. Chỉ coin `TRADING` có đủ RSI và volume mới được hiển thị.
+
+| Zone       | Điều kiện RSI |
+| ---------- | ------------- |
+| Overbought | `RSI >= 70`   |
+| Strong     | `60 <= RSI < 70` |
+| Neutral    | `40 <= RSI < 60` |
+| Weak       | `30 <= RSI < 40` |
+| Oversold   | `RSI < 30`    |
+
+ECharts hiển thị:
+- nền ngang theo các zone RSI;
+- chấm coin đổi màu theo zone;
+- label là `base_asset`;
+- tooltip gồm RSI, RSI delta, volume 24h, 24h %, latest close;
+- đường dashed từ RSI kỳ trước tới RSI hiện tại để thấy momentum.
 
 ```sql
-SELECT
-    s.base_asset AS coin,
-    argMax(k.rsi_14, k.timestamp) AS rsi_14
-FROM klines k
-JOIN symbols s ON k.symbol = s.symbol
-GROUP BY s.base_asset
-ORDER BY rsi_14 DESC;
+WITH
+  '$rsi_tf' AS selected_tf,
+  '$rsi_zone' AS selected_zone,
+  multiIf(selected_tf = '1h', 3600, selected_tf = '4h', 14400, 86400) AS tf_seconds,
+  (SELECT max(timestamp) FROM klines FINAL) AS latest_ts,
+  latest_ts - toIntervalSecond(tf_seconds * 80) AS from_ts
+-- Query chính aggregate klines theo timeframe, tính RSI(14), join ticker_24h,
+-- filter status TRADING và filter zone nếu selected_zone != 'All'.
 ```
 
 ### 10.3. Variables (Dropdown filters)
@@ -812,6 +835,8 @@ ORDER BY rsi_14 DESC;
 | Variable     | Query                                 | Mục đích                  |
 | ------------ | ------------------------------------- | ------------------------- |
 | `$symbol`    | `SELECT DISTINCT symbol FROM symbols` | Chọn coin để xem chi tiết |
+| `$rsi_tf`    | `1h,4h,1d`                            | Chọn timeframe RSI thật cho heatmap |
+| `$rsi_zone`  | `All,Overbought,Strong,Neutral,Weak,Oversold` | Lọc vùng RSI trên heatmap |
 
 ### 10.4. Alerts (Cảnh báo)
 
@@ -826,7 +851,7 @@ ORDER BY rsi_14 DESC;
 | ----------------- | ---------------- | ------------------------------------------------ |
 | Price charts      | 1 phút           | Klines cập nhật minutely; candle interval tự đổi theo Grafana time range |
 | Volume/Gainers    | 1 phút           | Ticker snapshot cập nhật mỗi phút                 |
-| RSI Heatmap       | 1 phút           | RSI trên 1-min, cập nhật theo klines mỗi phút    |
+| RSI Heatmap       | 1 phút           | Aggregate klines theo `$rsi_tf`, tính RSI(14), cập nhật theo klines/ticker mỗi phút |
 
 ---
 
