@@ -112,11 +112,6 @@ def _load_table(
                 total_inserted += inserted
                 logger.info("[Load] %s %s/%s: %d rows inserted", table_name, symbol, month, inserted)
 
-                try:
-                    storage.remove_object(bucket, key)
-                except Exception:
-                    pass
-
             except Exception as exc:
                 errors += 1
                 logger.error("[Load] %s %s/%s: ERROR -- %s", table_name, symbol, month, exc)
