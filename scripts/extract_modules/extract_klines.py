@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import io
+from datetime import datetime
 
 import pandas as pd
 
 from config.config import MINIO_CONFIG, MONTHS_BACK
-from config.symbols import SYMBOLS
+from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.binance_utils import download_klines_month, fetch_klines_paginated
 from utils.data_utils import get_target_end, get_target_months, normalize_epoch_ms_columns
 from utils.db_utils import get_last_timestamps
@@ -16,6 +17,7 @@ from utils.storage import append_to_partition_csv, storage
 
 logger = get_logger(__name__)
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
+KLINE_INTERVAL_MS = 60_000
 
 
 def _df_to_epoch_ms(df: pd.DataFrame) -> pd.DataFrame:
@@ -24,6 +26,19 @@ def _df_to_epoch_ms(df: pd.DataFrame) -> pd.DataFrame:
         df.drop(columns=["symbol"], errors="ignore"),
         columns=("open_time", "close_time"),
     )
+
+
+def _latest_closed_kline_open_time_ms(target_end: datetime) -> int:
+    """Return the open timestamp of the latest fully closed 1m kline."""
+    end_ms = int(target_end.timestamp() * 1000)
+    return (end_ms // KLINE_INTERVAL_MS) * KLINE_INTERVAL_MS - KLINE_INTERVAL_MS
+
+
+def _incremental_end_time_ms(symbol: str, target_end: datetime) -> int:
+    """Resolve REST API endTime using kline open timestamps as watermarks."""
+    if SYMBOLS_STATUS.get(symbol, "TRADING") == "TRADING":
+        return _latest_closed_kline_open_time_ms(target_end)
+    return int(target_end.timestamp() * 1000)
 
 
 def _upload_csv_partition(df: pd.DataFrame, symbol: str, month_str: str) -> None:
@@ -146,7 +161,7 @@ def extract_recent_klines(
                 continue
 
             target_end = get_target_end(symbol)
-            end_time = int(target_end.timestamp() * 1000)
+            end_time = _incremental_end_time_ms(symbol, target_end)
 
             if last_ts >= end_time:
                 continue

@@ -391,13 +391,23 @@ class TestExtractRecentKlines:
         assert result == {}
 
     def test_target_end_drives_fetch_end_time(self):
-        """get_target_end() controls the REST API end_time."""
-        target_end_ms = 1704153600000
+        """Trading symbols fetch only through the latest fully closed 1m kline."""
+        target_end_ms = 1704153540000
         result = extract_recent_klines(["BTCUSDT"])
 
         assert "BTCUSDT" in result
         self.mock_target_end.assert_called_once_with("BTCUSDT")
         self.mock_fetch.assert_called_once_with("BTCUSDT", 1704067200000, target_end_ms)
+
+    def test_current_open_kline_is_not_fetched(self):
+        """If the latest closed kline is loaded, do not fetch the open kline."""
+        self.mock_last_ts.return_value = {"BTCUSDT": 1704153600000}
+        self.mock_target_end.return_value = datetime(2024, 1, 2, 0, 1, 30, tzinfo=timezone.utc)
+
+        result = extract_recent_klines(["BTCUSDT"])
+
+        assert result == {}
+        self.mock_fetch.assert_not_called()
 
     def test_one_symbol_raises_in_recent_klines_others_succeed(self):
         """Một symbol raise exception → symbols còn lại vẫn được xử lý."""
