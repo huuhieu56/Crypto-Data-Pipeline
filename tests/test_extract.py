@@ -28,6 +28,7 @@ from scripts.extract import (
     extract_order_book_snapshot,
     extract_minutely,
 )
+from scripts.extract_modules.extract_klines import _df_to_epoch_ms
 from utils.exceptions import ExtractError
 
 
@@ -121,6 +122,21 @@ TEST_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 def sample_klines_df():
     """Bản sao mới của klines DataFrame cho mỗi test — tránh mutation."""
     return pd.DataFrame(_KLINES_DF_DATA).copy()
+
+
+def test_df_to_epoch_ms_normalizes_microsecond_ints():
+    df = pd.DataFrame({
+        "open_time": [1704067200000000],
+        "close_time": [1704067259999000],
+        "open": [42000.0],
+        "symbol": ["BTCUSDT"],
+    })
+
+    result = _df_to_epoch_ms(df)
+
+    assert result.loc[0, "open_time"] == 1704067200000
+    assert result.loc[0, "close_time"] == 1704067259999
+    assert "symbol" not in result.columns
 
 
 @pytest.fixture

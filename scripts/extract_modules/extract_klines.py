@@ -9,7 +9,7 @@ import pandas as pd
 from config.config import MINIO_CONFIG, MONTHS_BACK
 from config.symbols import SYMBOLS
 from utils.binance_utils import download_klines_month, fetch_klines_paginated
-from utils.data_utils import get_target_end, get_target_months
+from utils.data_utils import get_target_end, get_target_months, normalize_epoch_ms_columns
 from utils.db_utils import get_last_timestamps
 from utils.logger import get_logger
 from utils.storage import append_to_partition_csv, storage
@@ -20,11 +20,10 @@ BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 
 def _df_to_epoch_ms(df: pd.DataFrame) -> pd.DataFrame:
     """Convert datetime columns in a klines DataFrame to epoch ms (int64)."""
-    out = df.drop(columns=["symbol"], errors="ignore").copy()
-    for col in ("open_time", "close_time"):
-        if col in out.columns and pd.api.types.is_datetime64_any_dtype(out[col]):
-            out[col] = out[col].astype("int64") // 1_000_000  # ns -> ms
-    return out
+    return normalize_epoch_ms_columns(
+        df.drop(columns=["symbol"], errors="ignore"),
+        columns=("open_time", "close_time"),
+    )
 
 
 def _upload_csv_partition(df: pd.DataFrame, symbol: str, month_str: str) -> None:

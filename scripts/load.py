@@ -27,6 +27,7 @@ from config.config import (
 from config.symbols import SYMBOLS, SYMBOL_REGISTRY
 from utils.logger import get_logger
 from utils.exceptions import LoadError
+from utils.data_utils import validate_month_str
 from utils.db_utils import (
     ch_insert_df,
     ch_query_df,
@@ -71,6 +72,8 @@ def _load_table(
 ) -> None:
     """Generic loader: MinIO Parquet -> ClickHouse with watermark filtering."""
     symbols = symbols or SYMBOLS
+    if month_str is not None:
+        month_str = validate_month_str(month_str)
     wm_map = get_table_watermarks(table_name, ts_col, symbols)
     total_inserted = 0
     total_skipped = 0
@@ -167,6 +170,8 @@ def load_klines(
     in SQL, and inserts only new rows.
     """
     symbols = symbols or SYMBOLS
+    if month_str is not None:
+        month_str = validate_month_str(month_str)
     wm_map = get_table_watermarks("klines", "timestamp", symbols)
     total_inserted = 0
     errors = 0
@@ -276,7 +281,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip these tables",
     )
     p.add_argument(
-        "--month", type=str, default=None,
+        "--month", type=validate_month_str, default=None,
         help="Process specific month (YYYY-MM). Default: auto-discover all months.",
     )
     return p

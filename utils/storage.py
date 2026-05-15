@@ -107,6 +107,7 @@ storage = MinIOStorage()
 import pandas as pd
 from datetime import datetime, timezone
 from config.config import PARTITION_MONTH_FORMAT
+from utils.data_utils import normalize_epoch_ms_columns
 
 
 def _normalize_timestamp_unit(table: pa.Table, unit: str = "us") -> pa.Table:
@@ -184,26 +185,13 @@ def append_to_partition_csv(
     import io
 
     # Ensure open_time is numeric epoch ms
-    ts_col = new_df[dedup_col]
-    if pd.api.types.is_datetime64_any_dtype(ts_col):
-        ts_series = ts_col.astype("int64") // 1_000_000  # ns -> ms
-    else:
-        ts_series = ts_col.astype("int64")
-        ts_series = ts_series.where(ts_series <= 1000000000000000, ts_series // 1000)
+    ts_series = normalize_epoch_ms_columns(new_df[[dedup_col]], columns=(dedup_col,))[dedup_col]
 
     # Derive YYYY-MM from epoch ms
     month_series = pd.to_datetime(ts_series, unit="ms", utc=True).dt.strftime(PARTITION_MONTH_FORMAT)
 
     # Normalize timestamp columns to epoch ms for consistent CSV output
-    out_df = new_df.copy()
-    for col in ("open_time", "close_time"):
-        if col in out_df.columns:
-            col_data = out_df[col]
-            if pd.api.types.is_datetime64_any_dtype(col_data):
-                out_df[col] = col_data.astype("int64") // 1_000_000
-            else:
-                vals = col_data.astype("int64")
-                out_df[col] = vals.where(vals <= 1000000000000000, vals // 1000)
+    out_df = normalize_epoch_ms_columns(new_df, columns=("open_time", "close_time"))
 
     for month_str, group_df in out_df.groupby(month_series):
         key = f"{prefix}/{symbol}/{month_str}.csv"

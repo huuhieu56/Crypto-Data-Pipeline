@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 import pandas as pd
+import pytest
 
 from scripts import load as load_module
 
@@ -78,7 +79,17 @@ def test_load_klines_uses_clickhouse_sql_transform(monkeypatch):
     sql_call = mock_client.query.call_args_list[0][0][0]
     assert "INSERT INTO crypto_db.klines" in sql_call
     assert "s3(" in sql_call
+    assert f"/{load_module.BUCKET_RAW}/klines/BTCUSDT/2026-05.csv" in sql_call
+    assert "CSVWithNames" in sql_call
     assert "exponentialMovingAverage" in sql_call
+
+
+def test_load_klines_rejects_invalid_month():
+    with pytest.raises(ValueError, match="Invalid month"):
+        load_module.load_klines(
+            symbols=["BTCUSDT"],
+            month_str="2026-05'; DROP TABLE crypto_db.klines; --",
+        )
 
 
 def test_load_ticker_uses_raw_ticker_path(monkeypatch):
