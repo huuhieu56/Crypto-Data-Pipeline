@@ -10,6 +10,7 @@
 --   {month}          : YYYY-MM partition to read
 --   {watermark_ms}   : epoch ms of last loaded timestamp (0 if bootstrap)
 --   {context_rows}   : number of context rows for warm-up
+--   {bucket_raw}     : MinIO raw bucket name
 --   {s3_endpoint}    : MinIO S3 endpoint URL
 --   {s3_access_key}  : MinIO access key
 --   {s3_secret_key}  : MinIO secret key
@@ -35,9 +36,9 @@ new_raw AS (
         if(open_time > 1000000000000000, intDiv(open_time, 1000), open_time) AS open_time_ms,
         open, high, low, close, volume, quote_volume, trades
     FROM s3(
-        '{s3_endpoint}/crypto-raw/klines/{symbol}/{month}.csv',
+        '{s3_endpoint}/{bucket_raw}/klines/{symbol}/{month}.csv',
         '{s3_access_key}', '{s3_secret_key}',
-        'CSV',
+        'CSVWithNames',
         'open_time Int64, open Float64, high Float64, low Float64, close Float64,
          volume Float64, close_time Int64, quote_volume Float64, trades Int64,
          taker_buy_base Float64, taker_buy_quote Float64'

@@ -210,6 +210,7 @@ def load_klines(
                 month=month,
                 watermark_ms=watermark_ms,
                 context_rows=context_rows,
+                bucket_raw=BUCKET_RAW,
                 s3_endpoint=CLICKHOUSE_S3_ENDPOINT,
                 s3_access_key=s3_access,
                 s3_secret_key=s3_secret,

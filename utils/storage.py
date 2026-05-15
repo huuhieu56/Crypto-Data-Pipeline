@@ -179,6 +179,7 @@ def append_to_partition_csv(
     group to the correct {prefix}/{SYMBOL}/{YYYY-MM}.csv file.
 
     Handles microsecond timestamps from Data Vision by normalizing to ms.
+    Converts datetime columns to epoch ms before writing for consistent CSV format.
     """
     import io
 
@@ -193,7 +194,18 @@ def append_to_partition_csv(
     # Derive YYYY-MM from epoch ms
     month_series = pd.to_datetime(ts_series, unit="ms", utc=True).dt.strftime(PARTITION_MONTH_FORMAT)
 
-    for month_str, group_df in new_df.groupby(month_series):
+    # Normalize timestamp columns to epoch ms for consistent CSV output
+    out_df = new_df.copy()
+    for col in ("open_time", "close_time"):
+        if col in out_df.columns:
+            col_data = out_df[col]
+            if pd.api.types.is_datetime64_any_dtype(col_data):
+                out_df[col] = col_data.astype("int64") // 1_000_000
+            else:
+                vals = col_data.astype("int64")
+                out_df[col] = vals.where(vals <= 1000000000000000, vals // 1000)
+
+    for month_str, group_df in out_df.groupby(month_series):
         key = f"{prefix}/{symbol}/{month_str}.csv"
         group_df = group_df.copy()
 
