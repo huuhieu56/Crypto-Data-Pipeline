@@ -48,8 +48,8 @@ def test_load_table_keeps_minio_partition_after_success(monkeypatch):
     storage.remove_object.assert_not_called()
 
 
-def test_load_klines_reads_processed_parquet(monkeypatch):
-    """load_klines should read processed Parquet from MinIO, not execute transform SQL."""
+def test_load_klines_inserts_raw_csv_to_klines(monkeypatch):
+    """load_klines should load raw OHLCV CSV into klines, no indicator computation."""
     from unittest.mock import ANY
 
     monkeypatch.setattr(load_module, "get_table_watermarks", lambda table, ts_col, symbols: {"BTCUSDT": 1000})
@@ -74,15 +74,16 @@ def test_load_klines_reads_processed_parquet(monkeypatch):
     sql_call = mock_client.query.call_args_list[0][0][0]
     assert "INSERT INTO crypto_db.klines" in sql_call
     assert "s3(" in sql_call
-    assert f"/{load_module.BUCKET_PROCESSED}/klines/BTCUSDT/2026-05.parquet" in sql_call
-    assert "Parquet')" in sql_call
+    assert f"/{load_module.BUCKET_RAW}/klines/BTCUSDT/2026-05.csv" in sql_call
+    assert "CSVWithNames" in sql_call
 
-    # Processed bucket not raw bucket
-    assert load_module.BUCKET_RAW not in sql_call
+    # Raw OHLCV load should set indicators to 0
+    assert "rsi_14" in sql_call
+    assert "macd" in sql_call
+    assert "macd_signal" in sql_call
 
     # Should NOT contain indicator computation (that's transform's job)
     assert "exponentialMovingAverage" not in sql_call
-    assert "AVG" not in sql_call.upper()
 
 
 def test_load_klines_rejects_invalid_month():

@@ -1,6 +1,6 @@
-"""Load script — write data to ClickHouse.
+"""Load script — write data to ClickHouse (ELT: load runs before transform).
 
-Klines: processed Parquet from MinIO → ClickHouse klines table.
+Klines: raw OHLCV CSV from MinIO → ClickHouse klines (no indicators yet).
 Ticker & order book: raw Parquet from MinIO → ClickHouse direct insert.
 
 Usage:
@@ -154,17 +154,61 @@ def load_symbols() -> None:
         raise LoadError(f"Failed to load symbols: {exc}") from exc
 
 
-BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
+def _load_raw_csv_to_klines(
+    symbol: str,
+    month: str,
+    watermark_ms: int,
+) -> int:
+    """Load raw OHLCV from MinIO CSV into klines (no indicators).
+
+    Returns number of rows inserted.
+    """
+    s3_access = MINIO_CONFIG["access_key"]
+    s3_secret = MINIO_CONFIG["secret_key"]
+
+    sql = (
+        f"INSERT INTO crypto_db.klines "
+        f"(symbol, timestamp, open, high, low, close, volume, quote_volume, trades, "
+        f" rsi_14, macd, macd_signal) "
+        f"SELECT "
+        f"'{symbol}' AS symbol, "
+        f"toDateTime(intDiv("
+        f"  toInt64(if(open_time > 1000000000000000, intDiv(open_time, 1000), open_time)), "
+        f"  1000"
+        f"), 'UTC') AS timestamp, "
+        f"open, high, low, close, volume, quote_volume, "
+        f"toUInt32(trades) AS trades, "
+        f"0 AS rsi_14, 0 AS macd, 0 AS macd_signal "
+        f"FROM s3("
+        f"'{CLICKHOUSE_S3_ENDPOINT}/{BUCKET_RAW}/klines/{symbol}/{month}.csv', "
+        f"'{s3_access}', '{s3_secret}', "
+        f"'CSVWithNames', "
+        f"'open_time Int64, open Float64, high Float64, low Float64, close Float64, "
+        f" volume Float64, close_time Int64, quote_volume Float64, trades Int64, "
+        f" taker_buy_base Float64, taker_buy_quote Float64'"
+        f") "
+        f"WHERE toInt64(if(open_time > 1000000000000000, intDiv(open_time, 1000), open_time)) "
+        f"      > {watermark_ms}"
+    )
+
+    client = get_ch_client()
+    client.query(sql)
+
+    result = client.query(
+        f"SELECT count() AS n FROM crypto_db.klines FINAL "
+        f"WHERE symbol = '{symbol}' AND toYYYYMM(timestamp) = {month.replace('-', '')}"
+    )
+    return result.result_rows[0][0] if result.result_rows else 0
 
 
 def load_klines(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Load klines from processed Parquet into ClickHouse.
+    """Load raw OHLCV from MinIO CSV into ClickHouse klines (ELT: load before transform).
 
-    Reads pre-computed indicator Parquet from MinIO processed bucket
-    (written by scripts/transform.py) and inserts into crypto_db.klines.
+    Inserts raw candle data without indicators (rsi_14/macd/macd_signal = 0).
+    The transform step (scripts/transform.py) computes indicators afterwards.
     """
     symbols = symbols or SYMBOLS
     if month_str is not None:
@@ -173,10 +217,7 @@ def load_klines(
     total_inserted = 0
     errors = 0
 
-    logger.info("[Load] klines: %d symbols, processed Parquet -> ClickHouse", len(symbols))
-
-    s3_access = MINIO_CONFIG["access_key"]
-    s3_secret = MINIO_CONFIG["secret_key"]
+    logger.info("[Load] klines: %d symbols, raw CSV -> ClickHouse", len(symbols))
 
     for symbol in symbols:
         watermark_ms = wm_map.get(symbol, 0)
@@ -184,10 +225,10 @@ def load_klines(
         months = (
             [month_str]
             if month_str
-            else discover_month_partitions(BUCKET_PROCESSED, "klines", symbol, extension=".parquet")
+            else discover_month_partitions(BUCKET_RAW, "klines", symbol, extension=".csv")
         )
         if not months:
-            logger.debug("[Load] klines %s: no processed Parquet partitions found", symbol)
+            logger.debug("[Load] klines %s: no raw CSV partitions found", symbol)
             continue
 
         if watermark_ms > 0:
@@ -195,27 +236,14 @@ def load_klines(
             months = [m for m in months if m >= watermark_month]
 
         for month in months:
-            key = f"klines/{symbol}/{month}.parquet"
-            if not storage.object_exists(BUCKET_PROCESSED, key):
-                logger.debug("[Load] klines %s/%s: no processed Parquet, skipped", symbol, month)
+            key = f"klines/{symbol}/{month}.csv"
+            if not storage.object_exists(BUCKET_RAW, key):
+                logger.debug("[Load] klines %s/%s: no raw CSV, skipped", symbol, month)
                 continue
 
-            sql = (
-                f"INSERT INTO crypto_db.klines "
-                f"SELECT * FROM s3("
-                f"'{CLICKHOUSE_S3_ENDPOINT}/{BUCKET_PROCESSED}/{key}', "
-                f"'{s3_access}', '{s3_secret}', 'Parquet')"
-            )
-
             try:
-                client = get_ch_client()
-                client.query(sql)
-                result = client.query(
-                    f"SELECT count() AS n FROM crypto_db.klines FINAL "
-                    f"WHERE symbol = '{symbol}' AND toYYYYMM(timestamp) = {month.replace('-', '')}"
-                )
-                n = result.result_rows[0][0] if result.result_rows else 0
-                logger.info("[Load] klines %s/%s: %d rows in partition", symbol, month, n)
+                n = _load_raw_csv_to_klines(symbol, month, watermark_ms)
+                logger.info("[Load] klines %s/%s: %d raw rows loaded", symbol, month, n)
                 total_inserted += n
             except Exception as exc:
                 errors += 1
@@ -223,7 +251,7 @@ def load_klines(
 
     if total_inserted == 0 and errors > 0:
         raise LoadError(f"klines: all {errors} partition(s) failed, 0 loaded")
-    logger.info("[Load] klines complete: %s rows across %d symbols, %d errors", f"{total_inserted:,}", len(symbols), errors)
+    logger.info("[Load] klines complete: %s raw rows across %d symbols, %d errors", f"{total_inserted:,}", len(symbols), errors)
 
 
 def load_ticker(

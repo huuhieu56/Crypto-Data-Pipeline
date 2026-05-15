@@ -1,27 +1,20 @@
 -- =============================================================================
--- Transform klines: RSI(14) + MACD(12,26,9) in ClickHouse
+-- Transform klines: RSI(14) + MACD(12,26,9) in ClickHouse (ELT)
 -- =============================================================================
--- Reads raw CSV from MinIO via s3(), fetches context rows from ClickHouse
--- for indicator warm-up, computes indicators, and writes processed Parquet
--- to the MinIO processed bucket.
+-- Runs AFTER load_klines has inserted raw OHLCV into crypto_db.klines.
+-- Reads raw rows from klines, fetches context for indicator warm-up,
+-- computes RSI + MACD, and INSERTs back into klines (ReplacingMergeTree
+-- replaces raw rows with transformed ones).
 --
 -- Parameters (Python-side substitution):
---   {symbol}             : trading pair e.g. BTCUSDT
---   {month}              : YYYY-MM partition to read
---   {watermark_ms}       : epoch ms of last loaded timestamp (0 if bootstrap)
---   {context_rows}       : number of context rows for warm-up
---   {bucket_raw}         : MinIO raw bucket name
---   {bucket_processed}   : MinIO processed bucket name
---   {s3_endpoint}        : MinIO S3 endpoint URL
---   {s3_access_key}      : MinIO access key
---   {s3_secret_key}      : MinIO secret key
+--   {symbol}         : trading pair e.g. BTCUSDT
+--   {month}          : YYYY-MM partition
+--   {month_int}      : YYYYMM integer for partition filter
+--   {watermark_ms}   : epoch ms of last transformed timestamp (0 = bootstrap)
+--   {context_rows}   : number of context rows for warm-up
 -- =============================================================================
 
-INSERT INTO FUNCTION s3(
-    '{s3_endpoint}/{bucket_processed}/klines/{symbol}/{month}.parquet',
-    '{s3_access_key}', '{s3_secret_key}',
-    'Parquet'
-)
+INSERT INTO crypto_db.klines
 WITH
 -- 1. Context rows from ClickHouse for indicator warm-up -----------------------
 context AS (
@@ -34,20 +27,15 @@ context AS (
     LIMIT {context_rows}
 ),
 
--- 2. New data from MinIO CSV --------------------------------------------------
+-- 2. Raw rows from klines (loaded by load_klines, not yet transformed) -----
 new_raw AS (
     SELECT
-        toInt64(if(open_time > 1000000000000000, intDiv(open_time, 1000), open_time)) AS open_time_ms,
-        open, high, low, close, volume, quote_volume, toUInt32(trades) AS trades
-    FROM s3(
-        '{s3_endpoint}/{bucket_raw}/klines/{symbol}/{month}.csv',
-        '{s3_access_key}', '{s3_secret_key}',
-        'CSVWithNames',
-        'open_time Int64, open Float64, high Float64, low Float64, close Float64,
-         volume Float64, close_time Int64, quote_volume Float64, trades Int64,
-         taker_buy_base Float64, taker_buy_quote Float64'
-    )
-    WHERE open_time_ms > {watermark_ms}
+        toInt64(toUnixTimestamp(timestamp)) * 1000 AS open_time_ms,
+        open, high, low, close, volume, quote_volume, trades
+    FROM crypto_db.klines
+    WHERE symbol = '{symbol}'
+      AND toYYYYMM(timestamp) = {month_int}
+      AND open_time_ms > {watermark_ms}
 ),
 
 -- 3. Combine context + new data, sorted ---------------------------------------
@@ -108,7 +96,7 @@ with_macd AS (
     FROM indicators
 )
 
--- 7. Output only new rows (written to MinIO processed bucket) -----------------
+-- 7. Output only new rows (ReplacingMergeTree replaces raw rows) ------------
 SELECT
     '{symbol}' AS symbol,
     toDateTime(intDiv(open_time_ms, 1000), 'UTC') AS timestamp,

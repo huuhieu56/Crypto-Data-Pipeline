@@ -8,13 +8,13 @@
 #   1. extract_klines: Gọi Binance REST API lấy 1 nến mới nhất / coin
 #   2. extract_ticker: GET /ticker/24hr + /ticker/bookTicker → ticker_24h
 #   3. extract_order_book: GET /depth → order_book_snapshot
-#   4. transform_klines: ClickHouse SQL tính RSI(14) + MACD(12,26,9) → MinIO processed
-#   5. load_klines: Đọc processed Parquet từ MinIO → ClickHouse klines
+#   4. load_klines: Load raw OHLCV từ MinIO CSV → ClickHouse klines (chưa có indicators)
+#   5. transform_klines: ClickHouse SQL tính RSI(14) + MACD(12,26,9) trong DB
 #   6. load_ticker: Ghi vào ClickHouse bảng ticker_24h
 #   7. load_order_book: Ghi vào ClickHouse bảng order_book_snapshot
 #
 # Dependencies:
-#   extract_klines ──▶ transform_klines ──▶ load_klines
+#   extract_klines ──▶ load_klines ──▶ transform_klines
 #   extract_ticker ───────────────────────▶ load_ticker
 #   extract_order_book ───────────────────▶ load_order_book
 #
@@ -99,18 +99,18 @@ with DAG(
         ),
     )
 
-    # --- Transform -------------------------------------------------------
-
-    transform_klines_task = BashOperator(
-        task_id="transform_klines",
-        bash_command=f"cd {project_root} && python scripts/transform.py",
-    )
-
-    # --- Load ------------------------------------------------------------
+    # --- Load (raw data → ClickHouse, before transform) -----------------
 
     load_klines_task = BashOperator(
         task_id="load_klines",
         bash_command=f"cd {project_root} && python scripts/load.py --only klines",
+    )
+
+    # --- Transform (in-DB: compute RSI + MACD) ---------------------------
+
+    transform_klines_task = BashOperator(
+        task_id="transform_klines",
+        bash_command=f"cd {project_root} && python scripts/transform.py",
     )
 
     load_ticker_task = BashOperator(
@@ -125,6 +125,6 @@ with DAG(
 
     # --- Dependencies ----------------------------------------------------
 
-    extract_klines_task >> transform_klines_task >> load_klines_task
+    extract_klines_task >> load_klines_task >> transform_klines_task
     extract_ticker_task >> load_ticker_task
     extract_order_book_task >> load_order_book_task
