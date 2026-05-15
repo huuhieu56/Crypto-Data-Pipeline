@@ -1,22 +1,27 @@
 -- =============================================================================
 -- Transform klines: RSI(14) + MACD(12,26,9) in ClickHouse
 -- =============================================================================
--- Replaces scripts/transform.py. Reads raw CSV from MinIO via s3(),
--- fetches context rows from ClickHouse for indicator warm-up, computes
--- indicators, and inserts only new rows into crypto_db.klines.
+-- Reads raw CSV from MinIO via s3(), fetches context rows from ClickHouse
+-- for indicator warm-up, computes indicators, and writes processed Parquet
+-- to the MinIO processed bucket.
 --
 -- Parameters (Python-side substitution):
---   {symbol}         : trading pair e.g. BTCUSDT
---   {month}          : YYYY-MM partition to read
---   {watermark_ms}   : epoch ms of last loaded timestamp (0 if bootstrap)
---   {context_rows}   : number of context rows for warm-up
---   {bucket_raw}     : MinIO raw bucket name
---   {s3_endpoint}    : MinIO S3 endpoint URL
---   {s3_access_key}  : MinIO access key
---   {s3_secret_key}  : MinIO secret key
+--   {symbol}             : trading pair e.g. BTCUSDT
+--   {month}              : YYYY-MM partition to read
+--   {watermark_ms}       : epoch ms of last loaded timestamp (0 if bootstrap)
+--   {context_rows}       : number of context rows for warm-up
+--   {bucket_raw}         : MinIO raw bucket name
+--   {bucket_processed}   : MinIO processed bucket name
+--   {s3_endpoint}        : MinIO S3 endpoint URL
+--   {s3_access_key}      : MinIO access key
+--   {s3_secret_key}      : MinIO secret key
 -- =============================================================================
 
-INSERT INTO crypto_db.klines
+INSERT INTO FUNCTION s3(
+    '{s3_endpoint}/{bucket_processed}/klines/{symbol}/{month}.parquet',
+    '{s3_access_key}', '{s3_secret_key}',
+    'Parquet'
+)
 WITH
 -- 1. Context rows from ClickHouse for indicator warm-up -----------------------
 context AS (
@@ -103,7 +108,7 @@ with_macd AS (
     FROM indicators
 )
 
--- 7. Insert only new rows ----------------------------------------------------
+-- 7. Output only new rows (written to MinIO processed bucket) -----------------
 SELECT
     '{symbol}' AS symbol,
     toDateTime(intDiv(open_time_ms, 1000), 'UTC') AS timestamp,

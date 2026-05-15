@@ -48,11 +48,10 @@ def test_load_table_keeps_minio_partition_after_success(monkeypatch):
     storage.remove_object.assert_not_called()
 
 
-def test_load_klines_uses_clickhouse_sql_transform(monkeypatch):
-    """load_klines should execute SQL transform, not read processed Parquet."""
+def test_load_klines_reads_processed_parquet(monkeypatch):
+    """load_klines should read processed Parquet from MinIO, not execute transform SQL."""
     from unittest.mock import ANY
 
-    # Mock dependencies
     monkeypatch.setattr(load_module, "get_table_watermarks", lambda table, ts_col, symbols: {"BTCUSDT": 1000})
     monkeypatch.setattr(
         load_module,
@@ -69,21 +68,21 @@ def test_load_klines_uses_clickhouse_sql_transform(monkeypatch):
     mock_client.query.return_value = mock_result
     monkeypatch.setattr(load_module, "get_ch_client", lambda: mock_client)
 
-    monkeypatch.setattr(load_module.sys.modules["scripts.load"], "CLICKHOUSE_S3_ENDPOINT", "http://minio:9000")
-    monkeypatch.setattr(load_module, "INDICATOR_CONTEXT_ROWS", 120)
-
     load_module.load_klines(symbols=["BTCUSDT"], month_str="2026-05")
 
-    # Verify SQL was executed, not Parquet-based _load_table
     mock_client.query.assert_called()
     sql_call = mock_client.query.call_args_list[0][0][0]
     assert "INSERT INTO crypto_db.klines" in sql_call
     assert "s3(" in sql_call
-    assert f"/{load_module.BUCKET_RAW}/klines/BTCUSDT/2026-05.csv" in sql_call
-    assert "CSVWithNames" in sql_call
-    assert "exponentialMovingAverage" in sql_call
-    assert "row_number() OVER (ORDER BY open_time_ms) - 1 AS ema_idx" in sql_call
-    assert "exponentialMovingAverage(4.149)(close, ema_idx)" in sql_call
+    assert f"/{load_module.BUCKET_PROCESSED}/klines/BTCUSDT/2026-05.parquet" in sql_call
+    assert "Parquet')" in sql_call
+
+    # Processed bucket not raw bucket
+    assert load_module.BUCKET_RAW not in sql_call
+
+    # Should NOT contain indicator computation (that's transform's job)
+    assert "exponentialMovingAverage" not in sql_call
+    assert "AVG" not in sql_call.upper()
 
 
 def test_load_klines_rejects_invalid_month():

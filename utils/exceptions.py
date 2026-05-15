@@ -30,6 +30,12 @@ class APIRequestError(ExtractError):
         super().__init__(msg)
 
 
+# --- Transform Layer ----------------------------------------------------------
+
+class TransformError(PipelineError):
+    """Error during data transformation / indicator computation."""
+
+
 # --- Load Layer --------------------------------------------------------------
 
 class LoadError(PipelineError):

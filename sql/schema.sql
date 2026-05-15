@@ -16,6 +16,63 @@ CREATE TABLE IF NOT EXISTS crypto_db.symbols (
 ) ENGINE = ReplacingMergeTree()
 ORDER BY (symbol);
 
+INSERT INTO crypto_db.symbols (symbol, base_asset, quote_asset, status)
+SELECT symbol, base_asset, quote_asset, status
+FROM values(
+    'symbol String, base_asset String, quote_asset String, status String',
+    ('BTCUSDT', 'BTC', 'USDT', 'TRADING'),
+    ('ETHUSDT', 'ETH', 'USDT', 'TRADING'),
+    ('BNBUSDT', 'BNB', 'USDT', 'TRADING'),
+    ('SOLUSDT', 'SOL', 'USDT', 'TRADING'),
+    ('XRPUSDT', 'XRP', 'USDT', 'TRADING'),
+    ('DOGEUSDT', 'DOGE', 'USDT', 'TRADING'),
+    ('ADAUSDT', 'ADA', 'USDT', 'TRADING'),
+    ('TRXUSDT', 'TRX', 'USDT', 'TRADING'),
+    ('LINKUSDT', 'LINK', 'USDT', 'TRADING'),
+    ('MATICUSDT', 'MATIC', 'USDT', 'BREAK'),
+    ('AVAXUSDT', 'AVAX', 'USDT', 'TRADING'),
+    ('TONUSDT', 'TON', 'USDT', 'TRADING'),
+    ('SHIBUSDT', 'SHIB', 'USDT', 'TRADING'),
+    ('XLMUSDT', 'XLM', 'USDT', 'TRADING'),
+    ('BCHUSDT', 'BCH', 'USDT', 'TRADING'),
+    ('DOTUSDT', 'DOT', 'USDT', 'TRADING'),
+    ('UNIUSDT', 'UNI', 'USDT', 'TRADING'),
+    ('LTCUSDT', 'LTC', 'USDT', 'TRADING'),
+    ('HBARUSDT', 'HBAR', 'USDT', 'TRADING'),
+    ('PEPEUSDT', 'PEPE', 'USDT', 'TRADING'),
+    ('NEARUSDT', 'NEAR', 'USDT', 'TRADING'),
+    ('APTUSDT', 'APT', 'USDT', 'TRADING'),
+    ('ICPUSDT', 'ICP', 'USDT', 'TRADING'),
+    ('ETCUSDT', 'ETC', 'USDT', 'TRADING'),
+    ('STXUSDT', 'STX', 'USDT', 'TRADING'),
+    ('RENDERUSDT', 'RENDER', 'USDT', 'TRADING'),
+    ('CROUSDT', 'CRO', 'USDT', 'BREAK'),
+    ('ATOMUSDT', 'ATOM', 'USDT', 'TRADING'),
+    ('VETUSDT', 'VET', 'USDT', 'TRADING'),
+    ('ARBUSDT', 'ARB', 'USDT', 'TRADING'),
+    ('INJUSDT', 'INJ', 'USDT', 'TRADING'),
+    ('IMXUSDT', 'IMX', 'USDT', 'TRADING'),
+    ('OPUSDT', 'OP', 'USDT', 'TRADING'),
+    ('GRTUSDT', 'GRT', 'USDT', 'TRADING'),
+    ('THETAUSDT', 'THETA', 'USDT', 'TRADING'),
+    ('FILUSDT', 'FIL', 'USDT', 'TRADING'),
+    ('ARUSDT', 'AR', 'USDT', 'TRADING'),
+    ('MKRUSDT', 'MKR', 'USDT', 'BREAK'),
+    ('WIFUSDT', 'WIF', 'USDT', 'TRADING'),
+    ('RUNEUSDT', 'RUNE', 'USDT', 'TRADING'),
+    ('FTMUSDT', 'FTM', 'USDT', 'BREAK'),
+    ('ALGOUSDT', 'ALGO', 'USDT', 'TRADING'),
+    ('FLOWUSDT', 'FLOW', 'USDT', 'TRADING'),
+    ('XTZUSDT', 'XTZ', 'USDT', 'TRADING'),
+    ('AXSUSDT', 'AXS', 'USDT', 'TRADING'),
+    ('SANDUSDT', 'SAND', 'USDT', 'TRADING'),
+    ('MANAUSDT', 'MANA', 'USDT', 'TRADING'),
+    ('NEOUSDT', 'NEO', 'USDT', 'TRADING'),
+    ('EOSUSDT', 'EOS', 'USDT', 'BREAK'),
+    ('AAVEUSDT', 'AAVE', 'USDT', 'TRADING')
+)
+WHERE symbol NOT IN (SELECT symbol FROM crypto_db.symbols);
+
 -- 2) Fact: Klines (1-minute candles + indicators)
 CREATE TABLE IF NOT EXISTS crypto_db.klines (
     symbol String,
@@ -76,4 +133,3 @@ CREATE TABLE IF NOT EXISTS crypto_db.chat_history (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (session_id, timestamp);
-
