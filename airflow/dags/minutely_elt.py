@@ -1,22 +1,24 @@
 # =============================================================================
-# Minutely ETL DAG - Apache Airflow
+# Minutely ELT/ETL DAG - Apache Airflow
 # =============================================================================
 # Schedule: Mỗi phút (* * * * *)
 # Timeout: 50 giây (phải xong trước phút tiếp theo)
 #
 # Tasks:
 #   1. extract_klines: Gọi Binance REST API lấy 1 nến mới nhất / coin
-#   2. extract_ticker: GET /ticker/24hr + /ticker/bookTicker → ticker_24h
-#   3. extract_order_book: GET /depth → order_book_snapshot
+#   2. extract_ticker: GET /ticker/24hr + /ticker/bookTicker → MinIO (raw)
+#   3. extract_order_book: GET /depth → MinIO (raw bids/asks)
 #   4. load_klines: Load raw OHLCV từ MinIO CSV → ClickHouse klines (chưa có indicators)
 #   5. transform_klines: ClickHouse SQL tính RSI(14) + MACD(12,26,9) trong DB
-#   6. load_ticker: Ghi vào ClickHouse bảng ticker_24h
-#   7. load_order_book: Ghi vào ClickHouse bảng order_book_snapshot
+#   6. transform_ticker: MinIO raw → merge + rename + spread_pct → MinIO Parquet
+#   7. load_ticker: MinIO Parquet → ClickHouse ticker_24h
+#   8. transform_order_book: MinIO raw → compute volumes/imbalance → MinIO Parquet
+#   9. load_order_book: MinIO Parquet → ClickHouse order_book_snapshot
 #
 # Dependencies:
-#   extract_klines ──▶ load_klines ──▶ transform_klines
-#   extract_ticker ───────────────────────▶ load_ticker
-#   extract_order_book ───────────────────▶ load_order_book
+#   extract_klines ──▶ load_klines ──▶ transform_klines        (ELT)
+#   extract_ticker ──▶ transform_ticker ──▶ load_ticker         (ETL)
+#   extract_order_book ──▶ transform_order_book ──▶ load_order_book  (ETL)
 #
 # Note:
 #   - Mini-batch / near-streaming: toàn bộ pipeline chạy mỗi phút
@@ -110,12 +112,26 @@ with DAG(
 
     transform_klines_task = BashOperator(
         task_id="transform_klines",
-        bash_command=f"cd {project_root} && python scripts/transform.py",
+        bash_command=f"cd {project_root} && python scripts/transform.py --only klines",
+    )
+
+    # --- Ticker: raw → transform (merge/rename/spread_pct) → load -----------
+
+    transform_ticker_task = BashOperator(
+        task_id="transform_ticker",
+        bash_command=f"cd {project_root} && python scripts/transform.py --only ticker",
     )
 
     load_ticker_task = BashOperator(
         task_id="load_ticker",
         bash_command=f"cd {project_root} && python scripts/load.py --only ticker",
+    )
+
+    # --- Order book: raw → transform (volumes/imbalance) → load -----------
+
+    transform_order_book_task = BashOperator(
+        task_id="transform_order_book",
+        bash_command=f"cd {project_root} && python scripts/transform.py --only orderbook",
     )
 
     load_order_book_task = BashOperator(
@@ -126,5 +142,5 @@ with DAG(
     # --- Dependencies ----------------------------------------------------
 
     extract_klines_task >> load_klines_task >> transform_klines_task
-    extract_ticker_task >> load_ticker_task
-    extract_order_book_task >> load_order_book_task
+    extract_ticker_task >> transform_ticker_task >> load_ticker_task
+    extract_order_book_task >> transform_order_book_task >> load_order_book_task

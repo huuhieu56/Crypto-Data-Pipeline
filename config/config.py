@@ -69,6 +69,22 @@ CLICKHOUSE_S3_ENDPOINT = os.getenv(
 INDICATOR_CONTEXT_ROWS = 120        # warm-up rows for indicator calculation
 PARTITION_MONTH_FORMAT = "%Y-%m"    # monthly partition key format
 
+# --- Binance API → DB column mapping (camelCase → snake_case) ----------------
+
+BINANCE_COLUMN_MAP = {
+    # ticker_24h endpoint
+    "priceChange": "price_change",
+    "priceChangePercent": "price_change_pct",
+    "highPrice": "high_24h",
+    "lowPrice": "low_24h",
+    "volume": "volume_24h",
+    "quoteVolume": "quote_volume_24h",
+    "count": "trade_count",
+    # book_ticker endpoint
+    "bidPrice": "bid_price",
+    "askPrice": "ask_price",
+}
+
 # --- Klines Schema -----------------------------------------------------------
 
 _KLINES_RAW_COLUMNS = [

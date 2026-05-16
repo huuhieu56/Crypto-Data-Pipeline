@@ -58,15 +58,13 @@ def _filter_by_watermark(
 def _load_table(
     symbols: list[str] | None,
     bucket: str,
-    prefix: str,
     table_name: str,
     ts_col: str,
-    target_cols: list[str],
-    type_coercions: dict[str, str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Generic loader: MinIO Parquet -> ClickHouse with watermark filtering."""
-    symbols = symbols or SYMBOLS
+    """Generic loader: download Parquet from MinIO, filter by watermark, insert into ClickHouse."""
+    if symbols is None:
+        symbols = SYMBOLS
     if month_str is not None:
         month_str = validate_month_str(month_str)
     wm_map = get_table_watermarks(table_name, ts_col, symbols)
@@ -80,14 +78,14 @@ def _load_table(
         months = (
             [month_str]
             if month_str
-            else discover_month_partitions(bucket, prefix, symbol)
+            else discover_month_partitions(bucket, table_name, symbol)
         )
         if not months:
             logger.debug("[Load] %s %s: no partitions found", table_name, symbol)
             continue
 
         for month in months:
-            key = f"{prefix}/{symbol}/{month}.parquet"
+            key = f"{table_name}/{symbol}/{month}.parquet"
             try:
                 table = storage.download_parquet(bucket, key)
                 df = table.to_pandas()
@@ -99,21 +97,12 @@ def _load_table(
                     continue
 
                 raw_count = len(df)
-                df[ts_col] = pd.to_datetime(df[ts_col])
-                if type_coercions:
-                    for col, dtype in type_coercions.items():
-                        if col in df.columns:
-                            df[col] = pd.to_numeric(df[col], errors="coerce")
-                            if dtype == "uint32":
-                                df[col] = df[col].fillna(0).astype("uint32")
-
                 df = _filter_by_watermark(df, ts_col, wm_map.get(symbol))
                 if df.empty:
                     logger.debug("[Load] %s %s/%s: %d rows filtered (watermark), skipped", table_name, symbol, month, raw_count)
                     total_skipped += 1
                     continue
 
-                df = df[[c for c in target_cols if c in df.columns]]
                 inserted = ch_insert_df(table_name, df)
                 total_inserted += inserted
                 logger.info("[Load] %s %s/%s: %d rows inserted", table_name, symbol, month, inserted)
@@ -263,26 +252,16 @@ def load_ticker(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Load ticker snapshots into ClickHouse (per-partition)."""
-    _load_table(
-        symbols, BUCKET_RAW, "ticker_24h", "ticker_24h", "snapshot_time",
-        ["symbol", "snapshot_time", "price_change", "price_change_pct",
-         "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
-         "trade_count", "bid_price", "ask_price", "spread_pct"],
-        {"trade_count": "uint32"}, month_str,
-    )
+    """Load transformed ticker Parquet from MinIO → ClickHouse."""
+    _load_table(symbols, BUCKET_RAW, "ticker_24h", "snapshot_time", month_str=month_str)
 
 
 def load_order_book(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Load order book snapshots into ClickHouse (per-partition)."""
-    _load_table(
-        symbols, BUCKET_RAW, "order_book", "order_book_snapshot", "timestamp",
-        ["symbol", "timestamp", "total_bid_volume", "total_ask_volume", "imbalance"],
-        month_str=month_str,
-    )
+    """Load transformed order book Parquet from MinIO → ClickHouse."""
+    _load_table(symbols, BUCKET_RAW, "order_book_snapshot", "timestamp", month_str=month_str)
 
 
 # --- CLI ---------------------------------------------------------------------

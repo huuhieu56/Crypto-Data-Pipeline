@@ -466,47 +466,29 @@ class TestExtractTicker24h:
         )
 
     # --- Happy Path ---
-    def test_happy_path_returns_merged_dataframe(self):
-        """API trả về data chuẩn → DataFrame đã merge & tính spread."""
-        result = extract_ticker_24h(TEST_SYMBOLS)
+    def test_happy_path_returns_two_raw_dataframes(self):
+        """API trả về data chuẩn → (ticker_df, book_df) raw (camelCase)."""
+        ticker_df, book_df = extract_ticker_24h(TEST_SYMBOLS)
 
-        assert result is not None
-        assert len(result) == 2  # chỉ BTCUSDT và ETHUSDT
-        assert set(result["symbol"].tolist()) == {"BTCUSDT", "ETHUSDT"}
+        assert ticker_df is not None
+        assert book_df is not None
+        assert len(ticker_df) == 2  # chỉ BTCUSDT và ETHUSDT
+        assert len(book_df) == 2
+        assert set(ticker_df["symbol"].tolist()) == {"BTCUSDT", "ETHUSDT"}
 
-        # Kiểm tra schema columns
-        expected_cols = [
-            "symbol", "snapshot_time", "price_change", "price_change_pct",
-            "high_24h", "low_24h", "volume_24h", "quote_volume_24h",
-            "trade_count", "bid_price", "ask_price", "spread_pct",
-        ]
-        assert list(result.columns) == expected_cols
-
-    def test_spread_pct_computed_correctly(self):
-        """spread_pct = (ask - bid) / ask * 100."""
-        result = extract_ticker_24h(TEST_SYMBOLS)
-
-        btc_row = result[result["symbol"] == "BTCUSDT"].iloc[0]
-        expected_spread = (42310.0 - 42290.0) / 42310.0 * 100
-        assert btc_row["spread_pct"] == pytest.approx(expected_spread)
-
-    def test_numeric_columns_are_float(self):
-        """Tất cả numeric columns phải là float sau khi pd.to_numeric."""
-        result = extract_ticker_24h(TEST_SYMBOLS)
-
-        float_cols = [
-            "price_change", "price_change_pct", "high_24h", "low_24h",
-            "volume_24h", "quote_volume_24h", "bid_price", "ask_price",
-        ]
-        for col in float_cols:
-            assert result[col].dtype == "float64", f"{col} should be float64"
+        # Raw columns từ Binance (camelCase), chưa rename
+        assert "symbol" in ticker_df.columns
+        assert "priceChange" in ticker_df.columns
+        assert "bidPrice" in book_df.columns
+        assert "askPrice" in book_df.columns
 
     def test_filters_only_requested_symbols(self):
         """Chỉ giữ symbols trong danh sách, loại bỏ coins khác."""
-        result = extract_ticker_24h(["BTCUSDT"])
+        ticker_df, book_df = extract_ticker_24h(["BTCUSDT"])
 
-        assert len(result) == 1
-        assert result.iloc[0]["symbol"] == "BTCUSDT"
+        assert len(ticker_df) == 1
+        assert len(book_df) == 1
+        assert ticker_df.iloc[0]["symbol"] == "BTCUSDT"
 
     # --- Sad Path ---
     def test_ticker_api_error_raises_extract_error(self):
@@ -524,10 +506,10 @@ class TestExtractTicker24h:
             extract_ticker_24h(TEST_SYMBOLS)
 
     # --- Edge Cases ---
-    def test_empty_symbols_returns_none(self):
-        """Truyền list rỗng → trả về None, không gọi API."""
+    def test_empty_symbols_returns_none_none(self):
+        """Truyền list rỗng → trả về (None, None), không gọi API."""
         result = extract_ticker_24h([])
-        assert result is None
+        assert result == (None, None)
 
     def test_api_returns_empty_data_raises_key_error(self):
         """API trả về list rỗng → pd.DataFrame([]) không có cột 'symbol' → KeyError.
@@ -541,41 +523,14 @@ class TestExtractTicker24h:
         with pytest.raises(KeyError):
             extract_ticker_24h(TEST_SYMBOLS)
 
-    def test_symbol_in_ticker_but_not_in_book(self):
-        """Symbol có trong ticker nhưng book ticker rỗng → KeyError.
-
-        Ghi chú: pd.DataFrame([]) không có cột 'symbol', gây KeyError khi filter.
-        """
-        self.mock_book.return_value = []
-
-        with pytest.raises(KeyError):
-            extract_ticker_24h(TEST_SYMBOLS)
-
-    def test_symbol_in_ticker_but_missing_in_book(self):
-        """Symbol có trong ticker nhưng không match book ticker → NaN cho bid/ask."""
-        self.mock_book.return_value = [
-            {"symbol": "XYZUSDT", "bidPrice": "100.00", "askPrice": "101.00"},
-        ]
-
-        result = extract_ticker_24h(TEST_SYMBOLS)
-
-        assert result is not None
-        assert len(result) == 2
-        # bid_price và ask_price phải là NaN vì left join không match
-        assert result["bid_price"].isna().all()
-        assert result["ask_price"].isna().all()
-
     def test_per_symbol_partition_writes(self):
-        """append_to_partition is called once per symbol (per-symbol Parquet)."""
+        """append_to_partition called once per symbol per data type."""
         extract_ticker_24h(TEST_SYMBOLS)
 
-        # 2 symbols → 2 calls to append_to_partition
-        assert self.mock_append.call_count == 2
-        # Verify prefix and dedup_col
-        for call in self.mock_append.call_args_list:
-            args, kwargs = call
-            assert args[1] == "ticker_24h"  # prefix
-            assert kwargs.get("dedup_col", args[4] if len(args) > 4 else None) == "snapshot_time"
+        # 2 symbols × 2 data types (ticker_raw + book_ticker_raw) = 4 calls
+        assert self.mock_append.call_count == 4
+        prefixes = {call.args[1] for call in self.mock_append.call_args_list}
+        assert prefixes == {"ticker_raw", "book_ticker_raw"}
 
 
 # ============================================================================
@@ -602,30 +557,22 @@ class TestExtractOrderBookSnapshot:
         )
 
     # --- Happy Path ---
-    def test_happy_path_returns_dataframe(self):
-        """API trả về order book chuẩn → DataFrame với imbalance."""
+    def test_happy_path_returns_raw_dataframe(self):
+        """API trả về order book chuẩn → DataFrame raw với bids/asks arrays."""
         result = extract_order_book_snapshot(["BTCUSDT"])
 
         assert result is not None
         assert len(result) == 1
         row = result.iloc[0]
         assert row["symbol"] == "BTCUSDT"
-
-        # bid_vol = 1.5 + 2.3 + 0.8 = 4.6
-        assert row["total_bid_volume"] == pytest.approx(4.6)
-        # ask_vol = 1.2 + 3.1 + 0.5 = 4.8
-        assert row["total_ask_volume"] == pytest.approx(4.8)
-        # imbalance = 4.6 / (4.6 + 4.8)
-        assert row["imbalance"] == pytest.approx(4.6 / 9.4)
+        assert len(row["bids"]) == 3
+        assert len(row["asks"]) == 3
 
     def test_output_columns_correct(self):
-        """Kiểm tra schema cột output."""
+        """Kiểm tra schema cột output — raw bids/asks, chưa compute."""
         result = extract_order_book_snapshot(["BTCUSDT"])
 
-        expected_cols = {
-            "symbol", "timestamp", "total_bid_volume",
-            "total_ask_volume", "imbalance",
-        }
+        expected_cols = {"symbol", "timestamp", "bids", "asks"}
         assert set(result.columns) == expected_cols
 
     def test_multiple_symbols(self):
@@ -664,36 +611,31 @@ class TestExtractOrderBookSnapshot:
         result = extract_order_book_snapshot([])
         assert result is None
 
-    def test_empty_order_book_zero_imbalance(self):
-        """Order book không có bids/asks → imbalance = 0."""
+    def test_empty_order_book_stored_as_empty_lists(self):
+        """Order book không có bids/asks → raw arrays rỗng."""
         self.mock_ob.return_value = {"bids": [], "asks": []}
 
         result = extract_order_book_snapshot(["BTCUSDT"])
 
         assert result is not None
         row = result.iloc[0]
-        assert row["total_bid_volume"] == pytest.approx(0.0)
-        assert row["total_ask_volume"] == pytest.approx(0.0)
-        assert row["imbalance"] == pytest.approx(0.0)
+        assert row["bids"] == []
+        assert row["asks"] == []
 
-    def test_malformed_bid_values_skipped(self):
-        """Bid entries có giá trị không hợp lệ → bị skip, không crash."""
+    def test_raw_bids_asks_stored_as_lists(self):
+        """Bids/asks được lưu nguyên dạng list, không compute."""
         self.mock_ob.return_value = {
-            "bids": [
-                ["42290.00", "1.5"],
-                ["42285.00", "invalid"],  # giá trị lỗi
-                [],                       # entry trống
-            ],
-            "asks": [["42310.00", "2.0"]],
+            "bids": [["42290.00", "1.5"], ["42285.00", "2.3"]],
+            "asks": [["42310.00", "1.2"]],
         }
 
         result = extract_order_book_snapshot(["BTCUSDT"])
 
         assert result is not None
         row = result.iloc[0]
-        # Chỉ bid đầu tiên hợp lệ
-        assert row["total_bid_volume"] == pytest.approx(1.5)
-        assert row["total_ask_volume"] == pytest.approx(2.0)
+        assert len(row["bids"]) == 2
+        assert len(row["asks"]) == 1
+        assert row["bids"][0] == ["42290.00", "1.5"]
 
     def test_per_symbol_partition_writes(self):
         """append_to_partition is called once per symbol (per-symbol Parquet)."""
