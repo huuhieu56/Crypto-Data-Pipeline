@@ -34,15 +34,13 @@ def test_load_table_keeps_minio_partition_after_success(monkeypatch):
     load_module._load_table(
         ["BTCUSDT"],
         "crypto-raw",
-        "features",
         "klines",
         "timestamp",
-        ["symbol", "timestamp", "open"],
     )
 
     storage.download_parquet.assert_called_once_with(
         "crypto-raw",
-        "features/BTCUSDT/2026-05.parquet",
+        "klines/BTCUSDT/2026-05.parquet",
     )
     insert.assert_called_once()
     storage.remove_object.assert_not_called()
@@ -130,35 +128,64 @@ def test_resolve_kline_months_to_load_filters_before_watermark_month(monkeypatch
     assert months == ["2026-04", "2026-05"]
 
 
-def test_load_ticker_uses_raw_ticker_path(monkeypatch):
-    load_table = MagicMock()
-    monkeypatch.setattr(load_module, "_load_table", load_table)
+def test_load_ticker_inserts_transformed_parquet(monkeypatch):
+    """load_ticker delegates to _load_table with correct prefix and columns."""
+    transformed_df = pd.DataFrame({
+        "symbol": ["BTCUSDT"],
+        "snapshot_time": [pd.Timestamp("2026-05-15 08:45:00", tz="UTC")],
+        "price_change": [1500.0],
+        "spread_pct": [0.0473],
+    })
+
+    storage = MagicMock()
+    storage.download_parquet.return_value = _mock_parquet_table(transformed_df)
+    monkeypatch.setattr(load_module, "storage", storage)
+    monkeypatch.setattr(load_module, "get_table_watermarks", lambda table, ts_col, symbols: {})
+    monkeypatch.setattr(
+        load_module, "discover_month_partitions",
+        lambda bucket, prefix, symbol: ["2026-05"],
+    )
+    insert = MagicMock(return_value=1)
+    monkeypatch.setattr(load_module, "ch_insert_df", insert)
 
     load_module.load_ticker(symbols=["BTCUSDT"], month_str="2026-05")
 
-    args, kwargs = load_table.call_args
-    assert kwargs == {}
-    assert args[:5] == (
-        ["BTCUSDT"],
-        load_module.BUCKET_RAW,
-        "ticker_24h",
-        "ticker_24h",
-        "snapshot_time",
+    insert.assert_called_once()
+    call_args = insert.call_args
+    assert call_args[0][0] == "ticker_24h"
+    df = call_args[0][1]
+    assert "price_change" in df.columns
+    assert "snapshot_time" in df.columns
+    assert "spread_pct" in df.columns
+
+
+def test_load_order_book_inserts_transformed_parquet(monkeypatch):
+    """load_order_book delegates to _load_table with correct prefix and columns."""
+    transformed_df = pd.DataFrame({
+        "symbol": ["BTCUSDT"],
+        "timestamp": [pd.Timestamp("2026-05-15 08:45:00")],
+        "total_bid_volume": [3.8],
+        "total_ask_volume": [4.3],
+        "imbalance": [0.4691],
+    })
+
+    storage = MagicMock()
+    storage.download_parquet.return_value = _mock_parquet_table(transformed_df)
+    monkeypatch.setattr(load_module, "storage", storage)
+    monkeypatch.setattr(load_module, "get_table_watermarks", lambda table, ts_col, symbols: {})
+    monkeypatch.setattr(
+        load_module, "discover_month_partitions",
+        lambda bucket, prefix, symbol: ["2026-05"],
     )
-
-
-def test_load_order_book_uses_raw_order_book_path(monkeypatch):
-    load_table = MagicMock()
-    monkeypatch.setattr(load_module, "_load_table", load_table)
+    insert = MagicMock(return_value=1)
+    monkeypatch.setattr(load_module, "ch_insert_df", insert)
 
     load_module.load_order_book(symbols=["BTCUSDT"], month_str="2026-05")
 
-    args, kwargs = load_table.call_args
-    assert args[:5] == (
-        ["BTCUSDT"],
-        load_module.BUCKET_RAW,
-        "order_book",
-        "order_book_snapshot",
-        "timestamp",
-    )
-    assert kwargs == {"month_str": "2026-05"}
+    insert.assert_called_once()
+    call_args = insert.call_args
+    assert call_args[0][0] == "order_book_snapshot"
+    df = call_args[0][1]
+    assert "total_bid_volume" in df.columns
+    assert "total_ask_volume" in df.columns
+    assert "imbalance" in df.columns
