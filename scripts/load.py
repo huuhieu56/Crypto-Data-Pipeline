@@ -154,12 +154,12 @@ def load_symbols() -> None:
         raise LoadError(f"Failed to load symbols: {exc}") from exc
 
 
-def _load_raw_csv_to_klines(
+def _insert_kline_csv_partition(
     symbol: str,
     month: str,
     watermark_ms: int,
 ) -> int:
-    """Load raw OHLCV from MinIO CSV into klines (no indicators).
+    """Insert one raw kline CSV partition into ClickHouse.
 
     Returns number of rows inserted.
     """
@@ -172,10 +172,7 @@ def _load_raw_csv_to_klines(
         f" rsi_14, macd, macd_signal) "
         f"SELECT "
         f"'{symbol}' AS symbol, "
-        f"toDateTime(intDiv("
-        f"  toInt64(if(open_time > 1000000000000000, intDiv(open_time, 1000), open_time)), "
-        f"  1000"
-        f"), 'UTC') AS timestamp, "
+        f"toDateTime(intDiv(open_time, 1000), 'UTC') AS timestamp, "
         f"open, high, low, close, volume, quote_volume, "
         f"toUInt32(trades) AS trades, "
         f"NULL AS rsi_14, NULL AS macd, NULL AS macd_signal "
@@ -187,8 +184,7 @@ def _load_raw_csv_to_klines(
         f" volume Float64, close_time Int64, quote_volume Float64, trades Int64, "
         f" taker_buy_base Float64, taker_buy_quote Float64'"
         f") "
-        f"WHERE toInt64(if(open_time > 1000000000000000, intDiv(open_time, 1000), open_time)) "
-        f"      > {watermark_ms}"
+        f"WHERE open_time > {watermark_ms}"
     )
 
     client = get_ch_client()
@@ -199,6 +195,24 @@ def _load_raw_csv_to_klines(
         f"WHERE symbol = '{symbol}' AND toYYYYMM(timestamp) = {month.replace('-', '')}"
     )
     return result.result_rows[0][0] if result.result_rows else 0
+
+
+def _resolve_kline_months_to_load(
+    symbol: str,
+    month_str: str | None,
+    watermark_ms: int,
+) -> list[str]:
+    """Return raw kline CSV month partitions that may contain new rows."""
+    months = (
+        [month_str]
+        if month_str
+        else discover_month_partitions(BUCKET_RAW, "klines", symbol, extension=".csv")
+    )
+    if watermark_ms <= 0:
+        return months
+
+    watermark_month = pd.to_datetime(watermark_ms, unit="ms", utc=True).strftime("%Y-%m")
+    return [m for m in months if m >= watermark_month]
 
 
 def load_klines(
@@ -221,19 +235,10 @@ def load_klines(
 
     for symbol in symbols:
         watermark_ms = wm_map.get(symbol, 0)
-
-        months = (
-            [month_str]
-            if month_str
-            else discover_month_partitions(BUCKET_RAW, "klines", symbol, extension=".csv")
-        )
+        months = _resolve_kline_months_to_load(symbol, month_str, watermark_ms)
         if not months:
             logger.debug("[Load] klines %s: no raw CSV partitions found", symbol)
             continue
-
-        if watermark_ms > 0:
-            watermark_month = pd.to_datetime(watermark_ms, unit="ms", utc=True).strftime("%Y-%m")
-            months = [m for m in months if m >= watermark_month]
 
         for month in months:
             key = f"klines/{symbol}/{month}.csv"
@@ -242,7 +247,7 @@ def load_klines(
                 continue
 
             try:
-                n = _load_raw_csv_to_klines(symbol, month, watermark_ms)
+                n = _insert_kline_csv_partition(symbol, month, watermark_ms)
                 logger.info("[Load] klines %s/%s: %d raw rows loaded", symbol, month, n)
                 total_inserted += n
             except Exception as exc:

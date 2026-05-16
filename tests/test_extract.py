@@ -29,6 +29,7 @@ from scripts.extract import (
     extract_minutely,
 )
 from scripts.extract_modules.extract_klines import _df_to_epoch_ms
+from config.config import MONTHS_BACK
 from utils.exceptions import ExtractError
 
 
@@ -327,6 +328,7 @@ class TestExtractRecentKlines:
         )
         self.mock_fetch = MagicMock(return_value=sample_klines_df)
         self.mock_write = MagicMock()
+        self.mock_bulk = MagicMock(return_value={"BTCUSDT": 5000})
 
         monkeypatch.setattr(
             "scripts.extract_modules.extract_klines.get_last_timestamps", self.mock_last_ts,
@@ -340,6 +342,9 @@ class TestExtractRecentKlines:
         monkeypatch.setattr(
             "scripts.extract_modules.extract_klines.append_to_partition_csv", self.mock_write,
         )
+        monkeypatch.setattr(
+            "scripts.extract_modules.extract_klines.extract_bulk", self.mock_bulk,
+        )
 
     # --- Happy Path ---
     def test_happy_path_returns_new_data(self):
@@ -351,13 +356,19 @@ class TestExtractRecentKlines:
         self.mock_fetch.assert_called_once()
 
     # --- Sad Path ---
-    def test_no_existing_data_skips_symbol(self):
-        """Symbol chưa có dữ liệu (not in last_ts) → bị skip."""
-        self.mock_last_ts.return_value = {}  # empty = no data
+    def test_no_existing_data_bootstraps_then_skips_if_still_missing(self):
+        """Symbol chưa có dữ liệu → bootstrap bằng extract_bulk, rồi skip nếu vẫn thiếu watermark."""
+        self.mock_last_ts.side_effect = [{}, {}]
 
         result = extract_recent_klines(["BTCUSDT"])
 
         assert result == {}
+        self.mock_bulk.assert_called_once_with(
+            ["BTCUSDT"],
+            months_back=MONTHS_BACK,
+            log_context="BOOTSTRAP",
+        )
+        self.mock_fetch.assert_not_called()
 
     def test_api_returns_empty_dataframe(self):
         """API trả về DataFrame rỗng → không có kết quả."""
