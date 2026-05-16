@@ -83,7 +83,7 @@ def download_data_vision(
             logger.error("[%s] %d-%02d: ERROR %s", symbol, y, m, exc)
 
     logger.info(
-        "[%s] Bulk complete: %d/%d months, %s records",
+        "[%s] Data Vision complete: %d/%d months, %s records",
         symbol, len(sorted_months), len(sorted_months), f"{total:,}",
     )
     return total if total > 0 else None
@@ -92,6 +92,8 @@ def download_data_vision(
 def extract_bulk(
     symbols: list[str] | None = None,
     months_back: int = MONTHS_BACK,
+    *,
+    log_context: str = "BULK",
 ) -> dict[str, int]:
     """Force re-download all symbols from Data Vision."""
     symbols = symbols or SYMBOLS
@@ -99,8 +101,8 @@ def extract_bulk(
     results: dict[str, int] = {}
 
     logger.info(
-        "=== Bulk Extract: %d symbols x %d months ===",
-        len(symbols), months_back,
+        "=== %s: Data Vision bulk extract for %d symbols x %d months ===",
+        log_context, len(symbols), months_back,
     )
 
     for sym in symbols:
@@ -108,9 +110,9 @@ def extract_bulk(
             total = download_data_vision(sym, target_months)
             if total is not None:
                 results[sym] = total
-                logger.info("[%s] %s records", sym, f"{total:,}")
+                logger.info("[%s] %s: %s records", log_context, sym, f"{total:,}")
         except Exception as exc:
-            logger.error("[%s] FAILED - %s", sym, exc)
+            logger.error("[%s] %s: FAILED - %s", log_context, sym, exc)
 
     return results
 
@@ -131,7 +133,7 @@ def extract_recent_klines(
     # 1 batch query for all symbols instead of N file downloads
     last_timestamps = get_last_timestamps(symbols)
 
-    # --- Bootstrap: empty DB -> bulk download 3 years from Data Vision -------
+    # Bootstrap: empty DB -> bulk download MONTHS_BACK from Data Vision
     symbols_needing_bootstrap = [s for s in symbols if s not in last_timestamps]
     if symbols_needing_bootstrap:
         logger.info(
@@ -139,15 +141,11 @@ def extract_recent_klines(
             "downloading %d months of history via Data Vision ===",
             len(symbols_needing_bootstrap), len(symbols), MONTHS_BACK,
         )
-        target_months = get_target_months(MONTHS_BACK)
-
-        for sym in symbols_needing_bootstrap:
-            try:
-                total = download_data_vision(sym, target_months)
-                if total is not None:
-                    logger.info("[BOOTSTRAP] %s: %s records", sym, f"{total:,}")
-            except Exception as exc:
-                logger.error("[BOOTSTRAP] %s: FAILED - %s", sym, exc)
+        extract_bulk(
+            symbols_needing_bootstrap,
+            months_back=MONTHS_BACK,
+            log_context="BOOTSTRAP",
+        )
 
         # Refresh watermarks after bulk download
         last_timestamps = get_last_timestamps(symbols)
