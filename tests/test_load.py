@@ -76,6 +76,9 @@ def test_load_klines_inserts_raw_csv_to_klines(monkeypatch):
     assert "s3(" in sql_call
     assert f"/{load_module.BUCKET_RAW}/klines/BTCUSDT/2026-05.csv" in sql_call
     assert "CSVWithNames" in sql_call
+    assert "toDateTime(intDiv(open_time, 1000), 'UTC') AS timestamp" in sql_call
+    assert "WHERE open_time > 1000" in sql_call
+    assert "if(open_time >" not in sql_call
 
     # Raw OHLCV load should leave indicators NULL until transform computes them.
     assert "rsi_14" in sql_call
@@ -95,6 +98,36 @@ def test_load_klines_rejects_invalid_month():
             symbols=["BTCUSDT"],
             month_str="2026-05'; DROP TABLE crypto_db.klines; --",
         )
+
+
+def test_resolve_kline_months_to_load_uses_explicit_month(monkeypatch):
+    discover = MagicMock()
+    monkeypatch.setattr(load_module, "discover_month_partitions", discover)
+
+    months = load_module._resolve_kline_months_to_load(
+        "BTCUSDT",
+        "2026-05",
+        watermark_ms=0,
+    )
+
+    assert months == ["2026-05"]
+    discover.assert_not_called()
+
+
+def test_resolve_kline_months_to_load_filters_before_watermark_month(monkeypatch):
+    monkeypatch.setattr(
+        load_module,
+        "discover_month_partitions",
+        lambda bucket, prefix, symbol, extension: ["2026-03", "2026-04", "2026-05"],
+    )
+
+    months = load_module._resolve_kline_months_to_load(
+        "BTCUSDT",
+        None,
+        watermark_ms=1776211200000,
+    )
+
+    assert months == ["2026-04", "2026-05"]
 
 
 def test_load_ticker_uses_raw_ticker_path(monkeypatch):
