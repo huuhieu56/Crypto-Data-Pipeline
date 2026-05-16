@@ -154,12 +154,12 @@ def load_symbols() -> None:
         raise LoadError(f"Failed to load symbols: {exc}") from exc
 
 
-def _load_raw_csv_to_klines(
+def _insert_kline_csv_partition(
     symbol: str,
     month: str,
     watermark_ms: int,
 ) -> int:
-    """Load raw OHLCV from MinIO CSV into klines (no indicators).
+    """Insert one raw kline CSV partition into ClickHouse.
 
     Returns number of rows inserted.
     """
@@ -247,7 +247,7 @@ def load_klines(
                 continue
 
             try:
-                n = _load_raw_csv_to_klines(symbol, month, watermark_ms)
+                n = _insert_kline_csv_partition(symbol, month, watermark_ms)
                 logger.info("[Load] klines %s/%s: %d raw rows loaded", symbol, month, n)
                 total_inserted += n
             except Exception as exc:
