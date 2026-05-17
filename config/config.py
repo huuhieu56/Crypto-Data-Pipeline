@@ -35,7 +35,6 @@ BINANCE_DATA_VISION_URL = (
 BINANCE_ENDPOINTS = {
     "klines": f"{BINANCE_BASE_URL}/klines",
     "ticker_24h": f"{BINANCE_BASE_URL}/ticker/24hr",
-    "book_ticker": f"{BINANCE_BASE_URL}/ticker/bookTicker",
     "order_book": f"{BINANCE_BASE_URL}/depth",
 }
 
@@ -72,7 +71,7 @@ PARTITION_MONTH_FORMAT = "%Y-%m"    # monthly partition key format
 # --- Binance API → DB column mapping (camelCase → snake_case) ----------------
 
 BINANCE_COLUMN_MAP = {
-    # ticker_24h endpoint
+    # ticker_24h endpoint (includes bid/ask)
     "priceChange": "price_change",
     "priceChangePercent": "price_change_pct",
     "highPrice": "high_24h",
@@ -80,7 +79,6 @@ BINANCE_COLUMN_MAP = {
     "volume": "volume_24h",
     "quoteVolume": "quote_volume_24h",
     "count": "trade_count",
-    # book_ticker endpoint
     "bidPrice": "bid_price",
     "askPrice": "ask_price",
 }
@@ -89,7 +87,7 @@ BINANCE_COLUMN_MAP = {
 
 _KLINES_RAW_COLUMNS = [
     "open_time", "open", "high", "low", "close", "volume",
-    "close_time", "quote_volume", "trades",
+    "close_time", "quote_volume", "trade_count",
     "taker_buy_base", "taker_buy_quote", "ignore",
 ]
 RAW_KLINES_COLUMNS = [c for c in _KLINES_RAW_COLUMNS if c != "ignore"]

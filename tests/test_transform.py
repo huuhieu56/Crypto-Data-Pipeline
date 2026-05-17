@@ -6,28 +6,97 @@ import pytest
 from scripts import transform as transform_module
 
 
-def test_get_indicator_watermarks_ignores_raw_zero_rows(monkeypatch):
-    client = MagicMock()
-    client.query.return_value.result_rows = [
-        ("BTCUSDT", 1715731200000),
-        ("ETHUSDT", 0),
-    ]
-    monkeypatch.setattr(transform_module, "get_ch_client", lambda: client)
+def test_compute_rsi_returns_series():
+    import pandas as pd
+    close = pd.Series([100, 102, 101, 105, 103, 107, 106, 110, 108, 112,
+                       111, 115, 113, 117, 116, 120.0])
+    rsi = transform_module._compute_rsi(close, period=14)
+    assert len(rsi) == len(close)
+    assert rsi.iloc[0] == 0.0  # first value is NaN→0
+    assert 0 <= rsi.iloc[-1] <= 100
 
-    result = transform_module._get_indicator_watermarks(["BTCUSDT", "ETHUSDT"])
 
-    assert result == {"BTCUSDT": 1715731200000}
-    sql = client.query.call_args[0][0]
-    assert "maxIf" in sql
-    assert "isNotNull(rsi_14)" in sql
-    assert "ifNull(rsi_14, 0) != 0" in sql
+def test_compute_macd_returns_three_series():
+    import pandas as pd
+    close = pd.Series(range(100, 150), dtype=float)
+    macd_line, signal, hist = transform_module._compute_macd(close)
+    assert len(macd_line) == len(close)
+    assert len(signal) == len(close)
+    assert len(hist) == len(close)
+
+
+def test_transform_klines_computes_indicators_and_writes_processed(monkeypatch):
+    """transform_klines reads raw CSV, computes RSI/MACD, writes Parquet to processed."""
+    import pandas as pd
+
+    raw_csv = (
+        "open_time,open,high,low,close,volume,close_time,quote_volume,trade_count,"
+        "taker_buy_base,taker_buy_quote\n"
+    )
+    base_ts = 1715731200000  # 2024-05-15 08:00:00 UTC
+    for i in range(20):
+        ts = base_ts + i * 60000
+        raw_csv += f"{ts},100,105,99,{100 + i},10,{ts + 59999},{(100 + i) * 10},50,5,50\n"
+
+    mock_storage = MagicMock()
+    resp = MagicMock()
+    resp.read.return_value = raw_csv.encode()
+    mock_storage.client.get_object.return_value = resp
+    monkeypatch.setattr(transform_module, "storage", mock_storage)
+    monkeypatch.setattr(
+        transform_module, "_load_context_from_processed",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        transform_module, "discover_month_partitions",
+        lambda bucket, prefix, symbol, extension: ["2024-05"],
+    )
+    mock_append = MagicMock()
+    monkeypatch.setattr(transform_module, "append_to_partition", mock_append)
+
+    transform_module.transform_klines(symbols=["BTCUSDT"], month_str="2024-05")
+
+    mock_append.assert_called_once()
+    call_args = mock_append.call_args
+    assert call_args[0][0] == "crypto-processed"
+    assert call_args[0][1] == "klines"
+    assert call_args[0][2] == "BTCUSDT"
+    df = call_args[0][3]
+    assert "rsi_14" in df.columns
+    assert "macd" in df.columns
+    assert "macd_signal" in df.columns
+    assert "open_time" in df.columns
+    assert "trade_count" in df.columns
+    assert len(df) == 20
+
+
+def test_transform_klines_skips_empty_csv(monkeypatch):
+    """transform_klines skips empty CSV partitions."""
+    import pandas as pd
+
+    mock_storage = MagicMock()
+    resp = MagicMock()
+    resp.read.return_value = b"open_time,open,high,low,close,volume,close_time,quote_volume,trade_count,taker_buy_base,taker_buy_quote\n"
+    mock_storage.client.get_object.return_value = resp
+    monkeypatch.setattr(transform_module, "storage", mock_storage)
+    monkeypatch.setattr(transform_module, "_load_context_from_processed", lambda *a, **k: None)
+    monkeypatch.setattr(
+        transform_module, "discover_month_partitions",
+        lambda bucket, prefix, symbol, extension: ["2024-05"],
+    )
+    mock_append = MagicMock()
+    monkeypatch.setattr(transform_module, "append_to_partition", mock_append)
+
+    transform_module.transform_klines(symbols=["BTCUSDT"], month_str="2024-05")
+
+    mock_append.assert_not_called()
 
 
 # --- transform_ticker (ETL) ---------------------------------------------------
 
 
-def test_transform_ticker_merges_renames_computes_spread(monkeypatch):
-    """transform_ticker merges raw ticker + book_ticker, renames, computes spread_pct."""
+def test_transform_ticker_renames_computes_spread(monkeypatch):
+    """transform_ticker renames columns, computes spread_pct."""
     ticker_raw = pd.DataFrame({
         "symbol": ["BTCUSDT"],
         "priceChange": ["1500.00"],
@@ -37,25 +106,15 @@ def test_transform_ticker_merges_renames_computes_spread(monkeypatch):
         "volume": ["25000.50"],
         "quoteVolume": ["1050000000.00"],
         "count": [1200000],
-    })
-    book_raw = pd.DataFrame({
-        "symbol": ["BTCUSDT"],
         "bidPrice": ["42290.00"],
         "askPrice": ["42310.00"],
     })
 
     mock_storage = MagicMock()
     mock_storage.object_exists.return_value = True
-
-    def _download(bucket, key):
-        mock_table = MagicMock()
-        if key.startswith("ticker_raw/"):
-            mock_table.to_pandas.return_value = ticker_raw.copy()
-        else:
-            mock_table.to_pandas.return_value = book_raw.copy()
-        return mock_table
-
-    mock_storage.download_parquet.side_effect = _download
+    mock_table = MagicMock()
+    mock_table.to_pandas.return_value = ticker_raw.copy()
+    mock_storage.download_parquet.return_value = mock_table
     monkeypatch.setattr(transform_module, "storage", mock_storage)
     monkeypatch.setattr(
         transform_module, "discover_month_partitions",
@@ -68,6 +127,7 @@ def test_transform_ticker_merges_renames_computes_spread(monkeypatch):
 
     mock_append.assert_called_once()
     call_args = mock_append.call_args
+    assert call_args[0][0] == "crypto-processed"  # bucket
     assert call_args[0][1] == "ticker_24h"  # prefix
     assert call_args[0][2] == "BTCUSDT"     # symbol
     df = call_args[0][3]
@@ -140,6 +200,7 @@ def test_transform_order_book_computes_volumes_and_imbalance(monkeypatch):
 
     mock_append.assert_called_once()
     call_args = mock_append.call_args
+    assert call_args[0][0] == "crypto-processed"     # bucket
     assert call_args[0][1] == "order_book_snapshot"  # prefix
     assert call_args[0][2] == "BTCUSDT"              # symbol
     df = call_args[0][3]

@@ -11,7 +11,7 @@ import re
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 
-from config.config import PARTITION_MONTH_FORMAT
+
 from config.symbols import SYMBOLS_STATUS, BREAK_DATES
 from utils.logger import get_logger
 
@@ -56,27 +56,6 @@ def normalize_epoch_ms_columns(
             vals = pd.to_numeric(col_data, errors="raise").astype("int64")
             out[col] = vals.where(vals <= _EPOCH_MICROSECOND_THRESHOLD, vals // 1000)
     return out
-
-
-# --- Partition Key Helpers ---------------------------------------------------
-
-def _resolve_month(dt: datetime | str | None = None) -> str:
-    """Resolve a datetime or string into a YYYY-MM month string."""
-    if dt is None:
-        return datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
-    if isinstance(dt, str):
-        return dt
-    return dt.strftime(PARTITION_MONTH_FORMAT)
-
-
-def minio_key(prefix: str, symbol: str, dt: datetime | str | None = None, extension: str = ".parquet") -> str:
-    """MinIO key: {prefix}/{SYMBOL}/{YYYY-MM}{extension}"""
-    return f"{prefix}/{symbol}/{_resolve_month(dt)}{extension}"
-
-
-def partition_key(symbol: str, dt: datetime | str | None = None) -> str:
-    """MinIO key for raw klines: klines/{SYMBOL}/{YYYY-MM}.csv"""
-    return minio_key("klines", symbol, dt, extension=".csv")
 
 
 # --- Date / Month Utilities (Data Vision) -----------------------------------

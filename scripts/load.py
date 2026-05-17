@@ -1,7 +1,6 @@
-"""Load script — write data to ClickHouse (ELT: load runs before transform).
+"""Load script — write transformed data to ClickHouse (ETL: load after transform).
 
-Klines: raw OHLCV CSV from MinIO → ClickHouse klines (indicators NULL).
-Ticker & order book: raw Parquet from MinIO → ClickHouse direct insert.
+All tables: transformed Parquet from MinIO → ClickHouse.
 
 Usage:
     python scripts/load.py
@@ -19,21 +18,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse
 import pandas as pd
 
-from config.config import MINIO_CONFIG, CLICKHOUSE_S3_ENDPOINT
+from config.config import MINIO_CONFIG
 from config.symbols import SYMBOLS, SYMBOL_REGISTRY
 from utils.logger import get_logger
 from utils.exceptions import LoadError
 from utils.data_utils import validate_month_str
 from utils.db_utils import (
     ch_insert_df,
-    get_ch_client,
     get_table_watermarks,
 )
 from utils.storage import storage, discover_month_partitions
 
 logger = get_logger(__name__)
 
-BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
+BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
 
 
 # --- Helpers ------------------------------------------------------------------
@@ -143,109 +141,12 @@ def load_symbols() -> None:
         raise LoadError(f"Failed to load symbols: {exc}") from exc
 
 
-def _insert_kline_csv_partition(
-    symbol: str,
-    month: str,
-    watermark_ms: int,
-) -> int:
-    """Insert one raw kline CSV partition into ClickHouse.
-
-    Returns number of rows inserted.
-    """
-    s3_access = MINIO_CONFIG["access_key"]
-    s3_secret = MINIO_CONFIG["secret_key"]
-
-    sql = (
-        f"INSERT INTO crypto_db.klines "
-        f"(symbol, timestamp, open, high, low, close, volume, quote_volume, trades, "
-        f" rsi_14, macd, macd_signal) "
-        f"SELECT "
-        f"'{symbol}' AS symbol, "
-        f"toDateTime(intDiv(open_time, 1000), 'UTC') AS timestamp, "
-        f"open, high, low, close, volume, quote_volume, "
-        f"toUInt32(trades) AS trades, "
-        f"NULL AS rsi_14, NULL AS macd, NULL AS macd_signal "
-        f"FROM s3("
-        f"'{CLICKHOUSE_S3_ENDPOINT}/{BUCKET_RAW}/klines/{symbol}/{month}.csv', "
-        f"'{s3_access}', '{s3_secret}', "
-        f"'CSVWithNames', "
-        f"'open_time Int64, open Float64, high Float64, low Float64, close Float64, "
-        f" volume Float64, close_time Int64, quote_volume Float64, trades Int64, "
-        f" taker_buy_base Float64, taker_buy_quote Float64'"
-        f") "
-        f"WHERE open_time > {watermark_ms}"
-    )
-
-    client = get_ch_client()
-    client.query(sql)
-
-    result = client.query(
-        f"SELECT count() AS n FROM crypto_db.klines FINAL "
-        f"WHERE symbol = '{symbol}' AND toYYYYMM(timestamp) = {month.replace('-', '')}"
-    )
-    return result.result_rows[0][0] if result.result_rows else 0
-
-
-def _resolve_kline_months_to_load(
-    symbol: str,
-    month_str: str | None,
-    watermark_ms: int,
-) -> list[str]:
-    """Return raw kline CSV month partitions that may contain new rows."""
-    months = (
-        [month_str]
-        if month_str
-        else discover_month_partitions(BUCKET_RAW, "klines", symbol, extension=".csv")
-    )
-    if watermark_ms <= 0:
-        return months
-
-    watermark_month = pd.to_datetime(watermark_ms, unit="ms", utc=True).strftime("%Y-%m")
-    return [m for m in months if m >= watermark_month]
-
-
 def load_klines(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Load raw OHLCV from MinIO CSV into ClickHouse klines (ELT: load before transform).
-
-    Inserts raw candle data without indicators (rsi_14/macd/macd_signal = NULL).
-    The transform step (scripts/transform.py) computes indicators afterwards.
-    """
-    symbols = symbols or SYMBOLS
-    if month_str is not None:
-        month_str = validate_month_str(month_str)
-    wm_map = get_table_watermarks("klines", "timestamp", symbols)
-    total_inserted = 0
-    errors = 0
-
-    logger.info("[Load] klines: %d symbols, raw CSV -> ClickHouse", len(symbols))
-
-    for symbol in symbols:
-        watermark_ms = wm_map.get(symbol, 0)
-        months = _resolve_kline_months_to_load(symbol, month_str, watermark_ms)
-        if not months:
-            logger.debug("[Load] klines %s: no raw CSV partitions found", symbol)
-            continue
-
-        for month in months:
-            key = f"klines/{symbol}/{month}.csv"
-            if not storage.object_exists(BUCKET_RAW, key):
-                logger.debug("[Load] klines %s/%s: no raw CSV, skipped", symbol, month)
-                continue
-
-            try:
-                n = _insert_kline_csv_partition(symbol, month, watermark_ms)
-                logger.info("[Load] klines %s/%s: %d raw rows loaded", symbol, month, n)
-                total_inserted += n
-            except Exception as exc:
-                errors += 1
-                logger.error("[Load] klines %s/%s: ERROR -- %s", symbol, month, exc)
-
-    if total_inserted == 0 and errors > 0:
-        raise LoadError(f"klines: all {errors} partition(s) failed, 0 loaded")
-    logger.info("[Load] klines complete: %s raw rows across %d symbols, %d errors", f"{total_inserted:,}", len(symbols), errors)
+    """Load transformed klines Parquet from MinIO → ClickHouse."""
+    _load_table(symbols, BUCKET_PROCESSED, "klines", "open_time", month_str=month_str)
 
 
 def load_ticker(
@@ -253,7 +154,7 @@ def load_ticker(
     month_str: str | None = None,
 ) -> None:
     """Load transformed ticker Parquet from MinIO → ClickHouse."""
-    _load_table(symbols, BUCKET_RAW, "ticker_24h", "snapshot_time", month_str=month_str)
+    _load_table(symbols, BUCKET_PROCESSED, "ticker_24h", "snapshot_time", month_str=month_str)
 
 
 def load_order_book(
@@ -261,7 +162,7 @@ def load_order_book(
     month_str: str | None = None,
 ) -> None:
     """Load transformed order book Parquet from MinIO → ClickHouse."""
-    _load_table(symbols, BUCKET_RAW, "order_book_snapshot", "timestamp", month_str=month_str)
+    _load_table(symbols, BUCKET_PROCESSED, "order_book_snapshot", "timestamp", month_str=month_str)
 
 
 # --- CLI ---------------------------------------------------------------------

@@ -43,7 +43,7 @@ LANGSMITH_TRACING = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
 TIMEFRAME_CONFIG = {
     "short": {
         "label": "Short-term (hours → days)",
-        "candle_group_by": "toStartOfHour(timestamp)",
+        "candle_group_by": "toStartOfHour(open_time)",
         "candle_lookback_days": 20,
         "candle_limit": 480,
         "candle_ts_format": "%Y-%m-%d %H:00",
@@ -59,7 +59,7 @@ TIMEFRAME_CONFIG = {
     },
     "medium": {
         "label": "Medium-term (weeks → month)",
-        "candle_group_by": "toStartOfInterval(timestamp, INTERVAL 4 HOUR)",
+        "candle_group_by": "toStartOfInterval(open_time, INTERVAL 4 HOUR)",
         "candle_lookback_days": 90,
         "candle_limit": 540,
         "candle_ts_format": "%Y-%m-%d %H:00",
@@ -75,7 +75,7 @@ TIMEFRAME_CONFIG = {
     },
     "long": {
         "label": "Long-term (months → 1 year)",
-        "candle_group_by": "toDate(timestamp)",
+        "candle_group_by": "toDate(open_time)",
         "candle_lookback_days": 730,
         "candle_limit": 730,
         "candle_ts_format": "%Y-%m-%d",
@@ -89,7 +89,7 @@ TIMEFRAME_CONFIG = {
     },
     "very_long": {
         "label": "Very long-term (1 → 3+ years)",
-        "candle_group_by": "toDate(timestamp)",
+        "candle_group_by": "toDate(open_time)",
         "candle_lookback_days": 1095,
         "candle_limit": 1095,
         "candle_ts_format": "%Y-%m-%d",

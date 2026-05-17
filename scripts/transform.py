@@ -1,7 +1,7 @@
 """Transform script — compute indicators and derived columns.
 
-- klines: ELT — compute RSI(14) + MACD(12,26,9) via ClickHouse SQL (after load)
-- ticker_24h: ETL — merge raw ticker + book_ticker, rename, compute spread_pct → Parquet
+- klines: ETL — compute RSI(14) + MACD(12,26,9) in Python → Parquet
+- ticker_24h: ETL — rename, compute spread_pct → Parquet
 - order_book: ETL — compute volumes/imbalance → Parquet
 
 Usage:
@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
+import io
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -30,7 +31,6 @@ from config.config import (
 )
 from config.symbols import SYMBOLS
 from utils.data_utils import validate_month_str
-from utils.db_utils import get_ch_client
 from utils.exceptions import TransformError
 from utils.logger import get_logger
 from utils.storage import append_to_partition, discover_month_partitions, storage
@@ -38,77 +38,85 @@ from utils.storage import append_to_partition, discover_month_partitions, storag
 logger = get_logger(__name__)
 
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
+BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
 
 
-def _get_indicator_watermarks(symbols: list[str]) -> dict[str, int]:
-    """Return last timestamp per symbol that has computed indicators.
+def _compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    """RSI(period) — SMA-based rolling average of gains/losses."""
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(span=period, adjust=False).mean()
+    avg_loss = loss.ewm(span=period, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    return (100 - (100 / (1 + rs))).fillna(0.0)
 
-    Raw klines are inserted with NULL indicators. Older local databases may
-    still have raw rows with all-zero indicators, so all-zero rows are treated
-    as untransformed for recovery/backfill.
-    """
-    if not symbols:
-        return {}
 
-    sym_list = "', '".join(symbols)
-    client = get_ch_client()
-    result = client.query(
-        f"""
-        SELECT
-            symbol,
-            maxIf(
-                toInt64(toUnixTimestamp(timestamp)) * 1000,
-                isNotNull(rsi_14)
-                AND isNotNull(macd)
-                AND isNotNull(macd_signal)
-                AND (
-                    ifNull(rsi_14, 0) != 0
-                    OR ifNull(macd, 0) != 0
-                    OR ifNull(macd_signal, 0) != 0
-                )
-            ) AS max_ts_ms
-        FROM klines FINAL
-        WHERE symbol IN ('{sym_list}')
-        GROUP BY symbol
-        """
-    )
+def _compute_macd(close: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """MACD(12,26,9) — returns (macd_line, signal_line, histogram)."""
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    return macd_line, signal_line, macd_line - signal_line
 
-    watermarks: dict[str, int] = {}
-    for symbol, max_ts_ms in result.result_rows:
-        if max_ts_ms:
-            watermarks[symbol] = int(max_ts_ms)
-    return watermarks
+
+def _load_context_from_processed(symbol: str, before_month: str, n: int) -> pd.DataFrame | None:
+    """Load last *n* rows from processed Parquet for indicator warm-up."""
+    if n <= 0:
+        return None
+    ctx_parts = []
+    for month in discover_month_partitions(BUCKET_PROCESSED, "klines", symbol):
+        if month >= before_month:
+            break
+        key = f"klines/{symbol}/{month}.parquet"
+        try:
+            table = storage.download_parquet(BUCKET_PROCESSED, key)
+            ctx_parts.append(table.to_pandas())
+        except Exception:
+            pass
+    if not ctx_parts:
+        return None
+    ctx = pd.concat(ctx_parts, ignore_index=True).sort_values("open_time")
+    return ctx.tail(n).reset_index(drop=True)
+
+
+def _filter_month_rows(df: pd.DataFrame, month_str: str) -> pd.DataFrame:
+    """Return only rows belonging to the given YYYY-MM partition."""
+    month_start = pd.Timestamp(f"{month_str}-01", tz="UTC")
+    month_end = month_start + pd.offsets.MonthBegin(1)
+    ts = pd.to_datetime(df["open_time"], utc=True)
+    mask = (ts >= month_start) & (ts < month_end)
+    return df.loc[mask]
 
 
 def transform_klines(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """Compute RSI(14) + MACD(12,26,9) on raw klines via ClickHouse SQL (ELT).
+    """ETL: compute RSI(14) + MACD(12,26,9) on raw klines CSV → Parquet.
 
-    Reads raw rows from crypto_db.klines (loaded by load_klines), fetches
-    context rows for indicator warm-up, computes indicators, and INSERTs
-    back into klines. ReplacingMergeTree deduplicates by (symbol, timestamp).
+    Reads raw CSV from crypto-raw, loads indicator warm-up context from
+    previously processed Parquet in crypto-processed, computes indicators
+    in Python, and writes transformed Parquet to crypto-processed.
+    No ClickHouse dependency.
     """
     symbols = symbols or SYMBOLS
     if month_str is not None:
         month_str = validate_month_str(month_str)
-    wm_map = _get_indicator_watermarks(symbols)
+
+    target_cols = [
+        "symbol", "open_time", "open", "high", "low", "close",
+        "volume", "close_time", "quote_volume", "trade_count",
+        "taker_buy_base", "taker_buy_quote",
+        "rsi_14", "macd", "macd_signal",
+    ]
     total_processed = 0
     errors = 0
 
-    logger.info(
-        "[Transform] klines: %d symbols, ClickHouse SQL in-DB compute",
-        len(symbols),
-    )
-
-    sql_path = Path(__file__).resolve().parent.parent / "sql" / "transform_klines.sql"
-    sql_template = sql_path.read_text()
+    logger.info("[Transform] klines: %d symbols, Python ETL compute", len(symbols))
 
     for symbol in symbols:
-        watermark_ms = wm_map.get(symbol, 0)
-        context_rows = INDICATOR_CONTEXT_ROWS
-
         months = (
             [month_str]
             if month_str
@@ -118,52 +126,54 @@ def transform_klines(
             logger.debug("[Transform] klines %s: no partitions found", symbol)
             continue
 
-        if watermark_ms > 0:
-            watermark_month = pd.to_datetime(watermark_ms, unit="ms", utc=True).strftime("%Y-%m")
-            months = [m for m in months if m >= watermark_month]
-
         for month in months:
-            month_int = int(month.replace("-", ""))
-
-            sql = sql_template.format(
-                symbol=symbol,
-                month=month,
-                month_int=month_int,
-                watermark_ms=watermark_ms,
-                context_rows=context_rows,
-            )
-
             try:
-                client = get_ch_client()
-                client.query(sql)
-                result = client.query(
-                    f"SELECT count() AS n, max(timestamp) AS max_ts "
-                    f"FROM crypto_db.klines FINAL "
-                    f"WHERE symbol = '{symbol}' AND toYYYYMM(timestamp) = {month_int}"
-                )
-                n, max_ts = result.result_rows[0] if result.result_rows else (0, None)
-                if max_ts is not None:
-                    watermark_ts = pd.Timestamp(max_ts)
-                    if watermark_ts.tzinfo is None:
-                        watermark_ts = watermark_ts.tz_localize("UTC")
-                    watermark_ms = int(watermark_ts.timestamp() * 1000)
-                logger.info(
-                    "[Transform] klines %s/%s: %d rows in partition",
-                    symbol, month, n,
+                key = f"klines/{symbol}/{month}.csv"
+                response = storage.client.get_object(BUCKET_RAW, key)
+                try:
+                    raw_df = pd.read_csv(io.BytesIO(response.read()))
+                finally:
+                    response.close()
+                    response.release_conn()
+
+                if raw_df.empty:
+                    continue
+
+                raw_df["open_time"] = pd.to_datetime(raw_df["open_time"], unit="ms", utc=True)
+                raw_df["close_time"] = pd.to_datetime(raw_df["close_time"], unit="ms", utc=True)
+                context = _load_context_from_processed(symbol, month, INDICATOR_CONTEXT_ROWS)
+                combined = (
+                    pd.concat([context, raw_df], ignore_index=True)
+                    if context is not None and not context.empty
+                    else raw_df
+                ).sort_values("open_time").reset_index(drop=True)
+
+                combined["rsi_14"] = _compute_rsi(combined["close"])
+                macd_line, signal_line, _ = _compute_macd(combined["close"])
+                combined["macd"] = macd_line
+                combined["macd_signal"] = signal_line
+
+                month_rows = _filter_month_rows(combined, month)
+                if month_rows.empty:
+                    continue
+
+                out_df = month_rows.copy()
+                out_df["symbol"] = symbol
+                out_df = out_df[target_cols]
+
+                append_to_partition(
+                    BUCKET_PROCESSED, "klines", symbol,
+                    out_df, dedup_col="open_time", month_str=month,
                 )
                 total_processed += 1
+                logger.info("[Transform] klines %s/%s: %d rows", symbol, month, len(out_df))
             except Exception as exc:
                 errors += 1
-                logger.error(
-                    "[Transform] klines %s/%s: ERROR -- %s", symbol, month, exc,
-                )
+                logger.error("[Transform] klines %s/%s: ERROR -- %s", symbol, month, exc)
 
     if total_processed == 0 and errors > 0:
         raise TransformError(f"klines: all {errors} partition(s) failed, 0 transformed")
-    logger.info(
-        "[Transform] klines complete: %d partitions processed, %d errors",
-        total_processed, errors,
-    )
+    logger.info("[Transform] klines complete: %d partitions processed, %d errors", total_processed, errors)
 
 
 # --- Ticker Transform (ETL) ---------------------------------------------------
@@ -173,11 +183,11 @@ def transform_ticker(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """ETL: merge raw ticker + book_ticker, rename, compute spread_pct → Parquet.
+    """ETL: rename columns, compute spread_pct → Parquet.
 
-    Reads raw from MinIO (ticker_raw/, book_ticker_raw/), merges by symbol,
-    renames columns via BINANCE_COLUMN_MAP, adds snapshot_time, computes
-    spread_pct, and writes transformed Parquet to ticker_24h/ in MinIO.
+    Reads raw from MinIO (ticker_raw/), renames columns via BINANCE_COLUMN_MAP,
+    adds snapshot_time, computes spread_pct, and writes transformed Parquet
+    to ticker_24h/ in MinIO.
     """
     if symbols is None:
         symbols = SYMBOLS
@@ -208,7 +218,6 @@ def transform_ticker(
         for month in months:
             try:
                 ticker_key = f"ticker_raw/{symbol}/{month}.parquet"
-                book_key = f"book_ticker_raw/{symbol}/{month}.parquet"
 
                 if not storage.object_exists(BUCKET_RAW, ticker_key):
                     logger.debug("[Transform] ticker_24h %s/%s: no raw ticker", symbol, month)
@@ -217,13 +226,6 @@ def transform_ticker(
                 ticker_df = storage.download_parquet(BUCKET_RAW, ticker_key).to_pandas()
                 if ticker_df.empty:
                     continue
-
-                # Merge book_ticker if available
-                if storage.object_exists(BUCKET_RAW, book_key):
-                    book_df = storage.download_parquet(BUCKET_RAW, book_key).to_pandas()
-                    if not book_df.empty:
-                        merge_cols = ["symbol"] + [c for c in ["bidPrice", "askPrice"] if c in book_df.columns]
-                        ticker_df = ticker_df.merge(book_df[merge_cols], on="symbol", how="left")
 
                 # Keep only mapped columns + symbol
                 keep = ["symbol"] + [c for c in BINANCE_COLUMN_MAP if c in ticker_df.columns]
@@ -250,7 +252,7 @@ def transform_ticker(
                 ticker_df = ticker_df[target_cols]
 
                 append_to_partition(
-                    BUCKET_RAW, "ticker_24h", symbol,
+                    BUCKET_PROCESSED, "ticker_24h", symbol,
                     ticker_df, dedup_col="snapshot_time", month_str=month,
                 )
                 total_transformed += len(ticker_df)
@@ -329,7 +331,7 @@ def transform_order_book(
                 df = df[target_cols].copy()
 
                 append_to_partition(
-                    BUCKET_RAW, "order_book_snapshot", symbol,
+                    BUCKET_PROCESSED, "order_book_snapshot", symbol,
                     df, dedup_col="timestamp", month_str=month,
                 )
                 total_transformed += len(df)

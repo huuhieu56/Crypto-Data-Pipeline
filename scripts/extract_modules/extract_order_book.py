@@ -59,10 +59,3 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
     logger.info("Saved order_book raw (+%d records, %d symbols)", len(df), df["symbol"].nunique())
     return df
 
-
-def _is_float(s: str) -> bool:
-    try:
-        float(s)
-        return True
-    except (ValueError, TypeError):
-        return False

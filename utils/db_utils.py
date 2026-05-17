@@ -132,4 +132,4 @@ def get_last_timestamps(symbols: list[str]) -> dict[str, int]:
     Single batch query instead of N file downloads.
     Returns {symbol: last_timestamp_ms}.
     """
-    return get_table_watermarks("klines", "timestamp", symbols)
+    return get_table_watermarks("klines", "open_time", symbols)

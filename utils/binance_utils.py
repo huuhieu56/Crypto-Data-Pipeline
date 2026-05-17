@@ -107,11 +107,6 @@ def get_ticker_24h() -> list[dict]:
     return make_request(BINANCE_ENDPOINTS["ticker_24h"])
 
 
-def get_book_ticker() -> list[dict]:
-    """Fetch best bid/ask for all symbols."""
-    return make_request(BINANCE_ENDPOINTS["book_ticker"])
-
-
 def get_order_book(symbol: str, limit: int = 100) -> dict:
     """Fetch order book depth for a symbol."""
     params = {"symbol": symbol, "limit": limit}
@@ -127,15 +122,11 @@ def sleep_between_requests() -> None:
 
 
 def parse_klines_df(raw_data: list[list], symbol: str):
-    """Parse raw klines list into a clean DataFrame."""
+    """Parse raw klines list into a DataFrame. Keeps epoch ms timestamps as-is."""
     df = pd.DataFrame(raw_data, columns=_KLINES_RAW_COLUMNS)
     df = df.drop(columns=["ignore"])
-
     for col in NUMERIC_COLUMNS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
     df["symbol"] = symbol
     return df
 
@@ -169,12 +160,9 @@ def download_klines_month(symbol: str, year: int, month: int):
 
     raw_ts = df["open_time"].astype("int64")
     # Data Vision may use microsecond (>1e15) or millisecond timestamps
-    divisor = 1000 if raw_ts.iloc[0] > 1e15 else 1
-
-    df["open_time"] = pd.to_datetime(raw_ts // divisor, unit="ms")
-    df["close_time"] = pd.to_datetime(
-        df["close_time"].astype("int64") // divisor, unit="ms",
-    )
+    if raw_ts.iloc[0] > 1e15:
+        df["open_time"] = raw_ts // 1000
+        df["close_time"] = df["close_time"].astype("int64") // 1000
     df["symbol"] = symbol
     return df
 

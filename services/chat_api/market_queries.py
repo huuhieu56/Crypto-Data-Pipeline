@@ -40,17 +40,17 @@ def fetch_candles(symbol: str, config: dict) -> pd.DataFrame:
 
     q = (
         f"SELECT {group_by} AS ts, "
-        "argMin(open, timestamp) AS open, "
+        "argMin(open, open_time) AS open, "
         "max(high) AS high, "
         "min(low) AS low, "
-        "argMax(close, timestamp) AS close, "
+        "argMax(close, open_time) AS close, "
         "sum(volume) AS volume, "
-        "argMax(rsi_14, timestamp) AS rsi_14, "
-        "argMax(macd, timestamp) AS macd, "
-        "argMax(macd_signal, timestamp) AS macd_signal "
+        "argMax(rsi_14, open_time) AS rsi_14, "
+        "argMax(macd, open_time) AS macd, "
+        "argMax(macd_signal, open_time) AS macd_signal "
         "FROM klines FINAL "
         "WHERE symbol = {symbol:String} "
-        f"AND timestamp >= now() - INTERVAL {lookback} DAY "
+        f"AND open_time >= now() - INTERVAL {lookback} DAY "
         f"GROUP BY ts ORDER BY ts ASC "
         f"LIMIT {limit}"
     )

@@ -76,20 +76,23 @@ WHERE symbol NOT IN (SELECT symbol FROM crypto_db.symbols);
 -- 2) Fact: Klines (1-minute candles + indicators)
 CREATE TABLE IF NOT EXISTS crypto_db.klines (
     symbol String,
-    timestamp DateTime,
+    open_time DateTime,
     open Float64,
     high Float64,
     low Float64,
     close Float64,
     volume Float64,
+    close_time DateTime,
     quote_volume Float64,
-    trades UInt32,
+    trade_count UInt32,
+    taker_buy_base Float64,
+    taker_buy_quote Float64,
     rsi_14 Nullable(Float64),
     macd Nullable(Float64),
     macd_signal Nullable(Float64)
 ) ENGINE = ReplacingMergeTree()
-PARTITION BY toYYYYMM(timestamp)
-ORDER BY (symbol, timestamp);
+PARTITION BY toYYYYMM(open_time)
+ORDER BY (symbol, open_time);
 
 -- 3) Fact: Ticker 24h snapshot
 CREATE TABLE IF NOT EXISTS crypto_db.ticker_24h (

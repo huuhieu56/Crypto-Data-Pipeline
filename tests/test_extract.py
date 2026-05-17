@@ -28,7 +28,6 @@ from scripts.extract import (
     extract_order_book_snapshot,
     extract_minutely,
 )
-from scripts.extract_modules.extract_klines import _df_to_epoch_ms
 from config.config import MONTHS_BACK
 from utils.exceptions import ExtractError
 
@@ -41,21 +40,21 @@ from utils.exceptions import ExtractError
 # ---------------------------------------------------------------------------
 
 _KLINES_DF_DATA = {
-    "open_time": pd.to_datetime([1704067200000, 1704067260000], unit="ms"),
+    "open_time": [1704067200000, 1704067260000],
     "open": [42000.0, 42300.0],
     "high": [42500.0, 42400.0],
     "low": [41800.0, 42100.0],
     "close": [42300.0, 42200.0],
     "volume": [100.5, 80.2],
-    "close_time": pd.to_datetime([1704067259999, 1704067319999], unit="ms"),
+    "close_time": [1704067259999, 1704067319999],
     "quote_volume": [4230000.0, 3384400.0],
-    "trades": [500, 300],
+    "trade_count": [500, 300],
     "taker_buy_base": [60.3, 40.1],
     "taker_buy_quote": [2538000.0, 1692200.0],
     "symbol": ["BTCUSDT", "BTCUSDT"],
 }
 
-# --- Ticker 24h mock data (raw API response) ---
+# --- Ticker 24h mock data (raw API response — includes bid/ask) ---
 SAMPLE_TICKER_24H_RAW = [
     {
         "symbol": "BTCUSDT",
@@ -66,6 +65,8 @@ SAMPLE_TICKER_24H_RAW = [
         "volume": "25000.50",
         "quoteVolume": "1050000000.00",
         "count": 1200000,
+        "bidPrice": "42290.00",
+        "askPrice": "42310.00",
     },
     {
         "symbol": "ETHUSDT",
@@ -76,6 +77,8 @@ SAMPLE_TICKER_24H_RAW = [
         "volume": "150000.20",
         "quoteVolume": "420000000.00",
         "count": 800000,
+        "bidPrice": "2849.50",
+        "askPrice": "2850.50",
     },
     # Coin không nằm trong danh sách test → phải bị lọc bỏ
     {
@@ -87,14 +90,9 @@ SAMPLE_TICKER_24H_RAW = [
         "volume": "5000000.00",
         "quoteVolume": "2050000.00",
         "count": 300000,
+        "bidPrice": "0.4100",
+        "askPrice": "0.4105",
     },
-]
-
-# --- Book ticker mock data ---
-SAMPLE_BOOK_TICKER_RAW = [
-    {"symbol": "BTCUSDT", "bidPrice": "42290.00", "askPrice": "42310.00"},
-    {"symbol": "ETHUSDT", "bidPrice": "2849.50", "askPrice": "2850.50"},
-    {"symbol": "DOGEUSDT", "bidPrice": "0.4100", "askPrice": "0.4105"},
 ]
 
 # --- Order book mock data ---
@@ -123,21 +121,6 @@ TEST_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 def sample_klines_df():
     """Bản sao mới của klines DataFrame cho mỗi test — tránh mutation."""
     return pd.DataFrame(_KLINES_DF_DATA).copy()
-
-
-def test_df_to_epoch_ms_normalizes_microsecond_ints():
-    df = pd.DataFrame({
-        "open_time": [1704067200000000],
-        "close_time": [1704067259999000],
-        "open": [42000.0],
-        "symbol": ["BTCUSDT"],
-    })
-
-    result = _df_to_epoch_ms(df)
-
-    assert result.loc[0, "open_time"] == 1704067200000
-    assert result.loc[0, "close_time"] == 1704067259999
-    assert "symbol" not in result.columns
 
 
 @pytest.fixture
@@ -172,15 +155,15 @@ class TestDownloadDataVision:
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, sample_klines_df):
-        """Setup chung: mock download_klines_month & merge_and_save_klines."""
+        """Setup chung: mock download_klines_month & append_to_partition_csv."""
         self.sample_df = sample_klines_df
         self.mock_download = MagicMock(return_value=sample_klines_df)
-        self.mock_storage = MagicMock()
+        self.mock_append = MagicMock()
         monkeypatch.setattr(
             "scripts.extract_modules.extract_klines.download_klines_month", self.mock_download,
         )
         monkeypatch.setattr(
-            "scripts.extract_modules.extract_klines.storage", self.mock_storage,
+            "scripts.extract_modules.extract_klines.append_to_partition_csv", self.mock_append,
         )
 
     # --- Happy Path ---
@@ -192,7 +175,7 @@ class TestDownloadDataVision:
         assert result is not None
         assert result > 0
         assert self.mock_download.call_count == 3
-        assert self.mock_storage.client.put_object.call_count == 3
+        assert self.mock_append.call_count == 3
 
     def test_months_processed_in_chronological_order(self):
         """Months phải được download đầy đủ theo thứ tự thời gian."""
@@ -227,7 +210,7 @@ class TestDownloadDataVision:
 
         assert result is not None
         assert result > 0
-        assert self.mock_storage.client.put_object.call_count == 2  # chỉ 2 tháng OK
+        assert self.mock_append.call_count == 2  # chỉ 2 tháng OK
 
     def test_one_month_fails_others_succeed(self):
         """Một tháng raise exception → các tháng khác vẫn được xử lý."""
@@ -241,7 +224,7 @@ class TestDownloadDataVision:
 
         assert result == len(self.sample_df) * 2
         assert self.mock_download.call_count == 3
-        assert self.mock_storage.client.put_object.call_count == 2
+        assert self.mock_append.call_count == 2
 
     def test_empty_months_list_returns_none(self):
         """Danh sách months rỗng → trả về None."""
@@ -445,49 +428,42 @@ class TestExtractRecentKlines:
 # 4.4 extract_ticker_24h()
 # ============================================================================
 class TestExtractTicker24h:
-    """Tests cho extract_ticker_24h() — fetch ticker + book ticker."""
+    """Tests cho extract_ticker_24h() — fetch ticker/24hr (includes bid/ask)."""
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
-        """Setup chung: mock get_ticker_24h, get_book_ticker, append_to_partition."""
+        """Setup chung: mock get_ticker_24h, append_to_partition."""
         self.tmp_path = tmp_path
 
         self.mock_ticker = MagicMock(return_value=SAMPLE_TICKER_24H_RAW)
-        self.mock_book = MagicMock(return_value=SAMPLE_BOOK_TICKER_RAW)
         self.mock_append = MagicMock()
         monkeypatch.setattr(
             "scripts.extract_modules.extract_ticker.get_ticker_24h", self.mock_ticker,
-        )
-        monkeypatch.setattr(
-            "scripts.extract_modules.extract_ticker.get_book_ticker", self.mock_book,
         )
         monkeypatch.setattr(
             "scripts.extract_modules.extract_ticker.append_to_partition", self.mock_append,
         )
 
     # --- Happy Path ---
-    def test_happy_path_returns_two_raw_dataframes(self):
-        """API trả về data chuẩn → (ticker_df, book_df) raw (camelCase)."""
-        ticker_df, book_df = extract_ticker_24h(TEST_SYMBOLS)
+    def test_happy_path_returns_raw_dataframe(self):
+        """API trả về data chuẩn → ticker_df raw (camelCase) với bid/ask."""
+        ticker_df = extract_ticker_24h(TEST_SYMBOLS)
 
         assert ticker_df is not None
-        assert book_df is not None
         assert len(ticker_df) == 2  # chỉ BTCUSDT và ETHUSDT
-        assert len(book_df) == 2
         assert set(ticker_df["symbol"].tolist()) == {"BTCUSDT", "ETHUSDT"}
 
         # Raw columns từ Binance (camelCase), chưa rename
         assert "symbol" in ticker_df.columns
         assert "priceChange" in ticker_df.columns
-        assert "bidPrice" in book_df.columns
-        assert "askPrice" in book_df.columns
+        assert "bidPrice" in ticker_df.columns
+        assert "askPrice" in ticker_df.columns
 
     def test_filters_only_requested_symbols(self):
         """Chỉ giữ symbols trong danh sách, loại bỏ coins khác."""
-        ticker_df, book_df = extract_ticker_24h(["BTCUSDT"])
+        ticker_df = extract_ticker_24h(["BTCUSDT"])
 
         assert len(ticker_df) == 1
-        assert len(book_df) == 1
         assert ticker_df.iloc[0]["symbol"] == "BTCUSDT"
 
     # --- Sad Path ---
@@ -498,18 +474,11 @@ class TestExtractTicker24h:
         with pytest.raises(ExtractError, match="Failed to fetch ticker/24hr"):
             extract_ticker_24h(TEST_SYMBOLS)
 
-    def test_book_ticker_api_error_raises_extract_error(self):
-        """get_book_ticker() raise Exception → ExtractError."""
-        self.mock_book.side_effect = TimeoutError("Request timed out")
-
-        with pytest.raises(ExtractError, match="Failed to fetch bookTicker"):
-            extract_ticker_24h(TEST_SYMBOLS)
-
     # --- Edge Cases ---
-    def test_empty_symbols_returns_none_none(self):
-        """Truyền list rỗng → trả về (None, None), không gọi API."""
+    def test_empty_symbols_returns_none(self):
+        """Truyền list rỗng → trả về None, không gọi API."""
         result = extract_ticker_24h([])
-        assert result == (None, None)
+        assert result is None
 
     def test_api_returns_empty_data_raises_key_error(self):
         """API trả về list rỗng → pd.DataFrame([]) không có cột 'symbol' → KeyError.
@@ -518,19 +487,18 @@ class TestExtractTicker24h:
         cho trường hợp API trả về mảng trống hoàn toàn.
         """
         self.mock_ticker.return_value = []
-        self.mock_book.return_value = []
 
         with pytest.raises(KeyError):
             extract_ticker_24h(TEST_SYMBOLS)
 
     def test_per_symbol_partition_writes(self):
-        """append_to_partition called once per symbol per data type."""
+        """append_to_partition called once per symbol (ticker_raw only)."""
         extract_ticker_24h(TEST_SYMBOLS)
 
-        # 2 symbols × 2 data types (ticker_raw + book_ticker_raw) = 4 calls
-        assert self.mock_append.call_count == 4
+        # 2 symbols × 1 data type (ticker_raw) = 2 calls
+        assert self.mock_append.call_count == 2
         prefixes = {call.args[1] for call in self.mock_append.call_args_list}
-        assert prefixes == {"ticker_raw", "book_ticker_raw"}
+        assert prefixes == {"ticker_raw"}
 
 
 # ============================================================================

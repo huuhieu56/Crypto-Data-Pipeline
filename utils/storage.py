@@ -154,12 +154,12 @@ def append_to_partition(
         existing = _normalize_timestamp_unit(existing, unit="us")
         table = pa.concat_tables([existing, new_table])
 
-        # Dedup: keep last (newest) value for each timestamp
-        pdf = table.to_pandas()
-        pdf = pdf.drop_duplicates(subset=[dedup_col], keep="last")
-        pdf = pdf.sort_values(dedup_col).reset_index(drop=True)
-        table = pa.Table.from_pandas(pdf, preserve_index=False)
-        del pdf
+        if dedup_col is not None:
+            pdf = table.to_pandas()
+            pdf = pdf.drop_duplicates(subset=[dedup_col], keep="last")
+            pdf = pdf.sort_values(dedup_col).reset_index(drop=True)
+            table = pa.Table.from_pandas(pdf, preserve_index=False)
+            del pdf
     else:
         table = new_table
 

@@ -11,7 +11,7 @@ SELECT
     t.price_change_pct AS change_24h_pct
 FROM symbols s
 LEFT JOIN (
-    SELECT symbol, argMax(timestamp, timestamp) AS latest_kline_time, argMax(close, timestamp) AS latest_close
+    SELECT symbol, argMax(open_time, open_time) AS latest_kline_time, argMax(close, open_time) AS latest_close
     FROM klines
     GROUP BY symbol
 ) k ON s.symbol = k.symbol
@@ -79,8 +79,8 @@ ORDER BY day DESC, symbol;
 -- Query 6 - RSI mới nhất mỗi symbol
 SELECT
     symbol,
-    argMax(timestamp, timestamp) AS latest_time,
-    argMax(rsi_14, timestamp) AS latest_rsi
+    argMax(open_time, open_time) AS latest_time,
+    argMax(rsi_14, open_time) AS latest_rsi
 FROM klines
 GROUP BY symbol
 ORDER BY latest_rsi DESC;

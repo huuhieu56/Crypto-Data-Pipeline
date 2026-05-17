@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 from datetime import datetime
 
 import pandas as pd
@@ -10,22 +9,14 @@ import pandas as pd
 from config.config import MINIO_CONFIG, MONTHS_BACK
 from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from utils.binance_utils import download_klines_month, fetch_klines_paginated
-from utils.data_utils import get_target_end, get_target_months, normalize_epoch_ms_columns
+from utils.data_utils import get_target_end, get_target_months
 from utils.db_utils import get_last_timestamps
 from utils.logger import get_logger
-from utils.storage import append_to_partition_csv, storage
+from utils.storage import append_to_partition_csv
 
 logger = get_logger(__name__)
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 KLINE_INTERVAL_MS = 60_000
-
-
-def _df_to_epoch_ms(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert datetime columns in a klines DataFrame to epoch ms (int64)."""
-    return normalize_epoch_ms_columns(
-        df.drop(columns=["symbol"], errors="ignore"),
-        columns=("open_time", "close_time"),
-    )
 
 
 def _latest_closed_kline_open_time_ms(target_end: datetime) -> int:
@@ -39,19 +30,6 @@ def _incremental_end_time_ms(symbol: str, target_end: datetime) -> int:
     if SYMBOLS_STATUS.get(symbol, "TRADING") == "TRADING":
         return _latest_closed_kline_open_time_ms(target_end)
     return int(target_end.timestamp() * 1000)
-
-
-def _upload_csv_partition(df: pd.DataFrame, symbol: str, month_str: str) -> None:
-    """Upload a single month of klines as CSV to MinIO."""
-    csv_df = _df_to_epoch_ms(df)
-    key = f"klines/{symbol}/{month_str}.csv"
-    buf = io.BytesIO()
-    csv_df.to_csv(buf, index=False)
-    buf.seek(0)
-    storage.client.put_object(
-        BUCKET_RAW, key, buf, buf.getbuffer().nbytes,
-        content_type="text/csv",
-    )
 
 
 def download_data_vision(
@@ -74,9 +52,7 @@ def download_data_vision(
         try:
             df = download_klines_month(symbol, y, m)
             if df is not None and not df.empty:
-                month_str = f"{y}-{m:02d}"
-                df = df.sort_values("open_time")
-                _upload_csv_partition(df, symbol, month_str)
+                append_to_partition_csv(BUCKET_RAW, "klines", symbol, df, dedup_col="open_time")
                 logger.info("[%s] %d-%02d: %s rows", symbol, y, m, f"{len(df):,}")
                 total += len(df)
         except Exception as exc:

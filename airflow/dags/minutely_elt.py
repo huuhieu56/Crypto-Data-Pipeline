@@ -6,17 +6,17 @@
 #
 # Tasks:
 #   1. extract_klines: Gọi Binance REST API lấy 1 nến mới nhất / coin
-#   2. extract_ticker: GET /ticker/24hr + /ticker/bookTicker → MinIO (raw)
+#   2. extract_ticker: GET /ticker/24hr → MinIO (raw)
 #   3. extract_order_book: GET /depth → MinIO (raw bids/asks)
-#   4. load_klines: Load raw OHLCV từ MinIO CSV → ClickHouse klines (chưa có indicators)
-#   5. transform_klines: ClickHouse SQL tính RSI(14) + MACD(12,26,9) trong DB
+#   4. transform_klines: Python tính RSI(14) + MACD(12,26,9) → MinIO Parquet
+#   5. load_klines: MinIO Parquet → ClickHouse klines
 #   6. transform_ticker: MinIO raw → merge + rename + spread_pct → MinIO Parquet
 #   7. load_ticker: MinIO Parquet → ClickHouse ticker_24h
 #   8. transform_order_book: MinIO raw → compute volumes/imbalance → MinIO Parquet
 #   9. load_order_book: MinIO Parquet → ClickHouse order_book_snapshot
 #
 # Dependencies:
-#   extract_klines ──▶ load_klines ──▶ transform_klines        (ELT)
+#   extract_klines ──▶ transform_klines ──▶ load_klines         (ETL)
 #   extract_ticker ──▶ transform_ticker ──▶ load_ticker         (ETL)
 #   extract_order_book ──▶ transform_order_book ──▶ load_order_book  (ETL)
 #
@@ -57,7 +57,7 @@ default_args = {
 with DAG(
     dag_id="minutely_elt",
     default_args=default_args,
-    description="Mini-batch ELT mỗi phút: klines, ticker_24h, order_book",
+    description="Mini-batch ETL mỗi phút: klines, ticker_24h, order_book",
     schedule="* * * * *",
     start_date=pendulum.datetime(2024, 1, 1, tz=LOCAL_TZ),
     catchup=False,
@@ -101,18 +101,18 @@ with DAG(
         ),
     )
 
-    # --- Load (raw data → ClickHouse, before transform) -----------------
-
-    load_klines_task = BashOperator(
-        task_id="load_klines",
-        bash_command=f"cd {project_root} && python scripts/load.py --only klines",
-    )
-
-    # --- Transform (in-DB: compute RSI + MACD) ---------------------------
+    # --- Transform klines (Python: compute RSI + MACD → Parquet) ----------
 
     transform_klines_task = BashOperator(
         task_id="transform_klines",
         bash_command=f"cd {project_root} && python scripts/transform.py --only klines",
+    )
+
+    # --- Load klines (Parquet → ClickHouse) -----------------------------
+
+    load_klines_task = BashOperator(
+        task_id="load_klines",
+        bash_command=f"cd {project_root} && python scripts/load.py --only klines",
     )
 
     # --- Ticker: raw → transform (merge/rename/spread_pct) → load -----------
@@ -141,6 +141,6 @@ with DAG(
 
     # --- Dependencies ----------------------------------------------------
 
-    extract_klines_task >> load_klines_task >> transform_klines_task
+    extract_klines_task >> transform_klines_task >> load_klines_task
     extract_ticker_task >> transform_ticker_task >> load_ticker_task
     extract_order_book_task >> transform_order_book_task >> load_order_book_task
