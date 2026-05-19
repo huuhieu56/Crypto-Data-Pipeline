@@ -117,44 +117,56 @@ def fetch_orderbook_data(symbol: str, config: dict) -> dict:
 
 def _fetch_ob_latest(symbol: str) -> dict:
     q = (
-        "SELECT imbalance, total_bid_volume, total_ask_volume "
+        "SELECT obi, depth_bid_volume, depth_ask_volume, spread_pct, "
+        "best_bid, best_ask, mid_price, bid_ask_ratio, "
+        "nearest_bid_wall_price, nearest_bid_wall_volume, "
+        "nearest_ask_wall_price, nearest_ask_wall_volume "
         "FROM order_book_snapshot FINAL "
         "WHERE symbol = {symbol:String} "
         "ORDER BY timestamp DESC LIMIT 1"
     )
     df = ch_query_df_params(q, {"symbol": symbol})
     if df.empty:
-        return {"mode": "latest_only", "latest_imbalance": 0.5}
+        return {"mode": "latest_only", "obi": 0.0}
     row = df.iloc[0]
     return {
         "mode": "latest_only",
-        "latest_imbalance": _safe_float(row, "imbalance", 0.5),
-        "bid_volume": _safe_float(row, "total_bid_volume", 0.0),
-        "ask_volume": _safe_float(row, "total_ask_volume", 0.0),
+        "obi": _safe_float(row, "obi", 0.0),
+        "bid_volume": _safe_float(row, "depth_bid_volume", 0.0),
+        "ask_volume": _safe_float(row, "depth_ask_volume", 0.0),
+        "spread_pct": _safe_float(row, "spread_pct", 0.0),
+        "bid_ask_ratio": _safe_float(row, "bid_ask_ratio", 0.0),
+        "best_bid": _safe_float(row, "best_bid", 0.0),
+        "best_ask": _safe_float(row, "best_ask", 0.0),
+        "mid_price": _safe_float(row, "mid_price", 0.0),
+        "nearest_bid_wall_price": _safe_float(row, "nearest_bid_wall_price", 0.0),
+        "nearest_bid_wall_volume": _safe_float(row, "nearest_bid_wall_volume", 0.0),
+        "nearest_ask_wall_price": _safe_float(row, "nearest_ask_wall_price", 0.0),
+        "nearest_ask_wall_volume": _safe_float(row, "nearest_ask_wall_volume", 0.0),
     }
 
 
 def _fetch_ob_summary(symbol: str) -> dict:
     q = (
         "SELECT "
-        "avg(imbalance) AS avg_imbalance, "
-        "min(imbalance) AS min_imbalance, "
-        "max(imbalance) AS max_imbalance, "
-        "argMax(imbalance, timestamp) AS latest_imbalance "
+        "avg(obi) AS avg_obi, "
+        "min(obi) AS min_obi, "
+        "max(obi) AS max_obi, "
+        "argMax(obi, timestamp) AS latest_obi "
         "FROM order_book_snapshot FINAL "
         "WHERE symbol = {symbol:String} "
         "AND timestamp >= now() - INTERVAL 30 DAY"
     )
     df = ch_query_df_params(q, {"symbol": symbol})
     if df.empty:
-        return {"mode": "summary_30d", "avg_imbalance": 0.5, "latest_imbalance": 0.5}
+        return {"mode": "summary_30d", "avg_obi": 0.0, "latest_obi": 0.0}
     row = df.iloc[0]
     return {
         "mode": "summary_30d",
-        "avg_imbalance": _safe_float(row, "avg_imbalance", 0.5),
-        "min_imbalance": _safe_float(row, "min_imbalance", 0.5),
-        "max_imbalance": _safe_float(row, "max_imbalance", 0.5),
-        "latest_imbalance": _safe_float(row, "latest_imbalance", 0.5),
+        "avg_obi": _safe_float(row, "avg_obi", 0.0),
+        "min_obi": _safe_float(row, "min_obi", 0.0),
+        "max_obi": _safe_float(row, "max_obi", 0.0),
+        "latest_obi": _safe_float(row, "latest_obi", 0.0),
     }
 
 
@@ -164,9 +176,9 @@ def _fetch_ob_trend(symbol: str, config: dict) -> dict:
 
     q = (
         f"SELECT {group_by} AS ts, "
-        "avg(imbalance) AS avg_imbalance, "
-        "avg(total_bid_volume) AS avg_bid_vol, "
-        "avg(total_ask_volume) AS avg_ask_vol "
+        "avg(obi) AS avg_obi, "
+        "avg(depth_bid_volume) AS avg_bid_vol, "
+        "avg(depth_ask_volume) AS avg_ask_vol "
         "FROM order_book_snapshot FINAL "
         "WHERE symbol = {symbol:String} "
         f"AND timestamp >= now() - INTERVAL {lookback} DAY "
@@ -180,7 +192,7 @@ def _fetch_ob_trend(symbol: str, config: dict) -> dict:
     return {
         "mode": "trend",
         "trend_df": trend_df,
-        "latest_imbalance": latest.get("latest_imbalance", 0.5),
+        "obi": latest.get("obi", 0.0),
     }
 
 
@@ -303,31 +315,41 @@ def format_orderbook(data: dict) -> str:
     mode = data.get("mode", "latest_only")
 
     if mode == "latest_only":
-        imb = data.get("latest_imbalance", 0.5)
-        tag = _imbalance_tag(imb)
-        return f"Current imbalance: {imb:.3f} ({tag})"
+        obi = data.get("obi", 0.0)
+        tag = _obi_tag(obi)
+        bid_vol = data.get("bid_volume", 0.0)
+        ask_vol = data.get("ask_volume", 0.0)
+        spread = data.get("spread_pct", 0.0)
+        ratio = data.get("bid_ask_ratio", 0.0)
+        return (
+            f"Live Liquidity Pressure:\n"
+            f"  OBI (±0.5% depth): {obi:+.3f} ({tag})\n"
+            f"  Bid Volume: {bid_vol:,.2f} / Ask Volume: {ask_vol:,.2f}\n"
+            f"  Bid/Ask Ratio: {ratio:.2f}x\n"
+            f"  Spread: {spread:.4f}%"
+        )
 
     if mode == "summary_30d":
         return (
             f"30-day order book summary:\n"
-            f"  Avg imbalance: {data.get('avg_imbalance', 0.5):.3f}\n"
-            f"  Min: {data.get('min_imbalance', 0.5):.3f} / "
-            f"Max: {data.get('max_imbalance', 0.5):.3f}\n"
-            f"  Latest: {data.get('latest_imbalance', 0.5):.3f} "
-            f"({_imbalance_tag(data.get('latest_imbalance', 0.5))})"
+            f"  Avg OBI: {data.get('avg_obi', 0.0):+.3f}\n"
+            f"  Min: {data.get('min_obi', 0.0):+.3f} / "
+            f"Max: {data.get('max_obi', 0.0):+.3f}\n"
+            f"  Latest: {data.get('latest_obi', 0.0):+.3f} "
+            f"({_obi_tag(data.get('latest_obi', 0.0))})"
         )
 
     # Trend mode
     trend_df = data.get("trend_df", pd.DataFrame())
-    latest_imb = data.get("latest_imbalance", 0.5)
-    lines = [f"Current imbalance: {latest_imb:.3f} ({_imbalance_tag(latest_imb)})"]
+    obi = data.get("obi", 0.0)
+    lines = [f"Current OBI: {obi:+.3f} ({_obi_tag(obi)})"]
 
     if not trend_df.empty:
         lines.append("Order book trend:")
         for _, row in trend_df.iterrows():
             ts = pd.Timestamp(row["ts"]).strftime("%Y-%m-%d %H:00")
-            imb = _safe_float(row, "avg_imbalance", 0.5)
-            lines.append(f"  {ts} Imb:{imb:.3f} Bid:{_safe_float(row, 'avg_bid_vol', 0):,.0f} Ask:{_safe_float(row, 'avg_ask_vol', 0):,.0f}")
+            imb = _safe_float(row, "avg_obi", 0.0)
+            lines.append(f"  {ts} OBI:{imb:+.3f} Bid:{_safe_float(row, 'avg_bid_vol', 0):,.0f} Ask:{_safe_float(row, 'avg_ask_vol', 0):,.0f}")
 
     return "\n".join(lines)
 
@@ -342,9 +364,18 @@ def _safe_float(row, col: str, default: float = 0.0) -> float:
     return float(val) if pd.notna(val) else default
 
 
-def _imbalance_tag(imbalance: float) -> str:
-    if imbalance > 0.6:
-        return "strong buy pressure"
-    if imbalance < 0.4:
-        return "strong sell pressure"
+def _obi_tag(obi: float) -> str:
+    """Tag OBI value with liquidity pressure label. Range: -1 (ask-heavy) to +1 (bid-heavy)."""
+    if obi >= 0.30:
+        return "strong bid pressure"
+    if obi <= -0.30:
+        return "strong ask pressure"
+    if obi > 0.10:
+        return "mild bid pressure"
+    if obi < -0.10:
+        return "mild ask pressure"
     return "balanced"
+
+
+# Keep old name as alias for backward compatibility
+_imbalance_tag = _obi_tag

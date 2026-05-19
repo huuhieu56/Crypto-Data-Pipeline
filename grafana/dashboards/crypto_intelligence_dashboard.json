@@ -418,49 +418,132 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
           "custom": {
-            "axisCenteredZero": true,
-            "axisColorMode": "text",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "gradientMode": "none",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 3,
-            "showPoints": "always",
-            "spanNulls": true,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
           },
-          "max": 1,
-          "min": 0
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "text", "value": null }
+            ]
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "obi" },
+            "properties": [
+              { "id": "displayName", "value": "OBI ±0.5%" },
+              { "id": "unit", "value": "none" },
+              { "id": "decimals", "value": 3 },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "red", "value": null },
+                    { "color": "orange", "value": -0.3 },
+                    { "color": "text", "value": -0.1 },
+                    { "color": "yellow", "value": 0.1 },
+                    { "color": "green", "value": 0.3 }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "bid_volume" },
+            "properties": [
+              { "id": "displayName", "value": "Bid Volume" },
+              { "id": "unit", "value": "none" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "ask_volume" },
+            "properties": [
+              { "id": "displayName", "value": "Ask Volume" },
+              { "id": "unit", "value": "none" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "bid_ask_ratio" },
+            "properties": [
+              { "id": "displayName", "value": "Bid/Ask Ratio" },
+              { "id": "unit", "value": "none" },
+              { "id": "decimals", "value": 2 },
+              { "id": "suffix", "value": "x" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "spread_pct" },
+            "properties": [
+              { "id": "displayName", "value": "Spread" },
+              { "id": "unit", "value": "percent" },
+              { "id": "decimals", "value": 3 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "nearest_bid_wall_price" },
+            "properties": [
+              { "id": "displayName", "value": "Nearest Bid Wall" },
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "nearest_bid_wall_volume" },
+            "properties": [
+              { "id": "displayName", "value": "Bid Wall Vol" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "nearest_ask_wall_price" },
+            "properties": [
+              { "id": "displayName", "value": "Nearest Ask Wall" },
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "nearest_ask_wall_volume" },
+            "properties": [
+              { "id": "displayName", "value": "Ask Wall Vol" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "updated" },
+            "properties": [
+              { "id": "displayName", "value": "Updated" },
+              { "id": "unit", "value": "dateTimeAsLocal" }
+            ]
+          }
+        ]
       },
       "gridPos": {
-        "h": 7,
+        "h": 8,
         "w": 10,
         "x": 14,
         "y": 9
       },
       "id": 9,
       "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": ["lastNotNull"],
+          "show": false
         },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+        "showHeader": true,
+        "sortBy": []
       },
       "targets": [
         {
@@ -471,12 +554,12 @@
           "editorMode": "code",
           "format": 1,
           "rawQuery": true,
-          "rawSql": "SELECT\n  toStartOfInterval(timestamp, INTERVAL 5 minute) AS time,\n  avg(imbalance) AS imbalance\nFROM order_book_snapshot FINAL\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nGROUP BY time\nORDER BY time",
+          "rawSql": "SELECT\n  obi,\n  depth_bid_volume AS bid_volume,\n  depth_ask_volume AS ask_volume,\n  bid_ask_ratio,\n  spread_pct,\n  nearest_bid_wall_price,\n  nearest_bid_wall_volume,\n  nearest_ask_wall_price,\n  nearest_ask_wall_volume,\n  timestamp AS updated\nFROM order_book_snapshot FINAL\nWHERE symbol = '${symbol}'\nORDER BY timestamp DESC\nLIMIT 1",
           "refId": "A"
         }
       ],
-      "title": "Order Book Imbalance (30d)",
-      "type": "timeseries"
+      "title": "Live Liquidity Pressure",
+      "type": "table"
     },
     {
       "gridPos": {
