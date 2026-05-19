@@ -50,10 +50,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 10,
         "x": 0,
-        "y": 0
+        "y": 0,
+        "w": 12,
+        "h": 8
       },
       "id": 1,
       "options": {
@@ -115,10 +115,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 14,
-        "x": 10,
-        "y": 0
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
       },
       "id": 2,
       "options": {
@@ -245,10 +245,10 @@
         ]
       },
       "gridPos": {
-        "h": 7,
-        "w": 7,
         "x": 0,
-        "y": 9
+        "y": 8,
+        "w": 6,
+        "h": 8
       },
       "id": 3,
       "options": {
@@ -376,10 +376,10 @@
         ]
       },
       "gridPos": {
-        "h": 7,
-        "w": 7,
-        "x": 7,
-        "y": 9
+        "x": 6,
+        "y": 8,
+        "w": 6,
+        "h": 8
       },
       "id": 4,
       "options": {
@@ -429,109 +429,53 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "text", "value": null }
+              {
+                "color": "text",
+                "value": null
+              }
             ]
           }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "obi" },
+            "matcher": {
+              "id": "byName",
+              "options": "metric"
+            },
             "properties": [
-              { "id": "displayName", "value": "OBI ±0.5%" },
-              { "id": "unit", "value": "none" },
-              { "id": "decimals", "value": 3 },
               {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    { "color": "red", "value": null },
-                    { "color": "orange", "value": -0.3 },
-                    { "color": "text", "value": -0.1 },
-                    { "color": "yellow", "value": 0.1 },
-                    { "color": "green", "value": 0.3 }
-                  ]
-                }
+                "id": "displayName",
+                "value": "Metric"
+              },
+              {
+                "id": "width",
+                "value": 160
               }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "bid_volume" },
+            "matcher": {
+              "id": "byName",
+              "options": "value"
+            },
             "properties": [
-              { "id": "displayName", "value": "Bid Volume" },
-              { "id": "unit", "value": "none" },
-              { "id": "decimals", "value": 2 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "ask_volume" },
-            "properties": [
-              { "id": "displayName", "value": "Ask Volume" },
-              { "id": "unit", "value": "none" },
-              { "id": "decimals", "value": 2 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "bid_ask_ratio" },
-            "properties": [
-              { "id": "displayName", "value": "Bid/Ask Ratio" },
-              { "id": "unit", "value": "none" },
-              { "id": "decimals", "value": 2 },
-              { "id": "suffix", "value": "x" }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "spread_pct" },
-            "properties": [
-              { "id": "displayName", "value": "Spread" },
-              { "id": "unit", "value": "percent" },
-              { "id": "decimals", "value": 3 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "nearest_bid_wall_price" },
-            "properties": [
-              { "id": "displayName", "value": "Nearest Bid Wall" },
-              { "id": "unit", "value": "currencyUSD" },
-              { "id": "decimals", "value": 2 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "nearest_bid_wall_volume" },
-            "properties": [
-              { "id": "displayName", "value": "Bid Wall Vol" },
-              { "id": "decimals", "value": 2 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "nearest_ask_wall_price" },
-            "properties": [
-              { "id": "displayName", "value": "Nearest Ask Wall" },
-              { "id": "unit", "value": "currencyUSD" },
-              { "id": "decimals", "value": 2 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "nearest_ask_wall_volume" },
-            "properties": [
-              { "id": "displayName", "value": "Ask Wall Vol" },
-              { "id": "decimals", "value": 2 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "updated" },
-            "properties": [
-              { "id": "displayName", "value": "Updated" },
-              { "id": "unit", "value": "dateTimeAsLocal" }
+              {
+                "id": "displayName",
+                "value": "Value"
+              },
+              {
+                "id": "align",
+                "value": "right"
+              }
             ]
           }
         ]
       },
       "gridPos": {
-        "h": 8,
-        "w": 10,
         "x": 14,
-        "y": 9
+        "y": 9,
+        "w": 10,
+        "h": 8
       },
       "id": 9,
       "options": {
@@ -539,7 +483,9 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": ["lastNotNull"],
+          "reducer": [
+            "lastNotNull"
+          ],
           "show": false
         },
         "showHeader": true,
@@ -554,7 +500,7 @@
           "editorMode": "code",
           "format": 1,
           "rawQuery": true,
-          "rawSql": "SELECT\n  obi,\n  depth_bid_volume AS bid_volume,\n  depth_ask_volume AS ask_volume,\n  bid_ask_ratio,\n  spread_pct,\n  nearest_bid_wall_price,\n  nearest_bid_wall_volume,\n  nearest_ask_wall_price,\n  nearest_ask_wall_volume,\n  timestamp AS updated\nFROM order_book_snapshot FINAL\nWHERE symbol = '${symbol}'\nORDER BY timestamp DESC\nLIMIT 1",
+          "rawSql": "SELECT t.1 AS metric, t.2 AS value\nFROM (\n  SELECT arrayJoin([\n    ('OBI ±0.5%', toString(round(obi, 3))),\n    ('Bid Volume', toString(round(depth_bid_volume, 2))),\n    ('Ask Volume', toString(round(depth_ask_volume, 2))),\n    ('Bid/Ask Ratio', concat(toString(round(bid_ask_ratio, 2)), 'x')),\n    ('Spread', concat(toString(round(spread_pct, 4)), '%')),\n    ('Nearest Bid Wall', concat('$', toString(round(nearest_bid_wall_price, 2)))),\n    ('Bid Wall Vol', toString(round(nearest_bid_wall_volume, 2))),\n    ('Nearest Ask Wall', concat('$', toString(round(nearest_ask_wall_price, 2)))),\n    ('Ask Wall Vol', toString(round(nearest_ask_wall_volume, 2))),\n    ('Updated', toString(timestamp))\n  ]) AS t\n  FROM (\n    SELECT * FROM order_book_snapshot FINAL\n    WHERE symbol = '${symbol}'\n    ORDER BY timestamp DESC\n    LIMIT 1\n  )\n)\n",
           "refId": "A"
         }
       ],
@@ -563,10 +509,10 @@
     },
     {
       "gridPos": {
-        "h": 18,
-        "w": 12,
         "x": 12,
-        "y": 16
+        "y": 17,
+        "w": 12,
+        "h": 16
       },
       "id": 20,
       "options": {
@@ -591,10 +537,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 18,
-        "w": 12,
         "x": 0,
-        "y": 16
+        "y": 17,
+        "w": 12,
+        "h": 16
       },
       "id": 11,
       "options": {

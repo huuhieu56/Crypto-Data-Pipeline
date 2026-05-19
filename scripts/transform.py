@@ -321,10 +321,14 @@ def transform_order_book(
                 # Compute liquidity pressure metrics row-by-row
                 results = []
                 for _, row in df.iterrows():
-                    bids = row.get("bids", [])
-                    asks = row.get("asks", [])
+                    # Parquet round-trip qua PyArrow có thể convert lists → numpy arrays,
+                    # dùng len() thay vì truthiness để tránh "ambiguous truth value" error
+                    _raw_bids = row.get("bids", [])
+                    _raw_asks = row.get("asks", [])
+                    bids = list(_raw_bids) if hasattr(_raw_bids, '__len__') and len(_raw_bids) > 0 else []
+                    asks = list(_raw_asks) if hasattr(_raw_asks, '__len__') and len(_raw_asks) > 0 else []
 
-                    if not bids or not asks:
+                    if len(bids) == 0 or len(asks) == 0:
                         results.append({
                             "symbol": row["symbol"],
                             "timestamp": row["timestamp"],
