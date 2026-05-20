@@ -111,7 +111,7 @@ def _fake_volume_tool_result() -> str:
 
 
 def _fake_orderbook_tool_result() -> str:
-    return "Current imbalance: 0.620 (strong buy pressure)"
+    return "Live Liquidity Pressure:\n  OBI (±0.5% depth): +0.620 (strong bid pressure)\n  Bid Volume: 124.00 / Ask Volume: 60.00\n  Bid/Ask Ratio: 2.07x\n  Spread: 0.0100%"
 
 
 # ============================================================================
@@ -327,7 +327,7 @@ class TestResponseQuality:
         # Phải đề cập cả giá, volume, và order book
         has_price = any(kw in reply for kw in ["70", "giá", "price", "rsi"])
         has_volume = any(kw in reply for kw in ["volume", "khối lượng", "giao dịch"])
-        has_ob = any(kw in reply for kw in ["order book", "áp lực", "imbalance", "mua", "buy"])
+        has_ob = any(kw in reply for kw in ["order book", "OBI", "áp lực", "imbalance", "mua", "buy"])
 
         assert has_price, f"Phải phân tích giá, got: {reply[:300]}"
         assert has_volume or has_ob, (

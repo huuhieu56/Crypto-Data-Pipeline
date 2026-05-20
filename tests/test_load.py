@@ -137,9 +137,18 @@ def test_load_order_book_inserts_transformed_parquet(monkeypatch):
     transformed_df = pd.DataFrame({
         "symbol": ["BTCUSDT"],
         "timestamp": [pd.Timestamp("2026-05-15 08:45:00")],
-        "total_bid_volume": [3.8],
-        "total_ask_volume": [4.3],
-        "imbalance": [0.4691],
+        "best_bid": [42290.0],
+        "best_ask": [42310.0],
+        "mid_price": [42300.0],
+        "spread_pct": [0.0473],
+        "depth_bid_volume": [3.8],
+        "depth_ask_volume": [4.3],
+        "obi": [-0.0617],
+        "bid_ask_ratio": [0.8837],
+        "nearest_bid_wall_price": [None],
+        "nearest_bid_wall_volume": [None],
+        "nearest_ask_wall_price": [None],
+        "nearest_ask_wall_volume": [None],
     })
 
     storage = MagicMock()
@@ -163,6 +172,7 @@ def test_load_order_book_inserts_transformed_parquet(monkeypatch):
     call_args = insert.call_args
     assert call_args[0][0] == "order_book_snapshot"
     df = call_args[0][1]
-    assert "total_bid_volume" in df.columns
-    assert "total_ask_volume" in df.columns
-    assert "imbalance" in df.columns
+    assert "obi" in df.columns
+    assert "depth_bid_volume" in df.columns
+    assert "depth_ask_volume" in df.columns
+    assert "spread_pct" in df.columns

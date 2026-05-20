@@ -7,7 +7,7 @@ sử dụng ClickHouse SQL, Apache Airflow, ClickHouse, MinIO, LLM (DeepSeek/Gem
 
 - **Extract mỗi phút**: Gọi Binance REST API lấy nến 1-min, ticker 24h, order book cho 50 coins
 - **Load**: Ghi vào ClickHouse (clickhouse-connect)
-- **Transform**: ClickHouse SQL tính RSI(14), MACD(12/26/9) trên 1-min candles (ELT pattern)
+- **Transform**: ClickHouse SQL tính RSI(14), MACD(12/26/9) trên 1-min candles; Python tính OBI, spread, bid/ask walls từ order book snapshot
 - **LLM Chat Assistant**: AI chatbot với LangGraph workflow, DeepSeek reasoning model, tool calling tự động (candles, volume, order book), timeframe-aware analysis
 - **Visualize**: Grafana dashboard real-time + embedded chatbox
 

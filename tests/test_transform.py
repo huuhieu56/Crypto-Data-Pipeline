@@ -175,7 +175,7 @@ def test_transform_ticker_empty_symbols_does_nothing(monkeypatch):
 
 
 def test_transform_order_book_computes_volumes_and_imbalance(monkeypatch):
-    """transform_order_book computes total_bid_volume, total_ask_volume, imbalance."""
+    """transform_order_book computes OBI, spread, walls from depth-filtered bids/asks."""
     raw_df = pd.DataFrame({
         "symbol": ["BTCUSDT"],
         "timestamp": [pd.Timestamp("2026-05-15 08:45:00")],
@@ -204,13 +204,21 @@ def test_transform_order_book_computes_volumes_and_imbalance(monkeypatch):
     assert call_args[0][1] == "order_book_snapshot"  # prefix
     assert call_args[0][2] == "BTCUSDT"              # symbol
     df = call_args[0][3]
-    assert "total_bid_volume" in df.columns
-    assert "total_ask_volume" in df.columns
-    assert "imbalance" in df.columns
+    assert "obi" in df.columns
+    assert "depth_bid_volume" in df.columns
+    assert "depth_ask_volume" in df.columns
+    assert "spread_pct" in df.columns
+    assert "best_bid" in df.columns
+    assert "best_ask" in df.columns
+    assert "bid_ask_ratio" in df.columns
     assert "bids" not in df.columns
     assert "asks" not in df.columns
-    assert df["total_bid_volume"].iloc[0] == pytest.approx(3.8)
-    assert df["total_ask_volume"].iloc[0] == pytest.approx(4.3)
+    assert df["depth_bid_volume"].iloc[0] == pytest.approx(3.8)
+    assert df["depth_ask_volume"].iloc[0] == pytest.approx(4.3)
+    # OBI = (3.8 - 4.3) / (3.8 + 4.3) = -0.0617...
+    assert df["obi"].iloc[0] == pytest.approx(-0.0617, abs=0.01)
+    # Spread = (42310 - 42290) / 42300 * 100 ≈ 0.0473%
+    assert df["spread_pct"].iloc[0] == pytest.approx(0.0473, abs=0.01)
 
 
 def test_transform_order_book_skips_missing_partition(monkeypatch):

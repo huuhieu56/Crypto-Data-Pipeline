@@ -2,7 +2,7 @@
 
 - klines: ETL — compute RSI(14) + MACD(12,26,9) in Python → Parquet
 - ticker_24h: ETL — rename, compute spread_pct → Parquet
-- order_book: ETL — compute volumes/imbalance → Parquet
+- order_book: ETL — compute OBI (±0.5% depth), spread, walls → Parquet
 
 Usage:
     python scripts/transform.py
@@ -28,6 +28,7 @@ from config.config import (
     BINANCE_COLUMN_MAP,
     INDICATOR_CONTEXT_ROWS,
     MINIO_CONFIG,
+    OBI_DEPTH_PCT,
 )
 from config.symbols import SYMBOLS
 from utils.data_utils import validate_month_str
@@ -274,18 +275,24 @@ def transform_order_book(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """ETL: compute volumes/imbalance from raw bids/asks → Parquet.
+    """ETL: compute OBI, spread, walls from raw bids/asks → Parquet.
 
-    Reads raw from MinIO (order_book/), computes total_bid_volume,
-    total_ask_volume, imbalance, and writes transformed Parquet to
-    order_book_snapshot/ in MinIO.
+    Reads raw from MinIO (order_book/), computes depth-filtered OBI
+    (±0.5% around mid price), spread, bid/ask ratio, and liquidity walls,
+    then writes transformed Parquet to order_book_snapshot/ in MinIO.
     """
     if symbols is None:
         symbols = SYMBOLS
     if month_str is not None:
         month_str = validate_month_str(month_str)
 
-    target_cols = ["symbol", "timestamp", "total_bid_volume", "total_ask_volume", "imbalance"]
+    target_cols = [
+        "symbol", "timestamp",
+        "best_bid", "best_ask", "mid_price", "spread_pct",
+        "depth_bid_volume", "depth_ask_volume", "obi", "bid_ask_ratio",
+        "nearest_bid_wall_price", "nearest_bid_wall_volume",
+        "nearest_ask_wall_price", "nearest_ask_wall_volume",
+    ]
     total_transformed = 0
     errors = 0
 
@@ -311,22 +318,89 @@ def transform_order_book(
                 if df.empty:
                     continue
 
-                # Compute volumes from raw bids/asks arrays
-                bid_vols = []
-                ask_vols = []
+                # Compute liquidity pressure metrics row-by-row
+                results = []
                 for _, row in df.iterrows():
-                    bids = row.get("bids", [])
-                    asks = row.get("asks", [])
-                    bid_vol = sum(float(b[1]) for b in bids if len(b) > 1)
-                    ask_vol = sum(float(a[1]) for a in asks if len(a) > 1)
-                    bid_vols.append(bid_vol)
-                    ask_vols.append(ask_vol)
+                    # Parquet round-trip qua PyArrow có thể convert lists → numpy arrays,
+                    # dùng len() thay vì truthiness để tránh "ambiguous truth value" error
+                    _raw_bids = row.get("bids", [])
+                    _raw_asks = row.get("asks", [])
+                    bids = list(_raw_bids) if hasattr(_raw_bids, '__len__') and len(_raw_bids) > 0 else []
+                    asks = list(_raw_asks) if hasattr(_raw_asks, '__len__') and len(_raw_asks) > 0 else []
 
-                df["total_bid_volume"] = bid_vols
-                df["total_ask_volume"] = ask_vols
-                total = df["total_bid_volume"] + df["total_ask_volume"]
-                df["imbalance"] = (df["total_bid_volume"] / total).fillna(0.0)
+                    if len(bids) == 0 or len(asks) == 0:
+                        results.append({
+                            "symbol": row["symbol"],
+                            "timestamp": row["timestamp"],
+                            "best_bid": None, "best_ask": None,
+                            "mid_price": None, "spread_pct": None,
+                            "depth_bid_volume": None, "depth_ask_volume": None,
+                            "obi": None, "bid_ask_ratio": None,
+                            "nearest_bid_wall_price": None,
+                            "nearest_bid_wall_volume": None,
+                            "nearest_ask_wall_price": None,
+                            "nearest_ask_wall_volume": None,
+                        })
+                        continue
 
+                    best_bid = float(bids[0][0])
+                    best_ask = float(asks[0][0])
+                    mid_price = (best_bid + best_ask) / 2.0
+                    spread_pct = (best_ask - best_bid) / mid_price * 100.0
+
+                    # Filter to ±OBI_DEPTH_PCT around mid price
+                    min_bid_price = mid_price * (1.0 - OBI_DEPTH_PCT)
+                    max_ask_price = mid_price * (1.0 + OBI_DEPTH_PCT)
+
+                    depth_bids = [
+                        (float(b[0]), float(b[1]))
+                        for b in bids if len(b) > 1
+                        and min_bid_price <= float(b[0]) <= mid_price
+                    ]
+                    depth_asks = [
+                        (float(a[0]), float(a[1]))
+                        for a in asks if len(a) > 1
+                        and mid_price <= float(a[0]) <= max_ask_price
+                    ]
+
+                    depth_bid_vol = sum(q for _, q in depth_bids)
+                    depth_ask_vol = sum(q for _, q in depth_asks)
+                    total_vol = depth_bid_vol + depth_ask_vol
+
+                    obi = ((depth_bid_vol - depth_ask_vol) / total_vol) if total_vol > 0 else 0.0
+                    bid_ask_ratio = (depth_bid_vol / depth_ask_vol) if depth_ask_vol > 0 else None
+
+                    # Wall detection: max-quantity level >= 3x average
+                    def _find_wall(levels):
+                        if not levels:
+                            return None, None
+                        avg_qty = sum(q for _, q in levels) / len(levels)
+                        best = max(levels, key=lambda x: x[1])
+                        if best[1] >= avg_qty * 3:
+                            return best[0], best[1]
+                        return None, None
+
+                    bid_wall_price, bid_wall_vol = _find_wall(depth_bids)
+                    ask_wall_price, ask_wall_vol = _find_wall(depth_asks)
+
+                    results.append({
+                        "symbol": row["symbol"],
+                        "timestamp": row["timestamp"],
+                        "best_bid": best_bid,
+                        "best_ask": best_ask,
+                        "mid_price": mid_price,
+                        "spread_pct": spread_pct,
+                        "depth_bid_volume": depth_bid_vol,
+                        "depth_ask_volume": depth_ask_vol,
+                        "obi": obi,
+                        "bid_ask_ratio": bid_ask_ratio,
+                        "nearest_bid_wall_price": bid_wall_price,
+                        "nearest_bid_wall_volume": bid_wall_vol,
+                        "nearest_ask_wall_price": ask_wall_price,
+                        "nearest_ask_wall_volume": ask_wall_vol,
+                    })
+
+                df = pd.DataFrame(results)
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
                 df = df[target_cols].copy()
 

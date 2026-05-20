@@ -146,33 +146,32 @@ class TestSafeFloat:
 
 
 # ============================================================================
-# 4.3 _imbalance_tag()
+# 4.3 _obi_tag() / _imbalance_tag()
 # ============================================================================
-class TestImbalanceTag:
-    """Tests cho _imbalance_tag helper."""
+class TestObiTag:
+    """Tests cho _imbalance_tag helper (OBI range -1 → +1)."""
 
-    def test_strong_buy(self):
-        assert _imbalance_tag(0.7) == "strong buy pressure"
+    def test_strong_bid_pressure(self):
+        assert _imbalance_tag(0.30) == "strong bid pressure"
 
-    def test_strong_sell(self):
-        assert _imbalance_tag(0.3) == "strong sell pressure"
+    def test_strong_ask_pressure(self):
+        assert _imbalance_tag(-0.30) == "strong ask pressure"
 
-    def test_balanced_middle(self):
-        assert _imbalance_tag(0.5) == "balanced"
+    def test_balanced_zero(self):
+        assert _imbalance_tag(0.0) == "balanced"
 
-    def test_boundary_0_6_is_balanced(self):
-        """0.6 chính xác → balanced (condition là > 0.6)."""
-        assert _imbalance_tag(0.6) == "balanced"
+    def test_boundary_0_10_is_balanced(self):
+        """0.10 chính xác → balanced (mild bid là > 0.10)."""
+        assert _imbalance_tag(0.10) == "balanced"
 
-    def test_boundary_0_4_is_balanced(self):
-        """0.4 chính xác → balanced (condition là < 0.4)."""
-        assert _imbalance_tag(0.4) == "balanced"
+    def test_boundary_minus_0_10_is_balanced(self):
+        assert _imbalance_tag(-0.10) == "balanced"
 
-    def test_just_above_0_6(self):
-        assert _imbalance_tag(0.601) == "strong buy pressure"
+    def test_just_above_0_30(self):
+        assert _imbalance_tag(0.301) == "strong bid pressure"
 
-    def test_just_below_0_4(self):
-        assert _imbalance_tag(0.399) == "strong sell pressure"
+    def test_just_below_minus_0_30(self):
+        assert _imbalance_tag(-0.301) == "strong ask pressure"
 
 
 # ============================================================================
@@ -228,45 +227,52 @@ class TestFormatTickerTrend:
 # 4.6 format_orderbook()
 # ============================================================================
 class TestFormatOrderbook:
-    """Tests cho format_orderbook formatter."""
+    """Tests cho format_orderbook formatter (new OBI schema)."""
 
     def test_latest_only_mode(self):
-        data = {"mode": "latest_only", "latest_imbalance": 0.65}
+        data = {
+            "mode": "latest_only",
+            "obi": 0.65,
+            "bid_volume": 124.0,
+            "ask_volume": 60.0,
+            "spread_pct": 0.01,
+            "bid_ask_ratio": 2.07,
+        }
         result = format_orderbook(data)
 
-        assert "0.650" in result
-        assert "strong buy pressure" in result
+        assert "+0.650" in result
+        assert "strong bid pressure" in result
 
     def test_summary_30d_mode(self):
         data = {
             "mode": "summary_30d",
-            "avg_imbalance": 0.52,
-            "min_imbalance": 0.35,
-            "max_imbalance": 0.70,
-            "latest_imbalance": 0.55,
+            "avg_obi": 0.15,
+            "min_obi": -0.20,
+            "max_obi": 0.45,
+            "latest_obi": 0.30,
         }
         result = format_orderbook(data)
 
         assert "30-day order book summary" in result
-        assert "0.520" in result
-        assert "0.350" in result
-        assert "0.700" in result
+        assert "+0.150" in result
+        assert "-0.200" in result
+        assert "+0.450" in result
 
     def test_trend_mode_with_data(self):
         trend_df = pd.DataFrame({
             "ts": pd.to_datetime(["2024-01-01"]),
-            "avg_imbalance": [0.48],
+            "avg_obi": [0.15],
             "avg_bid_vol": [1000.0],
             "avg_ask_vol": [1100.0],
         })
         data = {
             "mode": "trend",
             "trend_df": trend_df,
-            "latest_imbalance": 0.48,
+            "obi": 0.15,
         }
         result = format_orderbook(data)
 
-        assert "Current imbalance: 0.480" in result
+        assert "Current OBI: +0.150" in result
         assert "Order book trend:" in result
         assert "Bid:" in result
 
@@ -274,12 +280,11 @@ class TestFormatOrderbook:
         data = {
             "mode": "trend",
             "trend_df": pd.DataFrame(),
-            "latest_imbalance": 0.5,
+            "obi": 0.0,
         }
         result = format_orderbook(data)
 
-        assert "Current imbalance: 0.500" in result
-        # Không có dòng trend
+        assert "Current OBI: +0.000" in result
         assert "Order book trend:" not in result
 
 
@@ -378,7 +383,7 @@ class TestFetchOrderbookData:
 
     @patch("services.chat_api.market_queries._fetch_ob_latest")
     def test_latest_only_mode(self, mock_latest):
-        mock_latest.return_value = {"mode": "latest_only", "latest_imbalance": 0.5}
+        mock_latest.return_value = {"mode": "latest_only", "obi": 0.0}
         config = {"ob_mode": "latest_only"}
 
         result = fetch_orderbook_data("BTCUSDT", config)

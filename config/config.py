@@ -41,6 +41,7 @@ BINANCE_ENDPOINTS = {
 # Rate limiting & request settings
 API_LIMIT = 1000          # max records per klines request
 ORDER_BOOK_LIMIT = 100    # depth levels for order book
+OBI_DEPTH_PCT = 0.005   # ±0.5% around mid price for OBI calculation
 API_TIMEOUT = 30          # seconds
 API_SLEEP = 0.1           # seconds between API calls
 MONTHS_BACK = int(os.getenv("ETL_MONTHS_BACK", "36"))  # historical window in months

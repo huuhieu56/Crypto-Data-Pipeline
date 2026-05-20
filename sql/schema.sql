@@ -112,13 +112,22 @@ CREATE TABLE IF NOT EXISTS crypto_db.ticker_24h (
 PARTITION BY toYYYYMM(snapshot_time)
 ORDER BY (symbol, snapshot_time);
 
--- 4) Fact: Order book snapshot
+-- 4) Fact: Order book snapshot — Live Liquidity Pressure
 CREATE TABLE IF NOT EXISTS crypto_db.order_book_snapshot (
     symbol String,
     timestamp DateTime,
-    total_bid_volume Float64,
-    total_ask_volume Float64,
-    imbalance Float64
+    best_bid Float64,
+    best_ask Float64,
+    mid_price Float64,
+    spread_pct Float64,
+    depth_bid_volume Float64,
+    depth_ask_volume Float64,
+    obi Float64,
+    bid_ask_ratio Float64,
+    nearest_bid_wall_price Nullable(Float64),
+    nearest_bid_wall_volume Nullable(Float64),
+    nearest_ask_wall_price Nullable(Float64),
+    nearest_ask_wall_volume Nullable(Float64)
 ) ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (symbol, timestamp);

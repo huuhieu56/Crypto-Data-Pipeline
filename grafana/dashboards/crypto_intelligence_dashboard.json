@@ -20,7 +20,6 @@
   "graphTooltip": 0,
   "id": null,
   "links": [],
-  "liveNow": false,
   "panels": [
     {
       "datasource": {
@@ -33,30 +32,56 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
             "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "bars",
             "fillOpacity": 70,
             "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
             "lineWidth": 1,
-            "showPoints": "never",
-            "stacking": {
-              "group": "A",
-              "mode": "none"
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
           },
           "unit": "currencyUSD"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 10,
+        "h": 11,
+        "w": 11,
         "x": 0,
         "y": 0
       },
       "id": 1,
       "options": {
+        "barRadius": 0,
+        "barWidth": 0.97,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
         "legend": {
           "calcs": [],
           "displayMode": "list",
@@ -64,11 +89,16 @@
           "showLegend": false
         },
         "orientation": "horizontal",
+        "showValue": "auto",
+        "stacking": "none",
         "tooltip": {
           "mode": "single",
           "sort": "none"
-        }
+        },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
       },
+      "pluginVersion": "11.4.0",
       "targets": [
         {
           "datasource": {
@@ -96,43 +126,84 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
+            "axisLabel": "",
             "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
             "spanNulls": true,
             "stacking": {
               "group": "A",
               "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
           },
           "unit": "currencyUSD"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 9,
-        "w": 14,
-        "x": 10,
+        "h": 11,
+        "w": 13,
+        "x": 11,
         "y": 0
       },
       "id": 2,
       "options": {
+        "candleStyle": "candles",
+        "colorStrategy": "open-close",
+        "colors": {
+          "down": "red",
+          "up": "green"
+        },
+        "includeAllFields": false,
         "legend": {
           "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": false
         },
+        "mode": "candles+volume",
         "tooltip": {
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "11.4.0",
       "targets": [
         {
           "datasource": {
@@ -156,9 +227,6 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
           "custom": {
             "align": "auto",
             "cellOptions": {
@@ -166,302 +234,65 @@
             },
             "inspect": false
           },
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "text",
                 "value": null
-              },
-              {
-                "color": "green",
-                "value": 0
               }
             ]
-          },
-          "unit": "percent"
+          }
         },
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Coin"
+              "options": "metric"
             },
             "properties": [
               {
-                "id": "custom.align",
-                "value": "left"
-              },
-              {
-                "id": "custom.width",
-                "value": 150
+                "id": "displayName",
+                "value": "Metric"
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "24h %"
+              "options": "value"
             },
             "properties": [
               {
-                "id": "custom.align",
-                "value": "right"
-              },
-              {
-                "id": "custom.width",
-                "value": 130
-              },
-              {
-                "id": "decimals",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Vol $B"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "short"
-              },
-              {
-                "id": "custom.align",
-                "value": "right"
-              },
-              {
-                "id": "custom.width",
-                "value": 115
-              },
-              {
-                "id": "decimals",
-                "value": 2
+                "id": "displayName",
+                "value": "Value"
               }
             ]
           }
         ]
       },
       "gridPos": {
-        "h": 7,
-        "w": 7,
-        "x": 0,
-        "y": 9
-      },
-      "id": 3,
-      "options": {
-        "cellHeight": "xs",
-        "footer": {
-          "countRows": false,
-          "enablePagination": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
-          },
-          "editorMode": "code",
-          "format": 0,
-          "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h / 1000000000, 2) AS `Vol $B`\nFROM (\n  SELECT\n    symbol,\n    argMax(price_change_pct, snapshot_time) AS price_change_pct,\n    argMax(quote_volume_24h, snapshot_time) AS quote_volume_24h\n  FROM ticker_24h FINAL\n  GROUP BY symbol\n) t\nJOIN symbols s ON t.symbol = s.symbol\nORDER BY t.price_change_pct DESC\nLIMIT 5",
-          "refId": "A"
-        }
-      ],
-      "title": "Top Gainers 24h",
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Coin"
-            },
-            "properties": [
-              {
-                "id": "custom.align",
-                "value": "left"
-              },
-              {
-                "id": "custom.width",
-                "value": 150
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "24h %"
-            },
-            "properties": [
-              {
-                "id": "custom.align",
-                "value": "right"
-              },
-              {
-                "id": "custom.width",
-                "value": 130
-              },
-              {
-                "id": "decimals",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Vol $B"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "short"
-              },
-              {
-                "id": "custom.align",
-                "value": "right"
-              },
-              {
-                "id": "custom.width",
-                "value": 115
-              },
-              {
-                "id": "decimals",
-                "value": 2
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 7,
-        "x": 7,
-        "y": 9
-      },
-      "id": 4,
-      "options": {
-        "cellHeight": "xs",
-        "footer": {
-          "countRows": false,
-          "enablePagination": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse_ds"
-          },
-          "editorMode": "code",
-          "format": 0,
-          "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h / 1000000000, 2) AS `Vol $B`\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct < 0\nORDER BY t.price_change_pct ASC\nLIMIT 5",
-          "refId": "A"
-        }
-      ],
-      "title": "Top Losers 24h",
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse_ds"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": true,
-            "axisColorMode": "text",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "gradientMode": "none",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 3,
-            "showPoints": "always",
-            "spanNulls": true,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
-          },
-          "max": 1,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
+        "h": 12,
         "w": 10,
-        "x": 14,
-        "y": 9
+        "x": 0,
+        "y": 11
       },
       "id": 9,
       "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "lastNotNull"
+          ],
+          "show": false
         },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+        "showHeader": true,
+        "sortBy": []
       },
+      "pluginVersion": "11.4.0",
       "targets": [
         {
           "datasource": {
@@ -471,32 +302,12 @@
           "editorMode": "code",
           "format": 1,
           "rawQuery": true,
-          "rawSql": "SELECT\n  toStartOfInterval(timestamp, INTERVAL 5 minute) AS time,\n  avg(imbalance) AS imbalance\nFROM order_book_snapshot FINAL\nWHERE symbol = '${symbol}'\n  AND $__timeFilter(timestamp)\nGROUP BY time\nORDER BY time",
+          "rawSql": "SELECT t.1 AS metric, t.2 AS value\nFROM (\n  SELECT arrayJoin([\n    ('Last updated', formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S', 'Asia/Ho_Chi_Minh')),\n    ('OBI ±0.5%', toString(round(obi, 3))),\n    ('Bid Volume', toString(round(depth_bid_volume, 2))),\n    ('Ask Volume', toString(round(depth_ask_volume, 2))),\n    ('Bid/Ask Ratio', concat(toString(round(bid_ask_ratio, 2)), 'x')),\n    ('Spread', concat(toString(round(spread_pct, 4)), '%')),\n    ('Nearest Bid Wall', concat('$', toString(round(nearest_bid_wall_price, 2)))),\n    ('Bid Wall Vol', toString(round(nearest_bid_wall_volume, 2))),\n    ('Nearest Ask Wall', concat('$', toString(round(nearest_ask_wall_price, 2)))),\n    ('Ask Wall Vol', toString(round(nearest_ask_wall_volume, 2)))\n  ]) AS t\n  FROM (\n    SELECT * FROM order_book_snapshot FINAL\n    WHERE symbol = '${symbol}'\n    ORDER BY timestamp DESC\n    LIMIT 1\n  )\n)\n",
           "refId": "A"
         }
       ],
-      "title": "Order Book Imbalance (30d)",
-      "type": "timeseries"
-    },
-    {
-      "gridPos": {
-        "h": 18,
-        "w": 12,
-        "x": 12,
-        "y": 16
-      },
-      "id": 20,
-      "options": {
-        "mode": "html",
-        "code": {
-          "language": "html",
-          "showLineNumbers": false,
-          "showMiniMap": false
-        },
-        "content": "<iframe src=\"http://localhost:8501/chat-ui?symbol=${symbol}\" style=\"width:100%;height:100%;border:none;border-radius:8px;\" allow=\"clipboard-write\"></iframe>"
-      },
-      "title": "AI Chat Assistant",
-      "type": "text"
+      "title": "Live Liquidity Pressure",
+      "type": "table"
     },
     {
       "datasource": {
@@ -508,10 +319,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 18,
-        "w": 12,
-        "x": 0,
-        "y": 16
+        "h": 21,
+        "w": 14,
+        "x": 10,
+        "y": 11
       },
       "id": 11,
       "options": {
@@ -545,6 +356,7 @@
           "series": []
         }
       },
+      "pluginVersion": "6.5.0",
       "targets": [
         {
           "datasource": {
@@ -560,11 +372,302 @@
       ],
       "title": "Crypto RSI Heatmap",
       "type": "volkovlabs-echarts-panel"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 19,
+        "w": 10,
+        "x": 0,
+        "y": 23
+      },
+      "id": 20,
+      "options": {
+        "code": {
+          "language": "html",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "<iframe src=\"http://localhost:8501/chat-ui?symbol=${symbol}\" style=\"width:100%;height:100%;border:none;border-radius:8px;\" allow=\"clipboard-write\"></iframe>",
+        "mode": "html"
+      },
+      "pluginVersion": "11.4.0",
+      "title": "AI Chat Assistant",
+      "type": "text"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse_ds"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Coin"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "24h %"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Vol $B"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 115
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 7,
+        "x": 10,
+        "y": 32
+      },
+      "id": 4,
+      "options": {
+        "cellHeight": "xs",
+        "footer": {
+          "countRows": false,
+          "enablePagination": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse_ds"
+          },
+          "editorMode": "code",
+          "format": 0,
+          "rawQuery": true,
+          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h / 1000000000, 2) AS `Vol $B`\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct < 0\nORDER BY t.price_change_pct ASC\nLIMIT 5",
+          "refId": "A"
+        }
+      ],
+      "title": "Top Losers 24h",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse_ds"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Coin"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "24h %"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Vol $B"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 115
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 7,
+        "x": 17,
+        "y": 32
+      },
+      "id": 3,
+      "options": {
+        "cellHeight": "xs",
+        "footer": {
+          "countRows": false,
+          "enablePagination": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse_ds"
+          },
+          "editorMode": "code",
+          "format": 0,
+          "rawQuery": true,
+          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h / 1000000000, 2) AS `Vol $B`\nFROM (\n  SELECT\n    symbol,\n    argMax(price_change_pct, snapshot_time) AS price_change_pct,\n    argMax(quote_volume_24h, snapshot_time) AS quote_volume_24h\n  FROM ticker_24h FINAL\n  GROUP BY symbol\n) t\nJOIN symbols s ON t.symbol = s.symbol\nORDER BY t.price_change_pct DESC\nLIMIT 5",
+          "refId": "A"
+        }
+      ],
+      "title": "Top Gainers 24h",
+      "type": "table"
     }
   ],
+  "preload": false,
   "refresh": "1m",
-  "schemaVersion": 39,
-  "style": "dark",
+  "schemaVersion": 40,
   "tags": [
     "crypto",
     "etl",
@@ -574,7 +677,6 @@
     "list": [
       {
         "current": {
-          "selected": true,
           "text": "BTCUSDT",
           "value": "BTCUSDT"
         },
@@ -583,29 +685,23 @@
           "uid": "clickhouse_ds"
         },
         "definition": "SELECT symbol FROM symbols ORDER BY symbol",
-        "hide": 0,
         "includeAll": false,
         "label": "Symbol",
-        "multi": false,
         "name": "symbol",
         "options": [],
         "query": "SELECT symbol FROM symbols ORDER BY symbol",
         "refresh": 1,
         "regex": "",
-        "skipUrlSync": false,
         "sort": 1,
         "type": "query"
       },
       {
         "current": {
-          "selected": true,
           "text": "4h",
           "value": "4h"
         },
-        "hide": 0,
         "includeAll": false,
         "label": "RSI TF",
-        "multi": false,
         "name": "rsi_tf",
         "options": [
           {
@@ -625,20 +721,15 @@
           }
         ],
         "query": "1h,4h,1d",
-        "queryValue": "",
-        "skipUrlSync": false,
         "type": "custom"
       },
       {
         "current": {
-          "selected": true,
           "text": "All",
           "value": "All"
         },
-        "hide": 0,
         "includeAll": false,
         "label": "RSI Zone",
-        "multi": false,
         "name": "rsi_zone",
         "options": [
           {
@@ -673,8 +764,6 @@
           }
         ],
         "query": "All,Overbought,Strong,Neutral,Weak,Oversold",
-        "queryValue": "",
-        "skipUrlSync": false,
         "type": "custom"
       }
     ]
@@ -687,6 +776,6 @@
   "timezone": "Asia/Ho_Chi_Minh",
   "title": "Crypto Intelligence Dashboard",
   "uid": "crypto-intel-main",
-  "version": 5,
+  "version": 10,
   "weekStart": ""
 }

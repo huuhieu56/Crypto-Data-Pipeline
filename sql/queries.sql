@@ -85,14 +85,23 @@ FROM klines
 GROUP BY symbol
 ORDER BY latest_rsi DESC;
 
--- Query 7 - Order book imbalance theo symbol/time (30 ngày)
+-- Query 7 - Live Liquidity Pressure: snapshot mới nhất
 SELECT
     symbol,
-    timestamp,
-    total_bid_volume,
-    total_ask_volume,
-    imbalance
-FROM order_book_snapshot
+    timestamp AS updated,
+    obi,
+    depth_bid_volume AS bid_volume,
+    depth_ask_volume AS ask_volume,
+    bid_ask_ratio,
+    spread_pct,
+    best_bid,
+    best_ask,
+    mid_price,
+    nearest_bid_wall_price,
+    nearest_bid_wall_volume,
+    nearest_ask_wall_price,
+    nearest_ask_wall_volume
+FROM order_book_snapshot FINAL
 WHERE symbol = 'BTCUSDT'
-  AND timestamp >= now() - INTERVAL 30 DAY
-ORDER BY timestamp DESC;
+ORDER BY timestamp DESC
+LIMIT 1;
