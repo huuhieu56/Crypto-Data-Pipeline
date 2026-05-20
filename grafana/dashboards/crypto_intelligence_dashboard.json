@@ -129,12 +129,12 @@
             "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
+            "axisLabel": "Price (USDT)",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 10,
+            "fillOpacity": 50,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -174,7 +174,24 @@
           },
           "unit": "currencyUSD"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "custom.axisLabel",
+                "value": "Volume (USDT)"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 11,
@@ -213,7 +230,7 @@
           "editorMode": "code",
           "format": 1,
           "rawQuery": true,
-          "rawSql": "WITH\n  fromUnixTimestamp64Milli(toInt64(${__from})) AS from_time,\n  fromUnixTimestamp64Milli(toInt64(${__to})) AS to_time,\n  dateDiff('second', from_time, to_time) AS range_seconds,\n  multiIf(\n    range_seconds <= 6 * 3600, 60,\n    range_seconds <= 24 * 3600, 300,\n    range_seconds <= 3 * 24 * 3600, 900,\n    range_seconds <= 7 * 24 * 3600, 3600,\n    range_seconds <= 30 * 24 * 3600, 14400,\n    range_seconds <= 90 * 24 * 3600, 43200,\n    range_seconds <= 365 * 24 * 3600, 86400,\n    604800\n  ) AS bucket_seconds\nSELECT\n  toStartOfInterval(open_time, toIntervalSecond(bucket_seconds)) AS time,\n  argMin(open, open_time) AS open,\n  max(high) AS high,\n  min(low) AS low,\n  argMax(close, open_time) AS close\nFROM klines FINAL\nWHERE symbol = '${symbol}'\n  AND open_time >= from_time\n  AND open_time <= to_time\nGROUP BY time\nORDER BY time",
+          "rawSql": "WITH\n  fromUnixTimestamp64Milli(toInt64(${__from})) AS from_time,\n  fromUnixTimestamp64Milli(toInt64(${__to})) AS to_time,\n  dateDiff('second', from_time, to_time) AS range_seconds,\n  multiIf(\n    range_seconds <= 6 * 3600, 60,\n    range_seconds <= 24 * 3600, 300,\n    range_seconds <= 3 * 24 * 3600, 900,\n    range_seconds <= 7 * 24 * 3600, 3600,\n    range_seconds <= 30 * 24 * 3600, 14400,\n    range_seconds <= 90 * 24 * 3600, 43200,\n    range_seconds <= 365 * 24 * 3600, 86400,\n    604800\n  ) AS bucket_seconds\nSELECT\n  toStartOfInterval(open_time, toIntervalSecond(bucket_seconds)) AS time,\n  argMin(open, open_time) AS open,\n  max(high) AS high,\n  min(low) AS low,\n  argMax(close, open_time) AS close,\n  sum(quote_volume) AS volume\nFROM klines FINAL\nWHERE symbol = '${symbol}'\n  AND open_time >= from_time\n  AND open_time <= to_time\nGROUP BY time\nORDER BY time",
           "refId": "A"
         }
       ],
