@@ -642,13 +642,14 @@ crypto-pipeline/
 │                              CRYPTO INTELLIGENCE DASHBOARD                           │
 ├─────────────────────────────────┬───────────────────────────────────────────────────┤
 │                                 │                                                   │
-│   TOP 10 VOLUME 24H (Bar)       │           BTC PRICE CHART (Time Series)           │
+│   TOP 10 VOLUME 24H (Bar)       │       BTC PRICE CHART (Candlestick + Volume)       │
 │   ┌───────────────────────┐     │   ┌─────────────────────────────────────────────┐ │
 │   │ BTC  ████████████ 45B │     │   │                    ___/\                    │ │
 │   │ ETH  ████████ 32B     │     │   │              /\___/     \                   │ │
 │   │ SOL  ██████ 18B       │     │   │         ___/            \___               │ │
 │   │ ...                   │     │   │    ____/                                    │ │
-│   └───────────────────────┘     │   └─────────────────────────────────────────────┘ │
+│   └───────────────────────┘     │   │ ██  ██ ██  ████  ██ ████  ██  ██ ██ ██     │ │
+│                                 │   └─────────────────────────────────────────────┘ │
 │                                 │                                                   │
 ├─────────────────────────────────┼───────────────────────────────────────────────────┤
 │                                 │                                                   │
@@ -729,15 +730,17 @@ ORDER BY t.price_change_pct ASC
 LIMIT 5;
 ```
 
-#### Panel 4: Price Chart (Candlestick)
+#### Panel 4: Price Chart (Candlestick + Volume)
 
-| Thuộc tính | Giá trị                         |
-| ---------- | ------------------------------- |
-| Loại       | Candlestick                     |
-| Symbol     | Theo biến Grafana `$symbol`     |
-| Time range | Theo Grafana global time picker |
+| Thuộc tính | Giá trị                                |
+| ---------- | -------------------------------------- |
+| Loại       | Candlestick                            |
+| Mode       | `candles+volume` (nến + volume bars)   |
+| Symbol     | Theo biến Grafana `$symbol`            |
+| Time range | Theo Grafana global time picker        |
+| Volume     | `sum(quote_volume)` trên mỗi bucket    |
 
-> **Lưu ý:** Dữ liệu gốc là nến 1 phút từ `klines`, cập nhật bởi `minutely_etl` DAG. Panel tự aggregate OHLC theo time range người dùng chọn để chart không quá dày khi xem range dài.
+> **Lưu ý:** Dữ liệu gốc là nến 1 phút từ `klines`, cập nhật bởi `minutely_etl` DAG. Panel tự aggregate OHLC + Volume theo time range người dùng chọn để chart không quá dày khi xem range dài.
 
 **Adaptive candle interval**
 
@@ -752,14 +755,31 @@ LIMIT 5;
 | `<= 365d`          | `1d`            |
 | `> 365d`           | `1w`            |
 
-OHLC được tính từ nến 1 phút:
+OHLC + Volume được tính từ nến 1 phút:
 
-| Field   | Cách aggregate              |
-| ------- | --------------------------- |
-| `open`  | `argMin(open, timestamp)`   |
-| `high`  | `max(high)`                 |
-| `low`   | `min(low)`                  |
-| `close` | `argMax(close, timestamp)`  |
+| Field    | Cách aggregate              |
+| -------- | --------------------------- |
+| `open`   | `argMin(open, open_time)`   |
+| `high`   | `max(high)`                 |
+| `low`    | `min(low)`                  |
+| `close`  | `argMax(close, open_time)`  |
+| `volume` | `sum(quote_volume)`         |
+
+Cột `volume` được tính bằng `sum(quote_volume)` (tổng giá trị giao dịch bằng USDT trong mỗi bucket), đồng nhất với đơn vị `quote_volume_24h` của Panel 1 (Top 10 Volume 24h).
+
+### Ý nghĩa của Volume Bars trong phân tích kỹ thuật
+
+Volume bars hiển thị bên dưới mỗi cây nến, giúp trader đánh giá **sức mạnh của biến động giá**:
+
+| Tín hiệu                           | Cách đọc qua Volume Bars                                      |
+| ---------------------------------- | ------------------------------------------------------------- |
+| **Xác nhận xu hướng**              | Nến tăng + volume cao → xu hướng tăng được xác nhận. Nến tăng + volume thấp → động lượng yếu, dễ đảo chiều. |
+| **Volume Spike (tin tức)**         | Cột volume đột biến cao gấp 3-5x trung bình → có tin tức bất ngờ (listing, hack, regulatory news). |
+| **Breakout xác nhận**              | Giá phá vỡ kháng cự/hỗ trợ đi kèm volume spike → breakout thật. Phá vỡ với volume thấp → false breakout. |
+| **Whale / Smart money**            | Volume đột biến trên nến lớn (thường ở khung 1h-4h) → dấu vết lệnh lớn từ tổ chức / cá voi. |
+| **Phân kỳ Volume-Price**           | Giá tăng nhưng volume giảm dần → bearish divergence. Giá giảm nhưng volume giảm dần → bullish divergence. |
+
+> **So sánh với Volume 24h (Panel 1):** Panel 1 hiển thị tổng volume 24h của 50 coin — cho biết coin nào đang hot. Volume bars trên candlestick bổ sung chiều **thời gian** — cho biết *lúc nào* volume đổ vào, *cây nến nào* được xác nhận. Hai panel bổ trợ cho nhau: Panel 1 để scan thị trường, Panel 2 để phân tích chi tiết từng coin.
 
 ```sql
 WITH
@@ -777,15 +797,16 @@ WITH
     604800
   ) AS bucket_seconds
 SELECT
-  toStartOfInterval(timestamp, toIntervalSecond(bucket_seconds)) AS time,
-  argMin(open, timestamp) AS open,
+  toStartOfInterval(open_time, toIntervalSecond(bucket_seconds)) AS time,
+  argMin(open, open_time) AS open,
   max(high) AS high,
   min(low) AS low,
-  argMax(close, timestamp) AS close
+  argMax(close, open_time) AS close,
+  sum(quote_volume) AS volume
 FROM klines FINAL
 WHERE symbol = '${symbol}'
-  AND timestamp >= from_time
-  AND timestamp <= to_time
+  AND open_time >= from_time
+  AND open_time <= to_time
 GROUP BY time
 ORDER BY time;
 ```
@@ -858,7 +879,7 @@ WITH
 
 | Panel type        | Refresh interval | Giải thích                                       |
 | ----------------- | ---------------- | ------------------------------------------------ |
-| Price charts      | 1 phút           | Klines cập nhật minutely; candle interval tự đổi theo Grafana time range |
+| Price charts      | 1 phút           | Klines cập nhật minutely; candle interval tự đổi theo Grafana time range. Volume bars đồng bộ với nến, cùng aggregate và refresh 1 phút. |
 | Volume/Gainers    | 1 phút           | Ticker snapshot cập nhật mỗi phút                 |
 | RSI Heatmap       | 1 phút           | Aggregate klines theo `$rsi_tf`, tính RSI(14), cập nhật theo klines/ticker mỗi phút |
 
