@@ -108,11 +108,11 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS coin,\n  round(t.quote_volume_24h / 1000000000, 2) AS volume_billion_usd\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT max(snapshot_time) FROM ticker_24h FINAL)\nORDER BY t.quote_volume_24h DESC\nLIMIT 10",
+          "rawSql": "SELECT\n  s.base_asset AS coin,\n  t.quote_volume_24h AS volume_usd\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT max(snapshot_time) FROM ticker_24h FINAL)\nORDER BY t.quote_volume_24h DESC\nLIMIT 10",
           "refId": "A"
         }
       ],
-      "title": "Top 10 Volume 24h (Billion USD)",
+      "title": "Top 10 Volume 24h (USD)",
       "type": "barchart"
     },
     {
@@ -471,12 +471,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Vol $B"
+              "options": "Vol"
             },
             "properties": [
               {
                 "id": "unit",
-                "value": "short"
+                "value": "currencyUSD"
               },
               {
                 "id": "custom.align",
@@ -524,7 +524,7 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h / 1000000000, 2) AS `Vol $B`\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct < 0\nORDER BY t.price_change_pct ASC\nLIMIT 5",
+          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h, 2) AS `Vol`\nFROM ticker_24h t FINAL\nJOIN symbols s ON t.symbol = s.symbol\nWHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)\n  AND t.price_change_pct < 0\nORDER BY t.price_change_pct ASC\nLIMIT 5",
           "refId": "A"
         }
       ],
@@ -604,12 +604,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Vol $B"
+              "options": "Vol"
             },
             "properties": [
               {
                 "id": "unit",
-                "value": "short"
+                "value": "currencyUSD"
               },
               {
                 "id": "custom.align",
@@ -657,7 +657,7 @@
           "editorMode": "code",
           "format": 0,
           "rawQuery": true,
-          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h / 1000000000, 2) AS `Vol $B`\nFROM (\n  SELECT\n    symbol,\n    argMax(price_change_pct, snapshot_time) AS price_change_pct,\n    argMax(quote_volume_24h, snapshot_time) AS quote_volume_24h\n  FROM ticker_24h FINAL\n  GROUP BY symbol\n) t\nJOIN symbols s ON t.symbol = s.symbol\nORDER BY t.price_change_pct DESC\nLIMIT 5",
+          "rawSql": "SELECT\n  s.base_asset AS Coin,\n  round(t.price_change_pct, 2) AS `24h %`,\n  round(t.quote_volume_24h, 2) AS `Vol`\nFROM (\n  SELECT\n    symbol,\n    argMax(price_change_pct, snapshot_time) AS price_change_pct,\n    argMax(quote_volume_24h, snapshot_time) AS quote_volume_24h\n  FROM ticker_24h FINAL\n  GROUP BY symbol\n) t\nJOIN symbols s ON t.symbol = s.symbol\nORDER BY t.price_change_pct DESC\nLIMIT 5",
           "refId": "A"
         }
       ],
