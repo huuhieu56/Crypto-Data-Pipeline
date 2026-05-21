@@ -641,33 +641,21 @@ crypto-pipeline/
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
 │                              CRYPTO INTELLIGENCE DASHBOARD                           │
 ├─────────────────────────────────┬───────────────────────────────────────────────────┤
-│                                 │                                                   │
-│   TOP 10 VOLUME 24H (Bar)       │       BTC PRICE CHART (Candlestick + Volume)       │
-│   ┌───────────────────────┐     │   ┌─────────────────────────────────────────────┐ │
-│   │ BTC  ████████████ 45B │     │   │                    ___/\                    │ │
-│   │ ETH  ████████ 32B     │     │   │              /\___/     \                   │ │
-│   │ SOL  ██████ 18B       │     │   │         ___/            \___               │ │
-│   │ ...                   │     │   │    ____/                                    │ │
-│   └───────────────────────┘     │   │ ██  ██ ██  ████  ██ ████  ██  ██ ██ ██     │ │
-│                                 │   └─────────────────────────────────────────────┘ │
-│                                 │                                                   │
+│   TOP 10 VOLUME 24H (Bar)       │       PRICE CHART (Candlestick + Volume)          │
+│   Top coins by quote volume     │       OHLC aggregate theo `$symbol`               │
 ├─────────────────────────────────┼───────────────────────────────────────────────────┤
-│                                 │                                                   │
-│   TOP LOSERS 24H (Table)        │         AI CHAT ASSISTANT (Iframe Panel)          │
-│   ┌───────────────────────┐     │   ┌─────────────────────────────────────────────┐ │
-│   │ FTM   -8.3%           │     │   │ User: Tại sao đợt này BTC tăng?             │ │
-│   │ ALGO  -6.2%           │     │   │ Bot: Dựa theo 30 nến gần nhất, RSI đang ở...│ │
-│   │ MANA  -5.8%           │     │   │                                             │ │
-│   └───────────────────────┘     │   └─────────────────────────────────────────────┘ │
-│                                 │                                                   │
-├─────────────────────────────────┴───────────────────────────────────────────────────┤
-│                          RSI HEATMAP (50 COINS)                                     │
-│   ┌─────────────────────────────────────────────────────────────────────────────┐   │
-│   │  BTC:68  ETH:55  BNB:42  SOL:71  XRP:38  DOGE:62  ADA:45  TRX:58  ...       │   │
-│   │  ■ >70 Overbought   ■ 30-70 Neutral   ■ <30 Oversold                        │   │
-│   └─────────────────────────────────────────────────────────────────────────────┘   │
+│   LIVE LIQUIDITY PRESSURE       │       CRYPTO RSI HEATMAP                          │
+│   Latest order book metrics     │       RSI zone scatter by 24h quote volume        │
+├─────────────────────────────────┤                                                   │
+│   AI CHAT ASSISTANT             │                                                   │
+│   Iframe chat theo `$symbol`    │                                                   │
+├─────────────────────────────────┼───────────────────────────┬───────────────────────┤
+│                                 │   TOP LOSERS 24H          │   TOP GAINERS 24H     │
+│                                 │   Worst 5 by 24h %        │   Best 5 by 24h %     │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Dashboard mặc định dùng time range `now-7d` đến `now` và auto refresh `1m`.
 
 ### 10.2. Chi tiết các Panels
 
@@ -677,68 +665,30 @@ crypto-pipeline/
 | ----------- | ---------------------- |
 | Loại        | Bar Chart (horizontal) |
 | Data source | ClickHouse             |
-| Refresh     | 1 giờ                  |
+| Vị trí      | Cột trái, hàng đầu     |
+| Refresh     | Theo dashboard (`1m`)  |
 
 ```sql
 SELECT
-    s.base_asset AS coin,
-    t.quote_volume_24h / 1000000000 AS volume_billion_usd
-FROM ticker_24h t
+  s.base_asset AS coin,
+  t.quote_volume_24h AS volume_usd
+FROM ticker_24h t FINAL
 JOIN symbols s ON t.symbol = s.symbol
-WHERE t.snapshot_time = (SELECT max(snapshot_time) FROM ticker_24h)
+WHERE t.snapshot_time = (SELECT max(snapshot_time) FROM ticker_24h FINAL)
 ORDER BY t.quote_volume_24h DESC
-LIMIT 10;
+LIMIT 10
 ```
 
-#### Panel 2: Top Gainers 24h (Table)
-
-| Thuộc tính | Giá trị                         |
-| ---------- | ------------------------------- |
-| Loại       | Table                           |
-| Highlight  | Green background for positive % |
-
-```sql
-SELECT
-    s.base_asset AS coin,
-    t.price_change_pct AS change_24h,
-    t.quote_volume_24h AS volume_usd
-FROM ticker_24h t
-JOIN symbols s ON t.symbol = s.symbol
-WHERE t.snapshot_time = (SELECT max(snapshot_time) FROM ticker_24h)
-  AND t.price_change_pct > 0
-ORDER BY t.price_change_pct DESC
-LIMIT 5;
-```
-
-#### Panel 3: Top Losers 24h (Table)
-
-| Thuộc tính | Giá trị                       |
-| ---------- | ----------------------------- |
-| Loại       | Table                         |
-| Highlight  | Red background for negative % |
-
-```sql
-SELECT
-    s.base_asset AS coin,
-    t.price_change_pct AS change_24h,
-    t.quote_volume_24h AS volume_usd
-FROM ticker_24h t
-JOIN symbols s ON t.symbol = s.symbol
-WHERE t.snapshot_time = (SELECT max(snapshot_time) FROM ticker_24h)
-  AND t.price_change_pct < 0
-ORDER BY t.price_change_pct ASC
-LIMIT 5;
-```
-
-#### Panel 4: Price Chart (Candlestick + Volume)
+#### Panel 2: Price Chart (Candlestick)
 
 | Thuộc tính | Giá trị                                |
 | ---------- | -------------------------------------- |
 | Loại       | Candlestick                            |
-| Mode       | `candles+volume` (nến + volume bars)   |
+| Mode       | OHLC + volume                          |
 | Symbol     | Theo biến Grafana `$symbol`            |
 | Time range | Theo Grafana global time picker        |
 | Volume     | `sum(quote_volume)` trên mỗi bucket    |
+| Vị trí     | Cột phải, hàng đầu                     |
 
 > **Lưu ý:** Dữ liệu gốc là nến 1 phút từ `klines`, cập nhật bởi `minutely_etl` DAG. Panel tự aggregate OHLC + Volume theo time range người dùng chọn để chart không quá dày khi xem range dài.
 
@@ -764,22 +714,6 @@ OHLC + Volume được tính từ nến 1 phút:
 | `low`    | `min(low)`                  |
 | `close`  | `argMax(close, open_time)`  |
 | `volume` | `sum(quote_volume)`         |
-
-Cột `volume` được tính bằng `sum(quote_volume)` (tổng giá trị giao dịch bằng USDT trong mỗi bucket), đồng nhất với đơn vị `quote_volume_24h` của Panel 1 (Top 10 Volume 24h).
-
-### Ý nghĩa của Volume Bars trong phân tích kỹ thuật
-
-Volume bars hiển thị bên dưới mỗi cây nến, giúp trader đánh giá **sức mạnh của biến động giá**:
-
-| Tín hiệu                           | Cách đọc qua Volume Bars                                      |
-| ---------------------------------- | ------------------------------------------------------------- |
-| **Xác nhận xu hướng**              | Nến tăng + volume cao → xu hướng tăng được xác nhận. Nến tăng + volume thấp → động lượng yếu, dễ đảo chiều. |
-| **Volume Spike (tin tức)**         | Cột volume đột biến cao gấp 3-5x trung bình → có tin tức bất ngờ (listing, hack, regulatory news). |
-| **Breakout xác nhận**              | Giá phá vỡ kháng cự/hỗ trợ đi kèm volume spike → breakout thật. Phá vỡ với volume thấp → false breakout. |
-| **Whale / Smart money**            | Volume đột biến trên nến lớn (thường ở khung 1h-4h) → dấu vết lệnh lớn từ tổ chức / cá voi. |
-| **Phân kỳ Volume-Price**           | Giá tăng nhưng volume giảm dần → bearish divergence. Giá giảm nhưng volume giảm dần → bullish divergence. |
-
-> **So sánh với Volume 24h (Panel 1):** Panel 1 hiển thị tổng volume 24h của 50 coin — cho biết coin nào đang hot. Volume bars trên candlestick bổ sung chiều **thời gian** — cho biết *lúc nào* volume đổ vào, *cây nến nào* được xác nhận. Hai panel bổ trợ cho nhau: Panel 1 để scan thị trường, Panel 2 để phân tích chi tiết từng coin.
 
 ```sql
 WITH
@@ -808,31 +742,68 @@ WHERE symbol = '${symbol}'
   AND open_time >= from_time
   AND open_time <= to_time
 GROUP BY time
-ORDER BY time;
+ORDER BY time
 ```
 
-#### Panel 5: AI Chat Assistant (Text/HTML)
+#### Panel 9: Live Liquidity Pressure (Table)
 
-| Thuộc tính | Giá trị                                     |
-| ---------- | ------------------------------------------- |
-| Loại       | Text (với Iframe)                           |
-| Nội dung   | `<iframe src="http://localhost:8501/chat-ui?symbol=$symbol" ...></iframe>` |
+| Thuộc tính | Giá trị                                  |
+| ---------- | ---------------------------------------- |
+| Loại       | Table                                    |
+| Symbol     | Theo biến Grafana `$symbol`              |
+| Nguồn      | Snapshot mới nhất từ `order_book_snapshot` |
+| Vị trí     | Cột trái, dưới Top 10 Volume             |
 
-> **Lưu ý:** Panel này kết nối trực tiếp với backend FastAPI để cung cấp trải nghiệm chat tương tác thay vì hiển thị dữ liệu tĩnh. Đòi hỏi Grafana bật `GF_PANELS_DISABLE_SANITIZE_HTML`.
+Panel này chuyển snapshot order book mới nhất thành bảng `Metric` / `Value` để đọc nhanh áp lực thanh khoản:
 
-#### Panel 7: Crypto RSI Heatmap (Scatter)
+| Metric | Ý nghĩa |
+| ------ | ------- |
+| `Last updated` | Thời điểm snapshot theo timezone `Asia/Ho_Chi_Minh` |
+| `OBI ±0.5%` | Order Book Imbalance quanh mid-price |
+| `Bid Volume` / `Ask Volume` | Tổng volume bid/ask trong vùng theo snapshot |
+| `Bid/Ask Ratio` | Tỷ lệ thanh khoản bid so với ask |
+| `Spread` | Chênh lệch bid-ask theo phần trăm |
+| `Nearest Bid/Ask Wall` | Giá tường mua/bán gần nhất |
+| `Bid/Ask Wall Vol` | Volume của tường mua/bán gần nhất |
+
+```sql
+SELECT t.1 AS metric, t.2 AS value
+FROM (
+  SELECT arrayJoin([
+    ('Last updated', formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S', 'Asia/Ho_Chi_Minh')),
+    ('OBI ±0.5%', toString(round(obi, 3))),
+    ('Bid Volume', toString(round(depth_bid_volume, 2))),
+    ('Ask Volume', toString(round(depth_ask_volume, 2))),
+    ('Bid/Ask Ratio', concat(toString(round(bid_ask_ratio, 2)), 'x')),
+    ('Spread', concat(toString(round(spread_pct, 4)), '%')),
+    ('Nearest Bid Wall', concat('$', toString(round(nearest_bid_wall_price, 2)))),
+    ('Bid Wall Vol', toString(round(nearest_bid_wall_volume, 2))),
+    ('Nearest Ask Wall', concat('$', toString(round(nearest_ask_wall_price, 2)))),
+    ('Ask Wall Vol', toString(round(nearest_ask_wall_volume, 2)))
+  ]) AS t
+  FROM (
+    SELECT * FROM order_book_snapshot FINAL
+    WHERE symbol = '${symbol}'
+    ORDER BY timestamp DESC
+    LIMIT 1
+  )
+)
+```
+
+#### Panel 11: Crypto RSI Heatmap (Scatter)
 
 | Thuộc tính | Giá trị                                                |
 | ---------- | ------------------------------------------------------ |
 | Loại       | Business Charts / Apache ECharts scatter heatmap       |
-| Trục X     | `quote_volume_24h` theo log scale (proxy market size)  |
+| Trục X     | `quote_volume_24h` theo log scale, đảo chiều           |
 | Trục Y     | RSI(14), min `10`, max `90`                            |
 | Timeframe  | Theo biến `$rsi_tf`: `1h`, `4h`, `1d`                  |
 | Filter     | Theo biến `$rsi_zone`: All/Overbought/Strong/Neutral/Weak/Oversold |
+| Vị trí     | Cột phải, phần giữa dashboard                          |
 
 > **Lưu ý:** V1 dùng `quote_volume_24h` thay cho market cap để không cần thêm API/ETL ngoài. Nếu cần giống CoinMarketCap/CoinGlass hơn, phase sau có thể thêm bảng market cap từ CoinGecko hoặc CoinMarketCap.
 
-Panel aggregate nến 1 phút thành timeframe đã chọn, rồi tính lại RSI(14) trên close của timeframe đó. Chỉ coin `TRADING` có đủ RSI và volume mới được hiển thị.
+Panel aggregate nến 1 phút thành timeframe đã chọn, rồi tính lại RSI(14) trên close của timeframe đó. Query lấy khoảng 80 candle gần nhất, so sánh RSI hiện tại với kỳ trước, join ticker 24h mới nhất và chỉ hiển thị coin `TRADING` có đủ RSI/volume.
 
 | Zone       | Điều kiện RSI |
 | ---------- | ------------- |
@@ -851,29 +822,83 @@ ECharts hiển thị:
 
 ```sql
 WITH
-  '$rsi_tf' AS selected_tf,
-  '$rsi_zone' AS selected_zone,
+  '${rsi_tf}' AS selected_tf,
+  '${rsi_zone}' AS selected_zone,
   multiIf(selected_tf = '1h', 3600, selected_tf = '4h', 14400, 86400) AS tf_seconds,
-  (SELECT max(timestamp) FROM klines FINAL) AS latest_ts,
+  (SELECT max(open_time) FROM klines FINAL) AS latest_ts,
   latest_ts - toIntervalSecond(tf_seconds * 80) AS from_ts
 -- Query chính aggregate klines theo timeframe, tính RSI(14), join ticker_24h,
 -- filter status TRADING và filter zone nếu selected_zone != 'All'.
+```
+
+#### Panel 20: AI Chat Assistant (Text/HTML)
+
+| Thuộc tính | Giá trị |
+| ---------- | ------- |
+| Loại       | Text panel, mode HTML |
+| Vị trí     | Cột trái, dưới Live Liquidity Pressure |
+| Nội dung   | `<iframe src="http://localhost:8501/chat-ui?symbol=${symbol}" ...></iframe>` |
+
+> **Lưu ý:** Panel này kết nối trực tiếp với backend FastAPI để cung cấp trải nghiệm chat tương tác thay vì hiển thị dữ liệu tĩnh. Đòi hỏi Grafana bật `GF_PANELS_DISABLE_SANITIZE_HTML`.
+
+#### Panel 4: Top Losers 24h (Table)
+
+| Thuộc tính | Giá trị                       |
+| ---------- | ----------------------------- |
+| Loại       | Table                         |
+| Vị trí     | Cột phải dưới, bên trái       |
+| Số dòng    | 5 coin giảm mạnh nhất         |
+
+```sql
+SELECT
+  s.base_asset AS Coin,
+  round(t.price_change_pct, 2) AS `24h %`,
+  round(t.quote_volume_24h, 2) AS `Vol`
+FROM ticker_24h t FINAL
+JOIN symbols s ON t.symbol = s.symbol
+WHERE t.snapshot_time = (SELECT MAX(snapshot_time) FROM ticker_24h FINAL)
+  AND t.price_change_pct < 0
+ORDER BY t.price_change_pct ASC
+LIMIT 5
+```
+
+#### Panel 3: Top Gainers 24h (Table)
+
+| Thuộc tính | Giá trị                       |
+| ---------- | ----------------------------- |
+| Loại       | Table                         |
+| Vị trí     | Cột phải dưới, bên phải       |
+| Số dòng    | 5 coin tăng mạnh nhất         |
+
+```sql
+SELECT
+  s.base_asset AS Coin,
+  round(t.price_change_pct, 2) AS `24h %`,
+  round(t.quote_volume_24h, 2) AS `Vol`
+FROM (
+  SELECT
+    symbol,
+    argMax(price_change_pct, snapshot_time) AS price_change_pct,
+    argMax(quote_volume_24h, snapshot_time) AS quote_volume_24h
+  FROM ticker_24h FINAL
+  GROUP BY symbol
+) t
+JOIN symbols s ON t.symbol = s.symbol
+ORDER BY t.price_change_pct DESC
+LIMIT 5
 ```
 
 ### 10.3. Variables (Dropdown filters)
 
 | Variable     | Query                                 | Mục đích                  |
 | ------------ | ------------------------------------- | ------------------------- |
-| `$symbol`    | `SELECT DISTINCT symbol FROM symbols` | Chọn coin để xem chi tiết |
+| `$symbol`    | `SELECT symbol FROM symbols ORDER BY symbol` | Chọn coin để xem Price Chart, Live Liquidity Pressure và AI Chat |
 | `$rsi_tf`    | `1h,4h,1d`                            | Chọn timeframe RSI thật cho heatmap |
 | `$rsi_zone`  | `All,Overbought,Strong,Neutral,Weak,Oversold` | Lọc vùng RSI trên heatmap |
 
 ### 10.4. Alerts (Cảnh báo)
 
-| Alert                 | Điều kiện                               | Notification |
-| --------------------- | --------------------------------------- | ------------ |
-| RSI Overbought        | RSI > 70 cho BTC hoặc ETH               | Slack/Email  |
-| Volume Spike          | Volume 24h tăng > 200% so với hôm trước | Slack        |
+Dashboard JSON hiện tại chưa khai báo Grafana alert rules. Các điều kiện như RSI overbought hoặc volume spike có thể bổ sung ở phase sau nếu cần cảnh báo chủ động.
 
 ### 10.5. Refresh Rate
 
@@ -882,6 +907,8 @@ WITH
 | Price charts      | 1 phút           | Klines cập nhật minutely; candle interval tự đổi theo Grafana time range. Volume bars đồng bộ với nến, cùng aggregate và refresh 1 phút. |
 | Volume/Gainers    | 1 phút           | Ticker snapshot cập nhật mỗi phút                 |
 | RSI Heatmap       | 1 phút           | Aggregate klines theo `$rsi_tf`, tính RSI(14), cập nhật theo klines/ticker mỗi phút |
+| Liquidity Pressure | 1 phút          | Lấy snapshot mới nhất từ `order_book_snapshot` cho `$symbol` |
+| AI Chat           | Theo iframe      | UI chat nhận `$symbol` từ Grafana và gọi backend riêng |
 
 ---
 
