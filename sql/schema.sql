@@ -136,3 +136,20 @@ CREATE TABLE IF NOT EXISTS crypto_db.chat_history (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (session_id, timestamp);
+
+-- 6) Fact: Crypto news articles (GNews API)
+CREATE TABLE IF NOT EXISTS crypto_db.crypto_news (
+    article_id String,
+    title String,
+    description String,
+    content String,
+    url String,
+    image_url String,
+    source_name String,
+    source_url String,
+    published_at DateTime,
+    search_query String,
+    extracted_at DateTime
+) ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(published_at)
+ORDER BY (article_id);

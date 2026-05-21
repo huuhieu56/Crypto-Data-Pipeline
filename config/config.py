@@ -95,3 +95,44 @@ NUMERIC_COLUMNS = [
     "open", "high", "low", "close", "volume",
     "quote_volume", "taker_buy_base", "taker_buy_quote",
 ]
+
+# --- GNews API ----------------------------------------------------------------
+
+GNEWS_API_KEY = os.getenv("GNEWS_API_KEY", "")
+
+# Search queries — each query costs 1 API request per run.
+# Free tier: 100 requests/day. At 15-min intervals = 96 calls/day.
+# → Use 1 query per run to stay within limit.
+# Covers top coins from config/symbols.py via OR boolean.
+GNEWS_SEARCH_QUERIES = [
+    "cryptocurrency OR bitcoin OR ethereum OR binance OR solana"
+    " OR XRP OR dogecoin OR cardano OR tron OR chainlink"
+    " OR avalanche OR polkadot OR litecoin OR uniswap",
+]
+
+# --- Quality Filters (applied after fetch) -----------------------------------
+
+# Minimum description length — skip articles with thin/empty descriptions
+GNEWS_MIN_DESC_LENGTH = 50
+
+# Spam keywords in title — articles promoting shitcoins, airdrops, giveaways
+GNEWS_SPAM_TITLE_KEYWORDS = [
+    "presale", "airdrop", "giveaway", "free coins", "buy now",
+    "100x", "1000x", "moonshot", "guaranteed", "act now",
+    "pepeto", "shiba 2.0", "next dogecoin",
+]
+
+# Tracked coin names for relevance check — article must mention at least one.
+# Only use UNAMBIGUOUS terms (avoid "avalanche" = NHL team, "dot" = common word).
+GNEWS_RELEVANT_KEYWORDS = [
+    "crypto", "cryptocurrency", "blockchain", "defi", "nft",
+    "bitcoin", "btc", "ethereum", "eth", "binance", "bnb",
+    "solana", "xrp", "ripple", "dogecoin", "doge",
+    "cardano", "ada", "tron", "trx", "chainlink",
+    "avax", "polkadot", "litecoin", "ltc",
+    "uniswap", "uni", "stellar", "xlm", "shiba", "shib",
+    "aptos", "apt", "arbitrum", "optimism",
+    "cosmos", "atom", "hedera", "hbar", "pepe",
+    "trading crypto", "exchange crypto", "market cap",
+    "altcoin", "stablecoin", "web3", "token",
+]
