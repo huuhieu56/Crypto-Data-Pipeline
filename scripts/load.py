@@ -170,12 +170,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Load data into ClickHouse")
     p.add_argument(
         "--only", nargs="+",
-        choices=["symbols", "klines", "ticker", "orderbook"],
+        choices=["symbols", "klines", "ticker", "orderbook", "news"],
         help="Load only these tables",
     )
     p.add_argument(
         "--skip", nargs="*", default=[],
-        choices=["symbols", "klines", "ticker", "orderbook"],
+        choices=["symbols", "klines", "ticker", "orderbook", "news"],
         help="Skip these tables",
     )
     p.add_argument(
@@ -207,6 +207,9 @@ def main(
         load_order_book(month_str=month_str)
     if should_load("klines"):
         load_klines(month_str=month_str)
+    if should_load("news"):
+        from scripts.load_modules.load_news import load_news
+        load_news(month_str=month_str)
 
     logger.info("=== Load pipeline complete ===")
 

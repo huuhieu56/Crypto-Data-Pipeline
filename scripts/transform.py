@@ -426,7 +426,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Transform raw data -> indicators")
     p.add_argument(
         "--only", nargs="+",
-        choices=["klines", "ticker", "orderbook"],
+        choices=["klines", "ticker", "orderbook", "news"],
         help="Transform only these datasets",
     )
     p.add_argument(
@@ -456,6 +456,12 @@ def main() -> None:
         )
     if only is None or "orderbook" in only:
         transform_order_book(
+            symbols=args.symbols or None,
+            month_str=args.month,
+        )
+    if only is None or "news" in only:
+        from scripts.transform_modules.transform_news import transform_news
+        transform_news(
             symbols=args.symbols or None,
             month_str=args.month,
         )
