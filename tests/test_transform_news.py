@@ -162,28 +162,31 @@ class TestTransformNews:
     @pytest.fixture(autouse=True)
     def _setup(self):
         """Mock MinIO storage calls."""
+        # Use sys.modules to get the actual module (not the re-exported function)
+        self._mod = sys.modules["scripts.transform_modules.transform_news"]
+
         self.mock_discover = MagicMock(return_value=["2025-09"])
-        self.mock_download = MagicMock()
         self.mock_exists = MagicMock(return_value=True)
         self.mock_append = MagicMock()
 
-        self._patches = [
-            patch("scripts.transform_modules.transform_news.discover_month_partitions", self.mock_discover),
-            patch("scripts.transform_modules.transform_news.storage"),
-            patch("scripts.transform_modules.transform_news.append_to_partition", self.mock_append),
-        ]
-        for p in self._patches:
-            p.start()
+        # Save originals
+        orig_discover = self._mod.discover_month_partitions
+        orig_storage = self._mod.storage
+        orig_append = self._mod.append_to_partition
 
-        # Setup storage mock
-        import scripts.transform_modules.transform_news as mod
-        mod.storage.object_exists = self.mock_exists
-        mod.storage.download_parquet.return_value = pa.Table.from_pandas(SAMPLE_RAW_DF)
+        # Apply mocks
+        self._mod.discover_month_partitions = self.mock_discover
+        self._mod.storage = MagicMock()
+        self._mod.storage.object_exists = self.mock_exists
+        self._mod.storage.download_parquet.return_value = pa.Table.from_pandas(SAMPLE_RAW_DF)
+        self._mod.append_to_partition = self.mock_append
 
         yield
 
-        for p in self._patches:
-            p.stop()
+        # Restore originals
+        self._mod.discover_month_partitions = orig_discover
+        self._mod.storage = orig_storage
+        self._mod.append_to_partition = orig_append
 
     def test_happy_path_processes_partition(self):
         """Chạy thành công → append_to_partition được gọi."""
@@ -206,12 +209,11 @@ class TestTransformNews:
 
     def test_html_cleaned_in_output(self):
         """HTML tags bị loại bỏ trong title, description, content."""
-        import scripts.transform_modules.transform_news as mod
 
         # Tạo data có HTML
         html_df = SAMPLE_RAW_DF.copy()
         html_df["title"] = ["<p>Bitcoin</p>", "<b>Ethereum</b>", "<i>Weather</i>"]
-        mod.storage.download_parquet.return_value = pa.Table.from_pandas(html_df)
+        self._mod.storage.download_parquet.return_value = pa.Table.from_pandas(html_df)
 
         transform_news()
 
@@ -255,10 +257,9 @@ class TestTransformNews:
 
     def test_dedup_removes_duplicates(self):
         """Duplicate article_id bị loại bỏ."""
-        import scripts.transform_modules.transform_news as mod
 
         dup_df = pd.concat([SAMPLE_RAW_DF, SAMPLE_RAW_DF.iloc[[0]]], ignore_index=True)
-        mod.storage.download_parquet.return_value = pa.Table.from_pandas(dup_df)
+        self._mod.storage.download_parquet.return_value = pa.Table.from_pandas(dup_df)
 
         transform_news()
 
@@ -267,10 +268,9 @@ class TestTransformNews:
 
     def test_empty_partition_skipped(self):
         """Partition rỗng → skip, không crash."""
-        import scripts.transform_modules.transform_news as mod
 
         empty_df = pd.DataFrame(columns=SAMPLE_RAW_DF.columns)
-        mod.storage.download_parquet.return_value = pa.Table.from_pandas(empty_df)
+        self._mod.storage.download_parquet.return_value = pa.Table.from_pandas(empty_df)
 
         transform_news()
         self.mock_append.assert_not_called()
@@ -289,9 +289,8 @@ class TestTransformNews:
 
     def test_all_partitions_fail_raises(self):
         """Tất cả partitions đều lỗi → TransformError."""
-        import scripts.transform_modules.transform_news as mod
 
-        mod.storage.object_exists = MagicMock(side_effect=Exception("MinIO down"))
+        self._mod.storage.object_exists = MagicMock(side_effect=Exception("MinIO down"))
 
         with pytest.raises(TransformError):
             transform_news(month_str="2025-09")

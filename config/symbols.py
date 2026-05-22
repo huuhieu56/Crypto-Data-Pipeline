@@ -81,3 +81,31 @@ BREAK_DATES: dict[str, str] = {
     for s, info in SYMBOL_REGISTRY.items()
     if "break_date" in info
 }
+
+# --- Crypto name/abbreviation → Binance symbol mapping -----------------------
+# Used by transform_news to extract tracked symbols from article text.
+
+CRYPTO_ALIASES: dict[str, str] = {
+    "bitcoin": "BTCUSDT", "btc": "BTCUSDT",
+    "ethereum": "ETHUSDT", "eth": "ETHUSDT",
+    "bnb": "BNBUSDT", "binance coin": "BNBUSDT",
+    "solana": "SOLUSDT", "sol": "SOLUSDT",
+    "xrp": "XRPUSDT", "ripple": "XRPUSDT",
+    "cardano": "ADAUSDT", "ada": "ADAUSDT",
+    "dogecoin": "DOGEUSDT", "doge": "DOGEUSDT",
+    "polkadot": "DOTUSDT", "dot": "DOTUSDT",
+    "avalanche": "AVAXUSDT", "avax": "AVAXUSDT",
+    "chainlink": "LINKUSDT", "link": "LINKUSDT",
+    "polygon": "MATICUSDT", "matic": "MATICUSDT",
+    "litecoin": "LTCUSDT", "ltc": "LTCUSDT",
+    "uniswap": "UNIUSDT", "uni": "UNIUSDT",
+    "stellar": "XLMUSDT", "xlm": "XLMUSDT",
+    "cosmos": "ATOMUSDT", "atom": "ATOMUSDT",
+    "monero": "XMRUSDT", "xmr": "XMRUSDT",
+    "tron": "TRXUSDT", "trx": "TRXUSDT",
+    "near protocol": "NEARUSDT", "near": "NEARUSDT",
+    "aptos": "APTUSDT", "apt": "APTUSDT",
+    "sui": "SUIUSDT",
+    "pepe": "PEPEUSDT",
+    "shiba inu": "SHIBUSDT", "shib": "SHIBUSDT",
+}

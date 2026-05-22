@@ -26,6 +26,7 @@ from config.config import (
     MINIO_CONFIG,
 )
 from utils.exceptions import ExtractError
+from utils.http_utils import http_get_with_retry
 from utils.logger import get_logger
 from utils.storage import append_to_partition
 
@@ -51,8 +52,7 @@ def _fetch_articles(query: str, max_articles: int = 10) -> list[dict]:
     }
 
     try:
-        resp = requests.get(GNEWS_SEARCH_URL, params=params, timeout=30)
-        resp.raise_for_status()
+        resp = http_get_with_retry(GNEWS_SEARCH_URL, params=params, timeout=30)
     except requests.RequestException as exc:
         raise ExtractError(f"GNews API request failed: {exc}") from exc
 

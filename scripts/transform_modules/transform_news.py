@@ -22,6 +22,7 @@ import argparse
 import pandas as pd
 
 from config.config import MINIO_CONFIG
+from config.symbols import CRYPTO_ALIASES
 from utils.data_utils import validate_month_str
 from utils.exceptions import TransformError
 from utils.logger import get_logger
@@ -36,32 +37,6 @@ BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _MULTI_SPACE_RE = re.compile(r"\s+")
-
-# Map common crypto terms to tracked Binance symbols
-_CRYPTO_ALIASES: dict[str, str] = {
-    "bitcoin": "BTCUSDT", "btc": "BTCUSDT",
-    "ethereum": "ETHUSDT", "eth": "ETHUSDT",
-    "bnb": "BNBUSDT", "binance coin": "BNBUSDT",
-    "solana": "SOLUSDT", "sol": "SOLUSDT",
-    "xrp": "XRPUSDT", "ripple": "XRPUSDT",
-    "cardano": "ADAUSDT", "ada": "ADAUSDT",
-    "dogecoin": "DOGEUSDT", "doge": "DOGEUSDT",
-    "polkadot": "DOTUSDT", "dot": "DOTUSDT",
-    "avalanche": "AVAXUSDT", "avax": "AVAXUSDT",
-    "chainlink": "LINKUSDT", "link": "LINKUSDT",
-    "polygon": "MATICUSDT", "matic": "MATICUSDT",
-    "litecoin": "LTCUSDT", "ltc": "LTCUSDT",
-    "uniswap": "UNIUSDT", "uni": "UNIUSDT",
-    "stellar": "XLMUSDT", "xlm": "XLMUSDT",
-    "cosmos": "ATOMUSDT", "atom": "ATOMUSDT",
-    "monero": "XMRUSDT", "xmr": "XMRUSDT",
-    "tron": "TRXUSDT", "trx": "TRXUSDT",
-    "near protocol": "NEARUSDT", "near": "NEARUSDT",
-    "aptos": "APTUSDT", "apt": "APTUSDT",
-    "sui": "SUIUSDT",
-    "pepe": "PEPEUSDT",
-    "shiba inu": "SHIBUSDT", "shib": "SHIBUSDT",
-}
 
 
 def clean_text(text: str) -> str:
@@ -79,7 +54,7 @@ def extract_symbols(text: str) -> list[str]:
         return []
     text_lower = text.lower()
     found = set()
-    for alias, symbol in _CRYPTO_ALIASES.items():
+    for alias, symbol in CRYPTO_ALIASES.items():
         if re.search(rf"\b{re.escape(alias)}\b", text_lower):
             found.add(symbol)
     return sorted(found)

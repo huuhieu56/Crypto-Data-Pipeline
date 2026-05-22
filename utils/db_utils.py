@@ -133,3 +133,22 @@ def get_last_timestamps(symbols: list[str]) -> dict[str, int]:
     Returns {symbol: last_timestamp_ms}.
     """
     return get_table_watermarks("klines", "open_time", symbols)
+
+
+def get_max_timestamp(table: str, ts_col: str) -> pd.Timestamp | None:
+    """Get the maximum timestamp from a ClickHouse table column.
+
+    For non-symbol tables (e.g. crypto_news) where watermark is global.
+    Returns UTC-aware Timestamp or None if table is empty.
+    """
+    try:
+        df = ch_query_df(f"SELECT max({ts_col}) AS max_ts FROM {table}")
+        if df.empty or pd.isna(df.iloc[0]["max_ts"]):
+            return None
+        ts = pd.Timestamp(df.iloc[0]["max_ts"])
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        return ts
+    except Exception as exc:
+        logger.warning("Could not get max timestamp from %s.%s: %s", table, ts_col, exc)
+        return None

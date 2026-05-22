@@ -25,6 +25,7 @@ from utils.exceptions import LoadError
 from utils.data_utils import validate_month_str
 from utils.db_utils import (
     ch_insert_df,
+    get_max_timestamp,
     get_table_watermarks,
 )
 from utils.storage import storage, discover_month_partitions
@@ -59,55 +60,115 @@ def _load_table(
     table_name: str,
     ts_col: str,
     month_str: str | None = None,
+    per_symbol: bool = True,
+    sub_prefix: str = "",
 ) -> None:
-    """Generic loader: download Parquet from MinIO, filter by watermark, insert into ClickHouse."""
-    if symbols is None:
-        symbols = SYMBOLS
+    """Generic loader: download Parquet from MinIO, filter by watermark, insert into ClickHouse.
+
+    Args:
+        per_symbol: If True (default), iterate symbols with per-symbol watermarks
+                    and paths like {table}/{symbol}/{month}.parquet.
+                    If False, use global watermark and paths like {table}/{sub_prefix}/{month}.parquet.
+        sub_prefix: Sub-directory under table_name for non-symbol mode (e.g. "gnews" for crypto_news).
+    """
     if month_str is not None:
         month_str = validate_month_str(month_str)
-    wm_map = get_table_watermarks(table_name, ts_col, symbols)
+
     total_inserted = 0
     total_skipped = 0
     errors = 0
 
-    logger.info("[Load] %s: %d symbols, partitions=%s", table_name, len(symbols), month_str or "auto-discover")
+    if per_symbol:
+        if symbols is None:
+            symbols = SYMBOLS
+        wm_map = get_table_watermarks(table_name, ts_col, symbols)
+        logger.info("[Load] %s: %d symbols, partitions=%s", table_name, len(symbols), month_str or "auto-discover")
 
-    for symbol in symbols:
+        for symbol in symbols:
+            months = (
+                [month_str]
+                if month_str
+                else discover_month_partitions(bucket, table_name, symbol)
+            )
+            if not months:
+                logger.debug("[Load] %s %s: no partitions found", table_name, symbol)
+                continue
+
+            for month in months:
+                key = f"{table_name}/{symbol}/{month}.parquet"
+                try:
+                    table = storage.download_parquet(bucket, key)
+                    df = table.to_pandas()
+                    del table
+
+                    if df.empty:
+                        logger.debug("[Load] %s %s/%s: empty, skipped", table_name, symbol, month)
+                        total_skipped += 1
+                        continue
+
+                    raw_count = len(df)
+                    df = _filter_by_watermark(df, ts_col, wm_map.get(symbol))
+                    if df.empty:
+                        logger.debug("[Load] %s %s/%s: %d rows filtered (watermark), skipped", table_name, symbol, month, raw_count)
+                        total_skipped += 1
+                        continue
+
+                    inserted = ch_insert_df(table_name, df)
+                    total_inserted += inserted
+                    logger.info("[Load] %s %s/%s: %d rows inserted", table_name, symbol, month, inserted)
+
+                except Exception as exc:
+                    errors += 1
+                    logger.error("[Load] %s %s/%s: ERROR -- %s", table_name, symbol, month, exc)
+    else:
+        watermark = get_max_timestamp(table_name, ts_col)
+        if watermark:
+            logger.info("[Load] %s: watermark = %s", table_name, watermark)
+
+        prefix_path = f"{table_name}/{sub_prefix}" if sub_prefix else table_name
         months = (
             [month_str]
             if month_str
-            else discover_month_partitions(bucket, table_name, symbol)
+            else discover_month_partitions(bucket, table_name, sub_prefix)
         )
         if not months:
-            logger.debug("[Load] %s %s: no partitions found", table_name, symbol)
-            continue
+            logger.info("[Load] %s: no partitions found", table_name)
+            return
+
+        logger.info("[Load] %s: %d partition(s)", table_name, len(months))
 
         for month in months:
-            key = f"{table_name}/{symbol}/{month}.parquet"
+            key = f"{prefix_path}/{month}.parquet"
             try:
+                if not storage.object_exists(bucket, key):
+                    logger.debug("[Load] %s/%s: no data", table_name, month)
+                    total_skipped += 1
+                    continue
+
                 table = storage.download_parquet(bucket, key)
                 df = table.to_pandas()
                 del table
 
                 if df.empty:
-                    logger.debug("[Load] %s %s/%s: empty, skipped", table_name, symbol, month)
                     total_skipped += 1
                     continue
 
                 raw_count = len(df)
-                df = _filter_by_watermark(df, ts_col, wm_map.get(symbol))
-                if df.empty:
-                    logger.debug("[Load] %s %s/%s: %d rows filtered (watermark), skipped", table_name, symbol, month, raw_count)
-                    total_skipped += 1
-                    continue
+                if watermark:
+                    ts = pd.to_datetime(df[ts_col], utc=True)
+                    df = df[ts > watermark]
+                    if df.empty:
+                        logger.debug("[Load] %s/%s: %d rows filtered (watermark)", table_name, month, raw_count)
+                        total_skipped += 1
+                        continue
 
                 inserted = ch_insert_df(table_name, df)
                 total_inserted += inserted
-                logger.info("[Load] %s %s/%s: %d rows inserted", table_name, symbol, month, inserted)
+                logger.info("[Load] %s/%s: %d rows inserted", table_name, month, inserted)
 
             except Exception as exc:
                 errors += 1
-                logger.error("[Load] %s %s/%s: ERROR -- %s", table_name, symbol, month, exc)
+                logger.error("[Load] %s/%s: ERROR -- %s", table_name, month, exc)
 
     if total_inserted == 0 and errors > 0:
         raise LoadError(f"{table_name}: all {errors} partition(s) failed, 0 loaded")
