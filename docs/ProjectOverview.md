@@ -345,117 +345,52 @@ ORDER BY s.symbol;
 
 ---
 
-## 6. ELT Pipeline
+## 6. ETL Pipeline
 
-### 6.1. Tổng quan luồng dữ liệu (4 bảng)
+### 6.1. Tổng quan
+
+Hệ thống thu thập dữ liệu từ Binance cho 50 coin, xử lý và load vào ClickHouse. Pipeline chạy tự động mỗi phút qua Airflow DAG `minutely_etl`.
+
+Luồng dữ liệu:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                                    EXTRACT                                               │
-│                                                                                          │
-│   ┌─────────────────┐   ┌─────────────────────┐   ┌─────────────────────────┐   ┌───────────────────┐ │
-│   │ /exchangeInfo   │   │    /klines          │   │    /ticker/24hr         │   │    /depth         │ │
-│   │ (1 lần setup)   │   │ (Minutely: 50 coins)│   │ (Minutely: 50 coins)    │   │ (Minutely)         │ │
-│   └────────┬────────┘   └──────────┬──────────┘   └────────────┬────────────┘   └─────────┬─────────┘ │
-│            │                       │                           │                           │           │
-│            ▼                       ▼                           ▼                           ▼           │
-│    config/symbols.py       MinIO: crypto-raw/           ticker_24h.csv           order_book_snapshot.csv │
-└────────────┬───────────────────────┬───────────────────────────┬───────────────────────────┬───────────┘
-             │                       │                           │
-             │              ┌────────┴────────┐                  │
-             │              │    TRANSFORM    │                  │
-             │              │   (ClickHouse SQL)       │                  │
-             │              │  + RSI, MACD    │                  │
-             │              └────────┬────────┘                  │
-             │                       │                           │
-             │                       ▼                           │
-             │           MinIO: crypto-processed/                │
-             │              klines/{SYMBOL}/{YYYY-MM}.parquet          │
-             │                       │                           │
-┌────────────┴───────────────────────┴───────────────────────────┴────────────────────────┐
-│                                      LOAD                                                │
-│                                                                                          │
-│    ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐   ┌──────────────────────┐ │
-│    │    symbols      │   │     klines      │   │   ticker_24h    │   │ order_book_snapshot │ │
-│    │  (dim table)    │   │  (fact table)   │   │  (fact table)   │   │   (fact table)      │ │
-│    └─────────────────┘   └─────────────────┘   └─────────────────┘   └──────────────────────┘ │
-│                                                                                          │
-│                              ClickHouse Database                                         │
-└──────────────────────────────────────────────────────────────────────────────────────────┘
+Binance API ──Extract──▶ MinIO (raw) ──Transform──▶ MinIO (processed) ──Load──▶ ClickHouse
 ```
 
-### 6.2. Extract - Thu thập dữ liệu
+### 6.2. Extract
 
-#### 6.2.1. Symbols Registry (1 lần khi setup)
+Thu thập raw data từ Binance REST API, lưu nguyên bản vào MinIO:
 
-| Thuộc tính | Giá trị                 |
-| ---------- | ----------------------- |
-| API        | Không gọi API; đọc `SYMBOL_REGISTRY` |
-| Tần suất   | 1 lần (initial setup)   |
-| Output     | Bảng `symbols`          |
-| Ghi vào    | Bảng `symbols`          |
+| Nguồn | API | Output | Tần suất |
+|-------|-----|--------|----------|
+| Klines (nến 1 phút) | `/api/v3/klines` | `crypto-raw/klines/{SYMBOL}/{YYYY-MM}.csv` | Mỗi phút, 50 coins |
+| Ticker 24h | `/api/v3/ticker/24hr` | `crypto-raw/ticker_raw/{SYMBOL}/{YYYY-MM}.parquet` | Mỗi phút |
+| Order Book | `/api/v3/depth` | `crypto-raw/order_book/{SYMBOL}/{YYYY-MM}.parquet` | Mỗi phút |
+| Symbols | `SYMBOL_REGISTRY` (config) | Bảng `symbols` | 1 lần setup |
 
-#### 6.2.2. Extract Klines (Minutely)
+Lần đầu bootstrap 3 năm lịch sử qua Binance Data Vision (~78M rows). Sau đó incremental ~50 rows/phút.
 
-| Thuộc tính | Giá trị                                                                |
-| ---------- | ---------------------------------------------------------------------- |
-| API        | `/api/v3/klines`                                                       |
-| Tần suất   | Mỗi phút (* * * * *)                                                   |
-| Chiến lược | Bulk download từ Binance Data Vision (lịch sử), REST API (dữ liệu mới) |
-| Output     | MinIO bucket `crypto-raw/klines/{SYMBOL}/{YYYY-MM}.csv`               |
-| Ghi vào    | Bảng `klines` (sau Transform)                                          |
+### 6.3. Transform
 
-> **Lưu ý:** Extract initial nặng (bulk 3 năm × 50 coins = 78M rows). Sau khi bulk xong, mỗi phút chỉ lấy 1 nến mới/coin (~50 rows) từ REST API → rất nhẹ.
+Xử lý raw data bằng Python, ghi kết quả vào MinIO (`crypto-processed/`):
 
-#### 6.2.3. Extract Ticker 24h + Best Bid/Ask (Minutely)
+- **Klines**: Tính RSI(14) + MACD(12,26,9), load warm-up context từ processed data trước đó
+- **Ticker**: Rename columns (camelCase → snake_case), tính `spread_pct`
+- **Order Book**: Tính OBI (Order Book Imbalance), spread, liquidity walls
 
-| Thuộc tính | Giá trị                                            |
-| ---------- | -------------------------------------------------- |
-| API        | `/api/v3/ticker/24hr`, `/api/v3/ticker/bookTicker` |
-| Tần suất   | Mỗi phút (cùng minutely_etl DAG)                   |
-| Đặc điểm   | 1 request lấy được tất cả 50 coins                 |
-| Output     | `data/raw/ticker_24h.csv`                          |
-| Ghi vào    | Bảng `ticker_24h`                                  |
+### 6.4. Load
 
-> **Lưu ý:** API ticker/24hr và bookTicker trả về rolling 24h snapshot tại thời điểm gọi. Mỗi phút lưu 1 record/coin, giúp theo dõi biến động gần real-time.
+Đọc processed Parquet từ MinIO, insert vào ClickHouse. Dùng watermark (`max(timestamp)`) để chỉ load rows mới, tránh duplicate.
 
-#### 6.2.4. Extract Order Book Snapshot (Minutely)
+| Bảng | Loại | Partition |
+|------|------|-----------|
+| `symbols` | Dimension | — |
+| `klines` | Fact | `toYYYYMM(open_time)` |
+| `ticker_24h` | Fact | `toYYYYMM(snapshot_time)` |
+| `order_book_snapshot` | Fact | `toYYYYMM(timestamp)` |
+| `crypto_news` | Fact | `toYYYYMM(published_at)` |
 
-| Thuộc tính | Giá trị                            |
-| ---------- | ---------------------------------- |
-| API        | `/api/v3/depth`                    |
-| Tần suất   | Mỗi phút, cùng minutely_etl DAG   |
-| Đặc điểm   | Snapshot top N levels              |
-| Output     | `data/raw/order_book_snapshot.csv` |
-| Ghi vào    | Bảng `order_book_snapshot`         |
-
-> **Lưu ý:** Lấy snapshot mỗi phút để theo dõi áp lực mua/bán gần real-time. Mỗi lần chỉ cần 1–2 API requests (trả về tất cả 50 coins) → overhead rất thấp.
-
-### 6.3. Transform - Xử lý với ClickHouse SQL
-
-**Input:** Raw CSV files từ Data Lake (MinIO `crypto-raw/klines/{SYMBOL}/{YYYY-MM}.csv`)
-
-**Xử lý:**
-
-1. ClickHouse SQL đọc raw CSV qua table function `s3()`
-2. Fetch context rows (120 nến gần nhất) từ bảng `klines` để warm-up indicators
-3. Tính RSI(14) + MACD(12,26,9) bằng SQL window functions:
-   - RSI: `avg(if(delta>0, delta, 0)) OVER (ROWS 13 PRECEDING)`
-   - EMA: `exponentialMovingAverage()` với halflife tính từ span
-   - MACD: EMA(12) - EMA(26), Signal: EMA(9) của MACD
-
-**Output:** MinIO `crypto-processed/klines/{SYMBOL}/{YYYY-MM}.parquet` (ghi qua `INSERT INTO FUNCTION s3()`)
-
-> **Tại sao dùng ClickHouse SQL?** Transform được đẩy xuống database (ELT pattern), tận dụng ClickHouse columnar engine + vectorized computation. Không cần Spark cluster, giảm infrastructure complexity. Dữ liệu 78 triệu records được xử lý trực tiếp trong ClickHouse mà không cần di chuyển qua Python.
-
-### 6.4. Load - Ghi vào ClickHouse
-
-| Bảng                  | Input                   | Mode   | Ghi chú                              |
-| --------------------- | ----------------------- | ------ | ------------------------------------- |
-| `symbols`             | `SYMBOL_REGISTRY`       | Upsert | 1 lần setup, update nếu cần           |
-| `klines`              | klines/{SYMBOL}/{YYYY-MM}.parquet | Append | Đọc processed Parquet qua s3(), INSERT  |
-| `ticker_24h`          | ticker_24h.csv          | Append | 50 records/phút (minutely_etl)        |
-| `order_book_snapshot`  | order_book_snapshot.csv | Append | 50 records/phút (minutely_etl)        |
+Tất cả dùng `ReplacingMergeTree` engine cho phép upsert tự động.
 
 ---
 
