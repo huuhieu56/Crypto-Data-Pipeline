@@ -54,7 +54,7 @@ def _filter_by_watermark(
 
 # --- Generic Loader -----------------------------------------------------------
 
-def _load_table(
+def load_table(
     symbols: list[str] | None,
     bucket: str,
     table_name: str,
@@ -207,7 +207,7 @@ def load_klines(
     month_str: str | None = None,
 ) -> None:
     """Load transformed klines Parquet from MinIO → ClickHouse."""
-    _load_table(symbols, BUCKET_PROCESSED, "klines", "open_time", month_str=month_str)
+    load_table(symbols, BUCKET_PROCESSED, "klines", "open_time", month_str=month_str)
 
 
 def load_ticker(
@@ -215,7 +215,7 @@ def load_ticker(
     month_str: str | None = None,
 ) -> None:
     """Load transformed ticker Parquet from MinIO → ClickHouse."""
-    _load_table(symbols, BUCKET_PROCESSED, "ticker_24h", "snapshot_time", month_str=month_str)
+    load_table(symbols, BUCKET_PROCESSED, "ticker_24h", "snapshot_time", month_str=month_str)
 
 
 def load_order_book(
@@ -223,7 +223,7 @@ def load_order_book(
     month_str: str | None = None,
 ) -> None:
     """Load transformed order book Parquet from MinIO → ClickHouse."""
-    _load_table(symbols, BUCKET_PROCESSED, "order_book_snapshot", "timestamp", month_str=month_str)
+    load_table(symbols, BUCKET_PROCESSED, "order_book_snapshot", "timestamp", month_str=month_str)
 
 
 # --- CLI ---------------------------------------------------------------------

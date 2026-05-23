@@ -33,40 +33,40 @@ SAMPLE_RAW_DF = pd.DataFrame({
     "title": [
         "Bitcoin Surges Past $100K",
         "<p>Ethereum Upgrade Live</p>",
-        "Random News About Weather",
+        "Solana Network Hits Record Throughput",
     ],
     "description": [
         "Bitcoin has broken through the $100,000 barrier as institutions invest.",
         "Ethereum's latest upgrade brings <b>scalability</b> improvements.",
-        "Today's weather is sunny with no rain expected in the region.",
+        "Solana blockchain achieves record transaction throughput in crypto markets.",
     ],
     "content": [
         "Full article about bitcoin and crypto market growth...",
         "Ethereum network upgrade details and impact on defi...",
-        "Weather forecast for the week ahead.",
+        "Solana network performance update for crypto trading.",
     ],
     "url": [
         "https://example.com/bitcoin-surges",
         "https://example.com/eth-upgrade",
-        "https://example.com/weather",
+        "https://example.com/solana-throughput",
     ],
     "image_url": [
         "https://example.com/img1.jpg",
         "https://example.com/img2.jpg",
-        "",
+        "https://example.com/img3.jpg",
     ],
-    "source_name": ["CoinDesk", "CryptoSlate", "WeatherNews"],
+    "source_name": ["CoinDesk", "CryptoSlate", "SolanaTimes"],
     "source_url": [
         "https://coindesk.com",
         "https://cryptoslate.com",
-        "https://weathernews.com",
+        "https://solanatimes.com",
     ],
     "published_at": pd.to_datetime([
         "2025-09-30T19:38:25Z",
         "2025-09-30T18:00:00Z",
         "2025-09-30T17:00:00Z",
     ]),
-    "search_query": ["bitcoin", "ethereum", "weather"],
+    "search_query": ["bitcoin", "ethereum", "solana"],
     "extracted_at": pd.to_datetime([
         "2025-09-30T20:00:00Z",
         "2025-09-30T20:00:00Z",
@@ -222,7 +222,7 @@ class TestTransformNews:
         assert "<b>" not in out_df["title"].iloc[1]
 
     def test_target_columns_correct(self):
-        """Output có đúng các cột theo ClickHouse schema."""
+        """Output có đúng các cột theo ClickHouse schema (bao gồm symbols)."""
         transform_news()
 
         out_df = self.mock_append.call_args[0][3]
@@ -230,15 +230,18 @@ class TestTransformNews:
             "article_id", "title", "description", "content",
             "url", "image_url", "source_name", "source_url",
             "published_at", "search_query", "extracted_at",
+            "symbols",
         ]
         assert list(out_df.columns) == expected_cols
 
-    def test_no_symbols_column_in_output(self):
-        """Cột symbols (dùng để filter) không có trong output."""
+    def test_symbols_column_in_output(self):
+        """Cột symbols có trong output để load vào ClickHouse."""
         transform_news()
 
         out_df = self.mock_append.call_args[0][3]
-        assert "symbols" not in out_df.columns
+        assert "symbols" in out_df.columns
+        # Each row should have a list of symbols
+        assert all(isinstance(s, list) for s in out_df["symbols"])
 
     def test_symbols_filter(self):
         """Filter theo symbols → chỉ giữ articles mention symbols đó."""

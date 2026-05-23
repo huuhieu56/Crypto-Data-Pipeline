@@ -12,11 +12,6 @@ Usage:
 from __future__ import annotations
 
 import re
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
 import argparse
 
 import pandas as pd
@@ -26,6 +21,7 @@ from config.symbols import CRYPTO_ALIASES
 from utils.data_utils import validate_month_str
 from utils.exceptions import TransformError
 from utils.logger import get_logger
+from utils.news_filters import filter_dataframe
 from utils.storage import append_to_partition, discover_month_partitions, storage
 
 logger = get_logger(__name__)
@@ -48,14 +44,20 @@ def clean_text(text: str) -> str:
     return text
 
 
+# Pre-compile alias patterns once (22 aliases × per-article regex avoided)
+_ALIAS_PATTERNS = [
+    (re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE), symbol)
+    for alias, symbol in CRYPTO_ALIASES.items()
+]
+
+
 def extract_symbols(text: str) -> list[str]:
     """Extract tracked crypto symbols mentioned in text."""
     if not isinstance(text, str):
         return []
-    text_lower = text.lower()
     found = set()
-    for alias, symbol in CRYPTO_ALIASES.items():
-        if re.search(rf"\b{re.escape(alias)}\b", text_lower):
+    for pattern, symbol in _ALIAS_PATTERNS:
+        if pattern.search(text):
             found.add(symbol)
     return sorted(found)
 
@@ -77,6 +79,7 @@ def transform_news(
         "article_id", "title", "description", "content",
         "url", "image_url", "source_name", "source_url",
         "published_at", "search_query", "extracted_at",
+        "symbols",
     ]
     total_processed = 0
     errors = 0
@@ -112,6 +115,16 @@ def transform_news(
             df["title"] = df["title"].apply(clean_text)
             df["description"] = df["description"].apply(clean_text)
             df["content"] = df["content"].apply(clean_text)
+
+            # Filter spam, irrelevant, low-quality articles
+            before_filter = len(df)
+            df = filter_dataframe(df)
+            if df.empty:
+                logger.debug("[Transform] crypto_news/%s: all articles filtered out", month)
+                continue
+            if len(df) < before_filter:
+                logger.info("[Transform] crypto_news/%s: filtered %d → %d articles",
+                           month, before_filter, len(df))
 
             # Extract mentioned symbols from title + description + content
             df["symbols"] = (

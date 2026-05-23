@@ -158,7 +158,8 @@ CREATE TABLE IF NOT EXISTS crypto_db.crypto_news (
     source_url String,
     published_at DateTime,
     search_query String,
-    extracted_at DateTime
+    extracted_at DateTime,
+    symbols Array(String)
 ) ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(published_at)
 ORDER BY (article_id);

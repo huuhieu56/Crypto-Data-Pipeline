@@ -60,8 +60,7 @@ with DAG(
         task_id="extract_crypto_news",
         bash_command=(
             f"cd {project_root} && "
-            "python -c \"from scripts.extract_modules.extract_crypto_news "
-            "import extract_crypto_news; extract_crypto_news()\""
+            "python scripts/extract_modules/extract_crypto_news.py"
         ),
     )
 
