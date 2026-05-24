@@ -21,6 +21,7 @@ from config.symbols import SYMBOLS, SYMBOLS_STATUS
 from scripts.extract_modules import (
     download_data_vision,
     extract_bulk,
+    extract_crypto_news,
     extract_order_book_snapshot,
     extract_recent_klines,
     extract_ticker_24h,
@@ -35,6 +36,7 @@ __all__ = [
     "extract_recent_klines",
     "extract_ticker_24h",
     "extract_order_book_snapshot",
+    "extract_crypto_news",
     "extract_minutely",
 ]
 
@@ -64,8 +66,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Extract data from Binance (bulk or minutely)",
     )
     parser.add_argument(
-        "--mode", choices=["minutely", "bulk"], default="minutely",
-        help="minutely = incremental REST API, bulk = full Data Vision",
+        "--mode", choices=["minutely", "bulk", "news"], default="minutely",
+        help="minutely = incremental REST API, bulk = full Data Vision, news = GNews crypto news",
     )
     parser.add_argument(
         "--symbols", nargs="+", metavar="SYM", default=None,
@@ -86,6 +88,8 @@ def main() -> None:
 
     if args.mode == "bulk":
         extract_bulk(symbols, months_back=args.months)
+    elif args.mode == "news":
+        extract_crypto_news()
     else:
         extract_minutely(symbols)
 

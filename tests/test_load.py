@@ -31,7 +31,7 @@ def test_load_table_keeps_minio_partition_after_success(monkeypatch):
     insert = MagicMock(return_value=1)
     monkeypatch.setattr(load_module, "ch_insert_df", insert)
 
-    load_module._load_table(
+    load_module.load_table(
         ["BTCUSDT"],
         "crypto-raw",
         "klines",

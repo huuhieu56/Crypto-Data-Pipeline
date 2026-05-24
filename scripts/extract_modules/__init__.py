@@ -1,5 +1,6 @@
 """Extract module implementations."""
 
+from scripts.extract_modules.extract_crypto_news import extract_crypto_news
 from scripts.extract_modules.extract_klines import (
     download_data_vision,
     extract_bulk,
@@ -11,6 +12,7 @@ from scripts.extract_modules.extract_ticker import extract_ticker_24h
 __all__ = [
     "download_data_vision",
     "extract_bulk",
+    "extract_crypto_news",
     "extract_recent_klines",
     "extract_order_book_snapshot",
     "extract_ticker_24h",

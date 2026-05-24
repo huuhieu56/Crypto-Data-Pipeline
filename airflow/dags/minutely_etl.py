@@ -1,5 +1,5 @@
 # =============================================================================
-# Minutely ELT/ETL DAG - Apache Airflow
+# Minutely ETL DAG - Apache Airflow
 # =============================================================================
 # Schedule: Mỗi phút (* * * * *)
 # Timeout: 50 giây (phải xong trước phút tiếp theo)
@@ -55,14 +55,14 @@ default_args = {
 # DAG definition
 # ---------------------------------------------------------------------------
 with DAG(
-    dag_id="minutely_elt",
+    dag_id="minutely_etl",
     default_args=default_args,
     description="Mini-batch ETL mỗi phút: klines, ticker_24h, order_book",
     schedule="* * * * *",
     start_date=pendulum.datetime(2024, 1, 1, tz=LOCAL_TZ),
     catchup=False,
     max_active_runs=1,
-    tags=["elt", "minutely", "crypto"],
+    tags=["etl", "minutely", "crypto"],
 ) as dag:
 
     project_root = "{{ var.value.get('project_root', '/opt/project') }}"

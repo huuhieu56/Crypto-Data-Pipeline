@@ -152,14 +152,20 @@ def append_to_partition(
     if storage.object_exists(bucket, key):
         existing = storage.download_parquet(bucket, key)
         existing = _normalize_timestamp_unit(existing, unit="us")
-        table = pa.concat_tables([existing, new_table])
+
+        # Use pandas concat to handle schema evolution (e.g. new columns)
+        existing_pdf = existing.to_pandas()
+        new_pdf = new_df
+        combined = pd.concat([existing_pdf, new_pdf], ignore_index=True)
+        del existing_pdf
 
         if dedup_col is not None:
-            pdf = table.to_pandas()
-            pdf = pdf.drop_duplicates(subset=[dedup_col], keep="last")
-            pdf = pdf.sort_values(dedup_col).reset_index(drop=True)
-            table = pa.Table.from_pandas(pdf, preserve_index=False)
-            del pdf
+            combined = combined.drop_duplicates(subset=[dedup_col], keep="last")
+            combined = combined.sort_values(dedup_col).reset_index(drop=True)
+
+        table = pa.Table.from_pandas(combined, preserve_index=False)
+        table = _normalize_timestamp_unit(table, unit="us")
+        del combined
     else:
         table = new_table
 

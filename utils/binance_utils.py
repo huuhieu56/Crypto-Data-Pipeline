@@ -25,6 +25,7 @@ from config.config import (
 )
 from utils.logger import get_logger
 from utils.exceptions import APIRequestError
+from utils.http_utils import http_get_with_retry
 
 logger = get_logger(__name__)
 
@@ -40,15 +41,13 @@ def _request_with_retry(
     timeout: int | None = None,
     max_retries: int = _DEFAULT_MAX_RETRIES,
 ) -> requests.Response:
-    """HTTP GET with retry, exponential backoff, 429/404 handling."""
+    """HTTP GET with Binance-specific 429/404 handling on top of generic retry."""
     timeout = timeout or API_TIMEOUT
     last_exc: Exception | None = None
 
     for attempt in range(1, max_retries + 1):
         try:
-            resp = requests.get(url, params=params, timeout=timeout)
-            resp.raise_for_status()
-            return resp
+            return http_get_with_retry(url, params=params, timeout=timeout, max_retries=1)
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
             logger.warning("HTTP %s from %s (%d/%d)", status, url, attempt, max_retries)
@@ -61,12 +60,8 @@ def _request_with_retry(
                 time.sleep(wait)
                 continue
         except (requests.ConnectionError, requests.Timeout) as exc:
-            logger.warning("%s for %s (%d/%d)", type(exc).__name__, url, attempt, max_retries)
             last_exc = exc
-        except Exception as exc:
-            logger.error("Unexpected error calling %s: %s", url, exc)
-            last_exc = exc
-            break
+            raise APIRequestError(endpoint=url, detail=str(last_exc)) from exc
 
         if attempt < max_retries:
             time.sleep(_RETRY_BACKOFF * attempt)
