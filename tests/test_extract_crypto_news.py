@@ -141,7 +141,7 @@ class TestParseArticles:
 
         assert len(records[0]["title"]) == 500
         assert len(records[0]["description"]) == 1000
-        assert len(records[0]["content"]) == 2000
+        assert len(records[0]["content"]) == 5000
         assert len(records[0]["url"]) == 500
 
     def test_missing_fields_default_to_empty_string(self):

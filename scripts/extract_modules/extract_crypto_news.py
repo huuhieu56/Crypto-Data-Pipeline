@@ -83,7 +83,7 @@ def _parse_articles(articles: list[dict], query: str) -> list[dict]:
             "article_id": _make_article_id(article),
             "title": (article.get("title") or "")[:500],
             "description": (article.get("description") or "")[:1000],
-            "content": (article.get("content") or "")[:2000],
+            "content": (article.get("content") or "")[:5000],
             "url": (article.get("url") or "")[:500],
             "image_url": (article.get("image") or "")[:500],
             "source_name": (source.get("name") or "")[:200],
