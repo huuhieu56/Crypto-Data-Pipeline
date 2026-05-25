@@ -47,7 +47,7 @@ Binance REST API ──extract──▶ Parquet files (data/raw/) ──transfor
 - **Load** (`scripts/load.py`): Writes to ClickHouse via `clickhouse-connect`. Supports `--only klines|ticker|orderbook|symbols` flags for selective loading.
 
 ### Airflow DAG (`airflow/dags/minutely_etl.py`)
-Three independent extract→load chains running every minute:
+Three independent ETL chains running every minute:
 - `extract_klines → transform → load_klines`
 - `extract_ticker → load_ticker`
 - `extract_order_book → load_order_book`

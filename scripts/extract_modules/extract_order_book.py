@@ -1,7 +1,7 @@
 """Extract order book snapshots from Binance REST API.
 
 Extract stage: fetch raw depth data, store bids/asks arrays in MinIO.
-Volume aggregation + imbalance computation happens in Load/Transform.
+Volume aggregation + imbalance computation happens in Transform/Load.
 """
 
 from __future__ import annotations
