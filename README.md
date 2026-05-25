@@ -6,8 +6,8 @@ Hệ thống End-to-End Data Pipeline thu thập, xử lý và phân tích thị
 sử dụng ClickHouse SQL, Apache Airflow, ClickHouse, MinIO, LLM (DeepSeek/Gemini/OpenAI) và Grafana.
 
 - **Extract mỗi phút**: Gọi Binance REST API lấy nến 1-min, ticker 24h, order book cho 50 coins
-- **Load**: Ghi vào ClickHouse (clickhouse-connect)
 - **Transform**: ClickHouse SQL tính RSI(14), MACD(12/26/9) trên 1-min candles; Python tính OBI, spread, bid/ask walls từ order book snapshot
+- **Load**: Ghi vào ClickHouse (clickhouse-connect)
 - **LLM Chat Assistant**: AI chatbot với LangGraph workflow, DeepSeek reasoning model, tool calling tự động (candles, volume, order book), timeframe-aware analysis
 - **Visualize**: Grafana dashboard real-time + embedded chatbox
 

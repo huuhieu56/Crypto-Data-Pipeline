@@ -1,4 +1,4 @@
-"""Transform GNews crypto news — clean text, extract entities, deduplicate.
+"""Transform GNews crypto news — extract entities, deduplicate, filter.
 
 Raw path:   crypto-raw/crypto_news/gnews/{YYYY-MM}.parquet
 Output path: crypto-processed/crypto_news/gnews/{YYYY-MM}.parquet
@@ -29,21 +29,6 @@ logger = get_logger(__name__)
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
 BUCKET_PROCESSED = MINIO_CONFIG["bucket_processed"]
 
-# --- Text cleaning -----------------------------------------------------------
-
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
-_MULTI_SPACE_RE = re.compile(r"\s+")
-
-
-def clean_text(text: str) -> str:
-    """Remove HTML tags and normalize whitespace."""
-    if not isinstance(text, str):
-        return ""
-    text = _HTML_TAG_RE.sub("", text)
-    text = _MULTI_SPACE_RE.sub(" ", text).strip()
-    return text
-
-
 # Pre-compile alias patterns once (22 aliases × per-article regex avoided)
 _ALIAS_PATTERNS = [
     (re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE), symbol)
@@ -66,11 +51,11 @@ def transform_news(
     symbols: list[str] | None = None,
     month_str: str | None = None,
 ) -> None:
-    """ETL: clean GNews articles → Parquet.
+    """ETL: transform GNews articles → Parquet.
 
-    Reads raw from MinIO (crypto_news/gnews/), cleans HTML in text fields,
-    extracts mentioned crypto symbols, deduplicates by article_id,
-    and writes transformed Parquet to crypto_news/ in processed bucket.
+    Reads raw from MinIO (crypto_news/gnews/), extracts mentioned crypto
+    symbols, deduplicates by article_id, filters spam, and writes
+    transformed Parquet to crypto_news/ in processed bucket.
     """
     if month_str is not None:
         month_str = validate_month_str(month_str)
@@ -110,11 +95,6 @@ def transform_news(
 
             # Deduplicate by article_id
             df = df.drop_duplicates(subset=["article_id"])
-
-            # Clean HTML in text fields
-            df["title"] = df["title"].apply(clean_text)
-            df["description"] = df["description"].apply(clean_text)
-            df["content"] = df["content"].apply(clean_text)
 
             # Filter spam, irrelevant, low-quality articles
             before_filter = len(df)
