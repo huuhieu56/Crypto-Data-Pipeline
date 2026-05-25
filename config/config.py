@@ -105,10 +105,11 @@ GNEWS_API_KEY = os.getenv("GNEWS_API_KEY", "")
 # Free tier: 100 requests/day. At 15-min intervals = 96 calls/day.
 # → Use 1 query per run to stay within limit.
 # Covers top coins from config/symbols.py via OR boolean.
+# GNews API limits query to ~200 URL-encoded chars.
+# Use short names/tickers; multi-word names are too expensive.
 GNEWS_SEARCH_QUERIES = [
-    "cryptocurrency OR bitcoin OR ethereum OR binance OR solana"
-    " OR XRP OR dogecoin OR cardano OR tron OR chainlink"
-    " OR avalanche OR polkadot OR litecoin OR uniswap",
+    "crypto OR BTC OR ETH OR SOL OR BNB OR XRP OR DOGE OR ADA"
+    " OR TRX OR LINK OR AVAX OR DOT OR LTC OR UNI OR ATOM OR APT",
 ]
 
 # --- Quality Filters (applied after fetch) -----------------------------------
@@ -127,13 +128,29 @@ GNEWS_SPAM_TITLE_KEYWORDS = [
 # Only use UNAMBIGUOUS terms (avoid "avalanche" = NHL team, "dot" = common word).
 GNEWS_RELEVANT_KEYWORDS = [
     "crypto", "cryptocurrency", "blockchain", "defi", "nft",
+    # Layer 1
     "bitcoin", "btc", "ethereum", "eth", "binance", "bnb",
-    "solana", "xrp", "ripple", "dogecoin", "doge",
-    "cardano", "ada", "tron", "trx", "chainlink",
-    "avax", "polkadot", "litecoin", "ltc",
-    "uniswap", "uni", "stellar", "xlm", "shiba", "shib",
-    "aptos", "apt", "arbitrum", "optimism",
-    "cosmos", "atom", "hedera", "hbar", "pepe",
+    "solana", "sol", "xrp", "ripple", "cardano", "ada",
+    "tron", "trx", "avalanche", "avax", "polkadot", "dot",
+    "toncoin", "ton", "near", "aptos", "apt", "sui",
+    "cosmos", "atom", "vechain", "vet",
+    "internet computer", "icp", "ethereum classic", "etc",
+    "algorand", "algo", "tezos", "xtz", "stacks", "stx",
+    "hedera", "hbar", "bitcoin cash", "bch", "neo",
+    # Layer 2
+    "arbitrum", "arb", "optimism", "op",
+    "immutable", "imx", "polygon", "matic",
+    # DeFi / Infra
+    "chainlink", "link", "uniswap", "uni", "aave",
+    "litecoin", "ltc", "filecoin", "fil",
+    "the graph", "grt", "render",
+    "thorchain", "rune", "injective", "inj",
+    "theta", "theta network", "arweave",
+    # Meme / Gaming / Metaverse
+    "dogecoin", "doge", "shiba", "shib", "pepe", "dogwifhat", "wif",
+    "axie infinity", "axs", "the sandbox", "sand",
+    "decentraland", "mana", "stellar", "xlm",
+    # Generic crypto terms
     "trading crypto", "exchange crypto", "market cap",
     "altcoin", "stablecoin", "web3", "token",
 ]
