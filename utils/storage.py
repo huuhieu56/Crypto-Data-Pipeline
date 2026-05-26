@@ -14,6 +14,7 @@ Usage::
 from __future__ import annotations
 
 import io
+import re
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -24,6 +25,7 @@ from config.config import MINIO_CONFIG
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+_MONTH_PARTITION_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 # --- MinIO Storage Client (singleton) ----------------------------------------
@@ -279,10 +281,15 @@ def discover_month_partitions(
     """
     if keys is None:
         keys = storage.list_objects(bucket, prefix=f"{prefix}/{symbol}/")
-    months = []
+    months = set()
     for k in keys:
         fname = k.rsplit("/", 1)[-1]
         if fname.endswith(extension) and "_delta_" not in fname:
             month = fname.replace(extension, "")
-            months.append(month)
+            if _MONTH_PARTITION_RE.fullmatch(month):
+                months.add(month)
+        if "_delta_" in fname and fname.endswith(".parquet"):
+            month = fname.split("_delta_", 1)[0]
+            if _MONTH_PARTITION_RE.fullmatch(month):
+                months.add(month)
     return sorted(months)
