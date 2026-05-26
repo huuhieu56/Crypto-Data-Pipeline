@@ -14,6 +14,9 @@ Usage::
 from __future__ import annotations
 
 import io
+from numbers import Real
+import re
+from uuid import uuid4
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -24,6 +27,7 @@ from config.config import MINIO_CONFIG
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+_MONTH_PARTITION_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 # --- MinIO Storage Client (singleton) ----------------------------------------
@@ -109,6 +113,35 @@ from datetime import datetime, timezone
 from config.config import PARTITION_MONTH_FORMAT
 
 
+def _ts_to_month_str(ts_value) -> str:
+    """Convert a scalar timestamp value to a UTC YYYY-MM partition."""
+    if pd.isna(ts_value):
+        raise ValueError("Cannot derive month from null timestamp")
+
+    if isinstance(ts_value, Real) and not isinstance(ts_value, bool):
+        return datetime.fromtimestamp(
+            float(ts_value) / 1000,
+            tz=timezone.utc,
+        ).strftime(PARTITION_MONTH_FORMAT)
+
+    ts = pd.Timestamp(ts_value)
+    if pd.isna(ts):
+        raise ValueError("Cannot derive month from null timestamp")
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts.strftime(PARTITION_MONTH_FORMAT)
+
+
+def _detect_month_column(df: pd.DataFrame) -> str | None:
+    """Return the timestamp column used to derive raw delta partitions."""
+    for col in ("open_time", "timestamp", "extracted_at"):
+        if col in df.columns:
+            return col
+    return None
+
+
 def _normalize_timestamp_unit(table: pa.Table, unit: str = "us") -> pa.Table:
     """Normalize timestamp columns to a consistent Arrow unit for safe concat."""
     fields = []
@@ -192,17 +225,32 @@ def write_delta(
     new_df: pd.DataFrame,
     month_str: str | None = None,
 ) -> None:
-    """Append new rows as a delta Parquet file. No read, no merge.
+    """Append new rows as delta Parquet file(s). No read, no merge.
 
-    Each call creates a new file: {prefix}/{symbol}/{month}_delta_{ts_ms}.parquet
+    Each write creates: {prefix}/{symbol}/{month}_delta_{ts_ms}_{uuid}.parquet
     Dedup is deferred to Transform when all deltas are concatenated.
     """
-    month_str = month_str or datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
     ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    key = f"{prefix}/{symbol}/{month_str}_delta_{ts_ms}.parquet"
-    table = pa.Table.from_pandas(new_df, preserve_index=False)
-    storage.upload_parquet(bucket, key, table)
-    logger.debug("Wrote delta %s/%s (%d rows)", bucket, key, len(new_df))
+
+    def _upload_delta(partition_month: str, df: pd.DataFrame) -> None:
+        key = f"{prefix}/{symbol}/{partition_month}_delta_{ts_ms}_{uuid4().hex}.parquet"
+        table = pa.Table.from_pandas(df, preserve_index=False)
+        storage.upload_parquet(bucket, key, table)
+        logger.debug("Wrote delta %s/%s (%d rows)", bucket, key, len(df))
+
+    if month_str is not None:
+        _upload_delta(month_str, new_df)
+        return
+
+    month_col = _detect_month_column(new_df)
+    if month_col is None:
+        current_month = datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
+        _upload_delta(current_month, new_df)
+        return
+
+    month_series = new_df[month_col].map(_ts_to_month_str)
+    for partition_month, group_df in new_df.groupby(month_series, sort=True):
+        _upload_delta(partition_month, group_df.reset_index(drop=True))
 
 
 def read_month_data(
@@ -246,10 +294,13 @@ def read_month_data(
     for k in sorted(keys):
         fname = k.rsplit("/", 1)[-1]
         if fname.startswith(delta_prefix) and fname.endswith(".parquet"):
-            # Extract timestamp from filename: {month}_delta_{ts_ms}.parquet
+            # Extract timestamp from old/new names:
+            # {month}_delta_{ts_ms}.parquet
+            # {month}_delta_{ts_ms}_{uuid}.parquet
             if since_ms is not None:
                 try:
-                    delta_ts = int(fname[len(delta_prefix):-len(".parquet")])
+                    rest = fname[len(delta_prefix):-len(".parquet")]
+                    delta_ts = int(rest.split("_", 1)[0])
                     if delta_ts <= since_ms:
                         continue
                 except ValueError:
@@ -279,10 +330,15 @@ def discover_month_partitions(
     """
     if keys is None:
         keys = storage.list_objects(bucket, prefix=f"{prefix}/{symbol}/")
-    months = []
+    months = set()
     for k in keys:
         fname = k.rsplit("/", 1)[-1]
         if fname.endswith(extension) and "_delta_" not in fname:
             month = fname.replace(extension, "")
-            months.append(month)
+            if _MONTH_PARTITION_RE.fullmatch(month):
+                months.add(month)
+        if "_delta_" in fname and fname.endswith(".parquet"):
+            month = fname.split("_delta_", 1)[0]
+            if _MONTH_PARTITION_RE.fullmatch(month):
+                months.add(month)
     return sorted(months)
