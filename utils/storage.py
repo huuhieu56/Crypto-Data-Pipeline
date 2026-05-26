@@ -14,6 +14,7 @@ Usage::
 from __future__ import annotations
 
 import io
+from numbers import Real
 import re
 
 import pyarrow as pa
@@ -111,6 +112,35 @@ from datetime import datetime, timezone
 from config.config import PARTITION_MONTH_FORMAT
 
 
+def _ts_to_month_str(ts_value) -> str:
+    """Convert a scalar timestamp value to a UTC YYYY-MM partition."""
+    if pd.isna(ts_value):
+        raise ValueError("Cannot derive month from null timestamp")
+
+    if isinstance(ts_value, Real) and not isinstance(ts_value, bool):
+        return datetime.fromtimestamp(
+            float(ts_value) / 1000,
+            tz=timezone.utc,
+        ).strftime(PARTITION_MONTH_FORMAT)
+
+    ts = pd.Timestamp(ts_value)
+    if pd.isna(ts):
+        raise ValueError("Cannot derive month from null timestamp")
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts.strftime(PARTITION_MONTH_FORMAT)
+
+
+def _detect_month_column(df: pd.DataFrame) -> str | None:
+    """Return the timestamp column used to derive raw delta partitions."""
+    for col in ("open_time", "timestamp", "extracted_at"):
+        if col in df.columns:
+            return col
+    return None
+
+
 def _normalize_timestamp_unit(table: pa.Table, unit: str = "us") -> pa.Table:
     """Normalize timestamp columns to a consistent Arrow unit for safe concat."""
     fields = []
@@ -199,12 +229,27 @@ def write_delta(
     Each call creates a new file: {prefix}/{symbol}/{month}_delta_{ts_ms}.parquet
     Dedup is deferred to Transform when all deltas are concatenated.
     """
-    month_str = month_str or datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
     ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    key = f"{prefix}/{symbol}/{month_str}_delta_{ts_ms}.parquet"
-    table = pa.Table.from_pandas(new_df, preserve_index=False)
-    storage.upload_parquet(bucket, key, table)
-    logger.debug("Wrote delta %s/%s (%d rows)", bucket, key, len(new_df))
+
+    def _upload_delta(partition_month: str, df: pd.DataFrame) -> None:
+        key = f"{prefix}/{symbol}/{partition_month}_delta_{ts_ms}.parquet"
+        table = pa.Table.from_pandas(df, preserve_index=False)
+        storage.upload_parquet(bucket, key, table)
+        logger.debug("Wrote delta %s/%s (%d rows)", bucket, key, len(df))
+
+    if month_str is not None:
+        _upload_delta(month_str, new_df)
+        return
+
+    month_col = _detect_month_column(new_df)
+    if month_col is None:
+        current_month = datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
+        _upload_delta(current_month, new_df)
+        return
+
+    month_series = new_df[month_col].map(_ts_to_month_str)
+    for partition_month, group_df in new_df.groupby(month_series, sort=True):
+        _upload_delta(partition_month, group_df.reset_index(drop=True))
 
 
 def read_month_data(
