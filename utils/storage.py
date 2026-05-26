@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 from numbers import Real
 import re
+from uuid import uuid4
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -224,15 +225,15 @@ def write_delta(
     new_df: pd.DataFrame,
     month_str: str | None = None,
 ) -> None:
-    """Append new rows as a delta Parquet file. No read, no merge.
+    """Append new rows as delta Parquet file(s). No read, no merge.
 
-    Each call creates a new file: {prefix}/{symbol}/{month}_delta_{ts_ms}.parquet
+    Each write creates: {prefix}/{symbol}/{month}_delta_{ts_ms}_{uuid}.parquet
     Dedup is deferred to Transform when all deltas are concatenated.
     """
     ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     def _upload_delta(partition_month: str, df: pd.DataFrame) -> None:
-        key = f"{prefix}/{symbol}/{partition_month}_delta_{ts_ms}.parquet"
+        key = f"{prefix}/{symbol}/{partition_month}_delta_{ts_ms}_{uuid4().hex}.parquet"
         table = pa.Table.from_pandas(df, preserve_index=False)
         storage.upload_parquet(bucket, key, table)
         logger.debug("Wrote delta %s/%s (%d rows)", bucket, key, len(df))
@@ -293,10 +294,13 @@ def read_month_data(
     for k in sorted(keys):
         fname = k.rsplit("/", 1)[-1]
         if fname.startswith(delta_prefix) and fname.endswith(".parquet"):
-            # Extract timestamp from filename: {month}_delta_{ts_ms}.parquet
+            # Extract timestamp from old/new names:
+            # {month}_delta_{ts_ms}.parquet
+            # {month}_delta_{ts_ms}_{uuid}.parquet
             if since_ms is not None:
                 try:
-                    delta_ts = int(fname[len(delta_prefix):-len(".parquet")])
+                    rest = fname[len(delta_prefix):-len(".parquet")]
+                    delta_ts = int(rest.split("_", 1)[0])
                     if delta_ts <= since_ms:
                         continue
                 except ValueError:

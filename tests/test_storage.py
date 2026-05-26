@@ -196,3 +196,52 @@ def test_write_delta_raises_for_null_detected_timestamp(monkeypatch):
         storage_module.write_delta("crypto-raw", "klines", "BTCUSDT", df)
 
     mock_upload.assert_not_called()
+
+
+def test_read_month_data_filters_old_and_new_delta_filenames_by_since_ms(monkeypatch):
+    keys = [
+        "klines/BTCUSDT/2026-05_delta_1000.parquet",
+        "klines/BTCUSDT/2026-05_delta_2000_deadbeef.parquet",
+        "klines/BTCUSDT/2026-05_delta_bad_deadbeef.parquet",
+    ]
+
+    def mock_download(_bucket, key):
+        table = MagicMock()
+        table.to_pandas.return_value = pd.DataFrame({"key": [key]})
+        return table
+
+    monkeypatch.setattr(storage_module.storage, "download_parquet", mock_download)
+
+    df = storage_module.read_month_data(
+        "crypto-raw",
+        "klines",
+        "BTCUSDT",
+        "2026-05",
+        since_ms=1500,
+        keys=keys,
+    )
+
+    assert df["key"].tolist() == ["klines/BTCUSDT/2026-05_delta_2000_deadbeef.parquet"]
+
+
+def test_write_delta_uses_unique_keys_for_same_millisecond(monkeypatch):
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 5, 26, 10, 0, 0, 123000, tzinfo=tz)
+
+    uuids = [MagicMock(hex="a" * 32), MagicMock(hex="b" * 32)]
+    mock_upload = MagicMock()
+    monkeypatch.setattr(storage_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(storage_module, "uuid4", MagicMock(side_effect=uuids))
+    monkeypatch.setattr(storage_module.storage, "upload_parquet", mock_upload)
+
+    df = pd.DataFrame({"symbol": ["BTCUSDT"]})
+    storage_module.write_delta("crypto-raw", "ticker_raw", "BTCUSDT", df)
+    storage_module.write_delta("crypto-raw", "ticker_raw", "BTCUSDT", df)
+
+    keys = [call.args[1] for call in mock_upload.call_args_list]
+    assert len(keys) == 2
+    assert keys[0] != keys[1]
+    assert keys[0].endswith(f"{'a' * 32}.parquet")
+    assert keys[1].endswith(f"{'b' * 32}.parquet")
