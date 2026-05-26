@@ -107,7 +107,6 @@ storage = MinIOStorage()
 import pandas as pd
 from datetime import datetime, timezone
 from config.config import PARTITION_MONTH_FORMAT
-from utils.data_utils import normalize_epoch_ms_columns
 
 
 def _normalize_timestamp_unit(table: pa.Table, unit: str = "us") -> pa.Table:
@@ -129,14 +128,16 @@ def append_to_partition(
     new_df: pd.DataFrame,
     dedup_col: str,
     month_str: str | None = None,
+    existing_df: pd.DataFrame | None = None,
 ) -> None:
     """Append rows to a monthly partition on MinIO with dedup.
 
     Unified write pattern for all data types:
         download partition → concat → dedup(dedup_col) → upload.
 
-    File is capped at ~44,640 rows/month (1 row/min × 31 days)
-    and resets automatically when the month changes.
+    Args:
+        existing_df: If provided, skip download and merge with this DataFrame.
+                     Avoids redundant download when transform already loaded it.
     """
     month_str = month_str or datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
     key = f"{prefix}/{symbol}/{month_str}.parquet"
@@ -149,7 +150,19 @@ def append_to_partition(
     new_table = pa.Table.from_pandas(new_df, preserve_index=False)
     new_table = _normalize_timestamp_unit(new_table, unit="us")
 
-    if storage.object_exists(bucket, key):
+    if existing_df is not None:
+        # Use pre-loaded existing data (avoids redundant download)
+        for c in existing_df.columns:
+            if pd.api.types.is_datetime64_any_dtype(existing_df[c]):
+                existing_df[c] = existing_df[c].dt.as_unit("us")
+        combined = pd.concat([existing_df, new_df], ignore_index=True)
+        if dedup_col is not None:
+            combined = combined.drop_duplicates(subset=[dedup_col], keep="last")
+            combined = combined.sort_values(dedup_col).reset_index(drop=True)
+        table = pa.Table.from_pandas(combined, preserve_index=False)
+        table = _normalize_timestamp_unit(table, unit="us")
+        del combined
+    elif storage.object_exists(bucket, key):
         existing = storage.download_parquet(bucket, key)
         existing = _normalize_timestamp_unit(existing, unit="us")
 
@@ -172,62 +185,89 @@ def append_to_partition(
     storage.upload_parquet(bucket, key, table)
 
 
-def append_to_partition_csv(
+def write_delta(
     bucket: str,
     prefix: str,
     symbol: str,
     new_df: pd.DataFrame,
-    dedup_col: str,
+    month_str: str | None = None,
 ) -> None:
-    """Append rows to CSV monthly partitions with dedup, grouped by open_time month.
+    """Append new rows as a delta Parquet file. No read, no merge.
 
-    Unlike append_to_partition (which writes to a single month), this function
-    groups new_df rows by the YYYY-MM derived from open_time and appends each
-    group to the correct {prefix}/{SYMBOL}/{YYYY-MM}.csv file.
-
-    Handles microsecond timestamps from Data Vision by normalizing to ms.
-    Converts datetime columns to epoch ms before writing for consistent CSV format.
+    Each call creates a new file: {prefix}/{symbol}/{month}_delta_{ts_ms}.parquet
+    Dedup is deferred to Transform when all deltas are concatenated.
     """
-    import io
-
-    # Ensure open_time is numeric epoch ms
-    ts_series = normalize_epoch_ms_columns(new_df[[dedup_col]], columns=(dedup_col,))[dedup_col]
-
-    # Derive YYYY-MM from epoch ms
-    month_series = pd.to_datetime(ts_series, unit="ms", utc=True).dt.strftime(PARTITION_MONTH_FORMAT)
-
-    # Normalize timestamp columns to epoch ms for consistent CSV output
-    out_df = normalize_epoch_ms_columns(new_df, columns=("open_time", "close_time"))
-
-    for month_str, group_df in out_df.groupby(month_series):
-        key = f"{prefix}/{symbol}/{month_str}.csv"
-        group_df = group_df.copy()
-
-        if storage.object_exists(bucket, key):
-            response = storage.client.get_object(bucket, key)
-            try:
-                existing_df = pd.read_csv(io.BytesIO(response.read()))
-            finally:
-                response.close()
-                response.release_conn()
-
-            combined = pd.concat([existing_df, group_df], ignore_index=True)
-            combined = combined.drop_duplicates(subset=[dedup_col], keep="last")
-            combined = combined.sort_values(dedup_col).reset_index(drop=True)
-        else:
-            combined = group_df
-
-        csv_buf = io.BytesIO()
-        combined.to_csv(csv_buf, index=False)
-        csv_buf.seek(0)
-        storage.client.put_object(
-            bucket, key, csv_buf, csv_buf.getbuffer().nbytes,
-            content_type="text/csv",
-        )
-        logger.debug("Appended %d rows to %s/%s", len(group_df), bucket, key)
+    month_str = month_str or datetime.now(timezone.utc).strftime(PARTITION_MONTH_FORMAT)
+    ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    key = f"{prefix}/{symbol}/{month_str}_delta_{ts_ms}.parquet"
+    table = pa.Table.from_pandas(new_df, preserve_index=False)
+    storage.upload_parquet(bucket, key, table)
+    logger.debug("Wrote delta %s/%s (%d rows)", bucket, key, len(new_df))
 
 
-def discover_month_partitions(bucket: str, prefix: str, symbol: str, extension: str = ".parquet") -> list[str]:
+def read_month_data(
+    bucket: str,
+    prefix: str,
+    symbol: str,
+    month_str: str,
+    extension: str = ".parquet",
+    since_ms: int | None = None,
+    keys: list[str] | None = None,
+) -> pd.DataFrame:
+    """Read base monthly file + delta files, return concatenated DataFrame.
+
+    Args:
+        extension: Base file extension (".csv" for legacy klines, ".parquet" otherwise).
+        since_ms: If provided, skip base file (already processed) and only read
+                  delta files created after this epoch ms. Dramatically reduces I/O
+                  on incremental runs.
+        keys: Pre-fetched object keys (avoids redundant list_objects call).
+    """
+    frames: list[pd.DataFrame] = []
+
+    if since_ms is None:
+        # Full read: base file + all deltas (first run / backfill)
+        base_key = f"{prefix}/{symbol}/{month_str}{extension}"
+        if storage.object_exists(bucket, base_key):
+            if extension == ".csv":
+                response = storage.client.get_object(bucket, base_key)
+                try:
+                    frames.append(pd.read_csv(io.BytesIO(response.read())))
+                finally:
+                    response.close()
+                    response.release_conn()
+            else:
+                frames.append(storage.download_parquet(bucket, base_key).to_pandas())
+
+    # Delta files: prefix/symbol/month_delta_*.parquet
+    if keys is None:
+        keys = storage.list_objects(bucket, prefix=f"{prefix}/{symbol}/")
+    delta_prefix = f"{month_str}_delta_"
+    for k in sorted(keys):
+        fname = k.rsplit("/", 1)[-1]
+        if fname.startswith(delta_prefix) and fname.endswith(".parquet"):
+            # Extract timestamp from filename: {month}_delta_{ts_ms}.parquet
+            if since_ms is not None:
+                try:
+                    delta_ts = int(fname[len(delta_prefix):-len(".parquet")])
+                    if delta_ts <= since_ms:
+                        continue
+                except ValueError:
+                    continue
+            frames.append(storage.download_parquet(bucket, k).to_pandas())
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def discover_month_partitions(
+    bucket: str,
+    prefix: str,
+    symbol: str,
+    extension: str = ".parquet",
+    keys: list[str] | None = None,
+) -> list[str]:
     """Find all month partitions for a symbol in MinIO.
 
     Args:
@@ -235,11 +275,14 @@ def discover_month_partitions(bucket: str, prefix: str, symbol: str, extension: 
         prefix: Object prefix (e.g. "klines", "ticker_24h").
         symbol: Trading pair symbol.
         extension: File extension to filter (default ".parquet").
+        keys: Pre-fetched object keys (avoids redundant list_objects call).
     """
-    keys = storage.list_objects(bucket, prefix=f"{prefix}/{symbol}/")
+    if keys is None:
+        keys = storage.list_objects(bucket, prefix=f"{prefix}/{symbol}/")
     months = []
     for k in keys:
-        if k.endswith(extension):
-            month = k.rsplit("/", 1)[-1].replace(extension, "")
+        fname = k.rsplit("/", 1)[-1]
+        if fname.endswith(extension) and "_delta_" not in fname:
+            month = fname.replace(extension, "")
             months.append(month)
     return sorted(months)

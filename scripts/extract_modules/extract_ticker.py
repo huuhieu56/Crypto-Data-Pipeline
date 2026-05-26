@@ -13,7 +13,7 @@ from config.config import MINIO_CONFIG
 from utils.binance_utils import get_ticker_24h
 from utils.exceptions import ExtractError
 from utils.logger import get_logger
-from utils.storage import append_to_partition
+from utils.storage import write_delta
 
 logger = get_logger(__name__)
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
@@ -43,10 +43,7 @@ def extract_ticker_24h(symbols: list[str]) -> pd.DataFrame | None:
 
     # Write raw ticker per symbol
     for symbol, group_df in ticker_df.groupby("symbol"):
-        append_to_partition(
-            BUCKET_RAW, "ticker_raw", symbol,
-            group_df.reset_index(drop=True), dedup_col=None,
-        )
+        write_delta(BUCKET_RAW, "ticker_raw", symbol, group_df.reset_index(drop=True))
 
     logger.info("Saved ticker_raw (+%d), %d symbols", len(ticker_df), len(symbols_set))
     return ticker_df

@@ -26,30 +26,32 @@ def test_compute_macd_returns_three_series():
 
 
 def test_transform_klines_computes_indicators_and_writes_processed(monkeypatch):
-    """transform_klines reads raw CSV, computes RSI/MACD, writes Parquet to processed."""
-    import pandas as pd
-
-    raw_csv = (
-        "open_time,open,high,low,close,volume,close_time,quote_volume,trade_count,"
-        "taker_buy_base,taker_buy_quote\n"
-    )
+    """transform_klines reads raw via read_month_data, computes RSI/MACD, writes Parquet to processed."""
     base_ts = 1715731200000  # 2024-05-15 08:00:00 UTC
+    rows = []
     for i in range(20):
         ts = base_ts + i * 60000
-        raw_csv += f"{ts},100,105,99,{100 + i},10,{ts + 59999},{(100 + i) * 10},50,5,50\n"
+        rows.append({
+            "open_time": ts, "open": 100, "high": 105, "low": 99,
+            "close": 100 + i, "volume": 10, "close_time": ts + 59999,
+            "quote_volume": (100 + i) * 10, "trade_count": 50,
+            "taker_buy_base": 5, "taker_buy_quote": 50,
+        })
+    raw_df = pd.DataFrame(rows)
 
     mock_storage = MagicMock()
-    resp = MagicMock()
-    resp.read.return_value = raw_csv.encode()
-    mock_storage.client.get_object.return_value = resp
     monkeypatch.setattr(transform_module, "storage", mock_storage)
+    monkeypatch.setattr(
+        transform_module, "read_month_data",
+        lambda *a, **k: raw_df.copy(),
+    )
     monkeypatch.setattr(
         transform_module, "_load_context_from_processed",
         lambda *a, **k: None,
     )
     monkeypatch.setattr(
         transform_module, "discover_month_partitions",
-        lambda bucket, prefix, symbol, extension: ["2024-05"],
+        lambda bucket, prefix, symbol, extension=None: ["2024-05"],
     )
     mock_append = MagicMock()
     monkeypatch.setattr(transform_module, "append_to_partition", mock_append)
@@ -70,19 +72,18 @@ def test_transform_klines_computes_indicators_and_writes_processed(monkeypatch):
     assert len(df) == 20
 
 
-def test_transform_klines_skips_empty_csv(monkeypatch):
-    """transform_klines skips empty CSV partitions."""
-    import pandas as pd
-
+def test_transform_klines_skips_empty_data(monkeypatch):
+    """transform_klines skips when read_month_data returns empty DataFrame."""
     mock_storage = MagicMock()
-    resp = MagicMock()
-    resp.read.return_value = b"open_time,open,high,low,close,volume,close_time,quote_volume,trade_count,taker_buy_base,taker_buy_quote\n"
-    mock_storage.client.get_object.return_value = resp
     monkeypatch.setattr(transform_module, "storage", mock_storage)
+    monkeypatch.setattr(
+        transform_module, "read_month_data",
+        lambda *a, **k: pd.DataFrame(),
+    )
     monkeypatch.setattr(transform_module, "_load_context_from_processed", lambda *a, **k: None)
     monkeypatch.setattr(
         transform_module, "discover_month_partitions",
-        lambda bucket, prefix, symbol, extension: ["2024-05"],
+        lambda bucket, prefix, symbol, extension=None: ["2024-05"],
     )
     mock_append = MagicMock()
     monkeypatch.setattr(transform_module, "append_to_partition", mock_append)
@@ -111,11 +112,11 @@ def test_transform_ticker_renames_computes_spread(monkeypatch):
     })
 
     mock_storage = MagicMock()
-    mock_storage.object_exists.return_value = True
-    mock_table = MagicMock()
-    mock_table.to_pandas.return_value = ticker_raw.copy()
-    mock_storage.download_parquet.return_value = mock_table
     monkeypatch.setattr(transform_module, "storage", mock_storage)
+    monkeypatch.setattr(
+        transform_module, "read_month_data",
+        lambda *a, **k: ticker_raw.copy(),
+    )
     monkeypatch.setattr(
         transform_module, "discover_month_partitions",
         lambda bucket, prefix, symbol: ["2026-05"],
@@ -142,13 +143,13 @@ def test_transform_ticker_renames_computes_spread(monkeypatch):
 
 
 def test_transform_ticker_skips_empty_partitions(monkeypatch):
-    """transform_ticker skips empty partitions without error."""
+    """transform_ticker skips when read_month_data returns empty DataFrame."""
     mock_storage = MagicMock()
-    mock_storage.object_exists.return_value = True
-    empty_table = MagicMock()
-    empty_table.to_pandas.return_value = pd.DataFrame()
-    mock_storage.download_parquet.return_value = empty_table
     monkeypatch.setattr(transform_module, "storage", mock_storage)
+    monkeypatch.setattr(
+        transform_module, "read_month_data",
+        lambda *a, **k: pd.DataFrame(),
+    )
     monkeypatch.setattr(
         transform_module, "discover_month_partitions",
         lambda bucket, prefix, symbol: ["2026-05"],
@@ -184,11 +185,11 @@ def test_transform_order_book_computes_volumes_and_imbalance(monkeypatch):
     })
 
     mock_storage = MagicMock()
-    mock_storage.object_exists.return_value = True
-    mock_table = MagicMock()
-    mock_table.to_pandas.return_value = raw_df.copy()
-    mock_storage.download_parquet.return_value = mock_table
     monkeypatch.setattr(transform_module, "storage", mock_storage)
+    monkeypatch.setattr(
+        transform_module, "read_month_data",
+        lambda *a, **k: raw_df.copy(),
+    )
     monkeypatch.setattr(
         transform_module, "discover_month_partitions",
         lambda bucket, prefix, symbol: ["2026-05"],
@@ -221,11 +222,14 @@ def test_transform_order_book_computes_volumes_and_imbalance(monkeypatch):
     assert df["spread_pct"].iloc[0] == pytest.approx(0.0473, abs=0.01)
 
 
-def test_transform_order_book_skips_missing_partition(monkeypatch):
-    """transform_order_book skips when raw partition doesn't exist."""
+def test_transform_order_book_skips_empty_data(monkeypatch):
+    """transform_order_book skips when read_month_data returns empty DataFrame."""
     mock_storage = MagicMock()
-    mock_storage.object_exists.return_value = False
     monkeypatch.setattr(transform_module, "storage", mock_storage)
+    monkeypatch.setattr(
+        transform_module, "read_month_data",
+        lambda *a, **k: pd.DataFrame(),
+    )
     monkeypatch.setattr(
         transform_module, "discover_month_partitions",
         lambda bucket, prefix, symbol: ["2026-05"],

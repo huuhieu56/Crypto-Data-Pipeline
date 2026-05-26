@@ -30,7 +30,7 @@ from utils.exceptions import ExtractError
 from utils.http_utils import http_get_with_retry
 from utils.logger import get_logger
 from utils.news_filters import filter_articles
-from utils.storage import append_to_partition
+from utils.storage import write_delta
 
 logger = get_logger(__name__)
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
@@ -130,10 +130,7 @@ def extract_crypto_news(
 
             if records:
                 df = pd.DataFrame(records)
-                append_to_partition(
-                    BUCKET_RAW, "crypto_news", "gnews",
-                    df, dedup_col="article_id",
-                )
+                write_delta(BUCKET_RAW, "crypto_news", "gnews", df)
                 total_articles += len(records)
                 logger.info(
                     "Query '%s': %d articles extracted",

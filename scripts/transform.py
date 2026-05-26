@@ -19,7 +19,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
-import io
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -34,7 +33,7 @@ from config.symbols import SYMBOLS
 from utils.data_utils import validate_month_str
 from utils.exceptions import TransformError
 from utils.logger import get_logger
-from utils.storage import append_to_partition, discover_month_partitions, storage
+from utils.storage import append_to_partition, discover_month_partitions, read_month_data, storage
 
 logger = get_logger(__name__)
 
@@ -114,35 +113,66 @@ def transform_klines(
     ]
     total_processed = 0
     errors = 0
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    is_backfill = month_str is not None
 
     logger.info("[Transform] klines: %d symbols, Python ETL compute", len(symbols))
 
     for symbol in symbols:
+        # List objects once per symbol — reuse for discover + read
+        raw_keys = storage.list_objects(BUCKET_RAW, prefix=f"klines/{symbol}/")
+
         months = (
             [month_str]
             if month_str
-            else discover_month_partitions(BUCKET_RAW, "klines", symbol, extension=".csv")
+            else discover_month_partitions(BUCKET_RAW, "klines", symbol, extension=".csv", keys=raw_keys)
         )
         if not months:
             logger.debug("[Transform] klines %s: no partitions found", symbol)
             continue
 
         for month in months:
+            processed_key = f"klines/{symbol}/{month}.parquet"
+
+            # Skip historical months that already have a processed partition
+            processed_exists = (
+                not is_backfill
+                and storage.object_exists(BUCKET_PROCESSED, processed_key)
+            )
+            if not is_backfill and month != current_month and processed_exists:
+                continue
+
             try:
-                key = f"klines/{symbol}/{month}.csv"
-                response = storage.client.get_object(BUCKET_RAW, key)
-                try:
-                    raw_df = pd.read_csv(io.BytesIO(response.read()))
-                finally:
-                    response.close()
-                    response.release_conn()
+                # Incremental: if processed exists, only read new deltas
+                watermark = None
+                since_ms = None
+                context = None
+                processed_df = None
+                if processed_exists:
+                    processed_tbl = storage.download_parquet(BUCKET_PROCESSED, processed_key)
+                    processed_df = processed_tbl.to_pandas()
+                    del processed_tbl
+                    processed_df["open_time"] = pd.to_datetime(processed_df["open_time"])
+                    watermark = processed_df["open_time"].max()
+                    context = processed_df.tail(INDICATOR_CONTEXT_ROWS)
+                    since_ms = int(watermark.timestamp() * 1000)
+                else:
+                    context = _load_context_from_processed(symbol, month, INDICATOR_CONTEXT_ROWS)
+
+                raw_df = read_month_data(BUCKET_RAW, "klines", symbol, month,
+                                         extension=".csv", since_ms=since_ms, keys=raw_keys)
 
                 if raw_df.empty:
                     continue
 
                 raw_df["open_time"] = pd.to_datetime(raw_df["open_time"], unit="ms", utc=True)
                 raw_df["close_time"] = pd.to_datetime(raw_df["close_time"], unit="ms", utc=True)
-                context = _load_context_from_processed(symbol, month, INDICATOR_CONTEXT_ROWS)
+
+                if watermark is not None:
+                    raw_df = raw_df[raw_df["open_time"] > watermark].copy()
+                    if raw_df.empty:
+                        continue
+
                 combined = (
                     pd.concat([context, raw_df], ignore_index=True)
                     if context is not None and not context.empty
@@ -154,17 +184,21 @@ def transform_klines(
                 combined["macd"] = macd_line
                 combined["macd_signal"] = signal_line
 
-                month_rows = _filter_month_rows(combined, month)
-                if month_rows.empty:
+                if watermark is not None:
+                    out_df = combined[combined["open_time"] > watermark].copy()
+                else:
+                    out_df = _filter_month_rows(combined, month)
+
+                if out_df.empty:
                     continue
 
-                out_df = month_rows.copy()
                 out_df["symbol"] = symbol
                 out_df = out_df[target_cols]
 
                 append_to_partition(
                     BUCKET_PROCESSED, "klines", symbol,
                     out_df, dedup_col="open_time", month_str=month,
+                    existing_df=processed_df,
                 )
                 total_processed += 1
                 logger.info("[Transform] klines %s/%s: %d rows", symbol, month, len(out_df))
@@ -203,30 +237,50 @@ def transform_ticker(
     ]
     total_transformed = 0
     errors = 0
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    is_backfill = month_str is not None
 
     logger.info("[Transform] ticker_24h: %d symbols, ETL (MinIO → MinIO)", len(symbols))
 
     for symbol in symbols:
+        raw_keys = storage.list_objects(BUCKET_RAW, prefix=f"ticker_raw/{symbol}/")
+
         months = (
             [month_str]
             if month_str
-            else discover_month_partitions(BUCKET_RAW, "ticker_raw", symbol)
+            else discover_month_partitions(BUCKET_RAW, "ticker_raw", symbol, keys=raw_keys)
         )
         if not months:
             logger.debug("[Transform] ticker_24h %s: no raw partitions", symbol)
             continue
 
         for month in months:
+            processed_key = f"ticker_24h/{symbol}/{month}.parquet"
+
+            # Skip historical months that already have a processed partition
+            processed_exists = (
+                not is_backfill
+                and storage.object_exists(BUCKET_PROCESSED, processed_key)
+            )
+            if not is_backfill and month != current_month and processed_exists:
+                continue
+
             try:
-                ticker_key = f"ticker_raw/{symbol}/{month}.parquet"
-
-                if not storage.object_exists(BUCKET_RAW, ticker_key):
-                    logger.debug("[Transform] ticker_24h %s/%s: no raw ticker", symbol, month)
-                    continue
-
-                ticker_df = storage.download_parquet(BUCKET_RAW, ticker_key).to_pandas()
-                if ticker_df.empty:
-                    continue
+                # Incremental: if processed exists, compare row counts
+                processed_df = None
+                if processed_exists:
+                    processed_tbl = storage.download_parquet(BUCKET_PROCESSED, processed_key)
+                    processed_df = processed_tbl.to_pandas()
+                    processed_count = len(processed_df)
+                    del processed_tbl
+                    ticker_df = read_month_data(BUCKET_RAW, "ticker_raw", symbol, month, keys=raw_keys)
+                    if ticker_df.empty or len(ticker_df) <= processed_count:
+                        continue
+                    ticker_df = ticker_df.iloc[processed_count:].reset_index(drop=True)
+                else:
+                    ticker_df = read_month_data(BUCKET_RAW, "ticker_raw", symbol, month, keys=raw_keys)
+                    if ticker_df.empty:
+                        continue
 
                 # Keep only mapped columns + symbol
                 keep = ["symbol"] + [c for c in BINANCE_COLUMN_MAP if c in ticker_df.columns]
@@ -255,6 +309,7 @@ def transform_ticker(
                 append_to_partition(
                     BUCKET_PROCESSED, "ticker_24h", symbol,
                     ticker_df, dedup_col="snapshot_time", month_str=month,
+                    existing_df=processed_df,
                 )
                 total_transformed += len(ticker_df)
                 logger.info("[Transform] ticker_24h %s/%s: %d rows", symbol, month, len(ticker_df))
@@ -295,28 +350,56 @@ def transform_order_book(
     ]
     total_transformed = 0
     errors = 0
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    is_backfill = month_str is not None
 
     logger.info("[Transform] order_book_snapshot: %d symbols, ETL (MinIO → MinIO)", len(symbols))
 
     for symbol in symbols:
+        raw_keys = storage.list_objects(BUCKET_RAW, prefix=f"order_book/{symbol}/")
+
         months = (
             [month_str]
             if month_str
-            else discover_month_partitions(BUCKET_RAW, "order_book", symbol)
+            else discover_month_partitions(BUCKET_RAW, "order_book", symbol, keys=raw_keys)
         )
         if not months:
             logger.debug("[Transform] order_book_snapshot %s: no raw partitions", symbol)
             continue
 
         for month in months:
-            try:
-                key = f"order_book/{symbol}/{month}.parquet"
-                if not storage.object_exists(BUCKET_RAW, key):
-                    continue
+            processed_key = f"order_book_snapshot/{symbol}/{month}.parquet"
 
-                df = storage.download_parquet(BUCKET_RAW, key).to_pandas()
+            # Skip historical months that already have a processed partition
+            processed_exists = (
+                not is_backfill
+                and storage.object_exists(BUCKET_PROCESSED, processed_key)
+            )
+            if not is_backfill and month != current_month and processed_exists:
+                continue
+
+            try:
+                # Incremental: if processed exists, only read new deltas
+                since_ms = None
+                watermark = None
+                if processed_exists:
+                    processed_tbl = storage.download_parquet(BUCKET_PROCESSED, processed_key)
+                    processed_df = processed_tbl.to_pandas()
+                    del processed_tbl
+                    processed_df["timestamp"] = pd.to_datetime(processed_df["timestamp"])
+                    watermark = processed_df["timestamp"].max()
+                    since_ms = int(watermark.timestamp() * 1000)
+
+                df = read_month_data(BUCKET_RAW, "order_book", symbol, month,
+                                     since_ms=since_ms, keys=raw_keys)
                 if df.empty:
                     continue
+
+                if watermark is not None:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                    df = df[df["timestamp"] > watermark].copy()
+                    if df.empty:
+                        continue
 
                 # Compute liquidity pressure metrics row-by-row
                 results = []
@@ -407,6 +490,7 @@ def transform_order_book(
                 append_to_partition(
                     BUCKET_PROCESSED, "order_book_snapshot", symbol,
                     df, dedup_col="timestamp", month_str=month,
+                    existing_df=processed_df if processed_exists else None,
                 )
                 total_transformed += len(df)
                 logger.info("[Transform] order_book_snapshot %s/%s: %d rows", symbol, month, len(df))

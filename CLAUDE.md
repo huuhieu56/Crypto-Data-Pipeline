@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-End-to-end crypto data pipeline that collects 1-minute candle data from Binance for 50 coins, computes technical indicators (RSI-14, MACD) via Spark, loads into ClickHouse, and exposes an LLM-powered chat assistant via LangGraph/FastAPI. Grafana provides dashboards with an embedded chatbox.
+End-to-end crypto data pipeline that collects 1-minute candle data from Binance for 50 coins, computes technical indicators (RSI-14, MACD) via pandas, loads into ClickHouse, and exposes an LLM-powered chat assistant via LangGraph/FastAPI. Grafana provides dashboards with an embedded chatbox.
 
 ## Commands
 
@@ -32,7 +32,7 @@ The ETL runs automatically every minute via Airflow DAG `minutely_etl`. For manu
 ```bash
 # From project root with venv activated
 python scripts/extract.py    # Fetch from Binance API
-python scripts/transform.py  # Compute RSI/MACD via Spark
+python scripts/transform.py  # Compute RSI/MACD via pandas
 python scripts/load.py       # Load into ClickHouse
 ```
 
@@ -43,7 +43,7 @@ python scripts/load.py       # Load into ClickHouse
 Binance REST API ──extract──▶ Parquet files (data/raw/) ──transform──▶ Parquet (data/processed/) ──load──▶ ClickHouse
 ```
 - **Extract** (`scripts/extract.py` entrypoint, `scripts/extract_modules/` implementations): Fetches 1-min klines, 24h ticker, order book snapshots. First run auto-bootstraps 3 years of historical data from Binance Data Vision; subsequent runs are incremental (~50 rows/min).
-- **Transform** (`scripts/transform.py`): PySpark computes RSI(14) and MACD(12/26/9) on 1-min candles.
+- **Transform** (`scripts/transform.py`): Pandas computes RSI(14) and MACD(12/26/9) on 1-min candles. Reads raw CSV/Parquet from MinIO, loads warm-up context from previously processed partitions for indicator continuity, and writes transformed Parquet back to MinIO.
 - **Load** (`scripts/load.py`): Writes to ClickHouse via `clickhouse-connect`. Supports `--only klines|ticker|orderbook|symbols` flags for selective loading.
 
 ### Airflow DAG (`airflow/dags/minutely_etl.py`)

@@ -13,7 +13,7 @@ import pandas as pd
 from config.config import MINIO_CONFIG, ORDER_BOOK_LIMIT
 from utils.binance_utils import get_order_book, sleep_between_requests
 from utils.logger import get_logger
-from utils.storage import append_to_partition
+from utils.storage import write_delta
 
 logger = get_logger(__name__)
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
@@ -52,10 +52,7 @@ def extract_order_book_snapshot(symbols: list[str]) -> pd.DataFrame | None:
     df = pd.DataFrame(records)
 
     for symbol, group_df in df.groupby("symbol"):
-        append_to_partition(
-            BUCKET_RAW, "order_book", symbol,
-            group_df.reset_index(drop=True), dedup_col="timestamp",
-        )
+        write_delta(BUCKET_RAW, "order_book", symbol, group_df.reset_index(drop=True))
     logger.info("Saved order_book raw (+%d records, %d symbols)", len(df), df["symbol"].nunique())
     return df
 

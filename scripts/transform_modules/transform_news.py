@@ -22,7 +22,7 @@ from utils.data_utils import validate_month_str
 from utils.exceptions import TransformError
 from utils.logger import get_logger
 from utils.news_filters import filter_dataframe
-from utils.storage import append_to_partition, discover_month_partitions, storage
+from utils.storage import append_to_partition, discover_month_partitions, read_month_data, storage
 
 logger = get_logger(__name__)
 
@@ -71,10 +71,12 @@ def transform_news(
 
     logger.info("[Transform] crypto_news: start")
 
+    raw_keys = storage.list_objects(BUCKET_RAW, prefix="crypto_news/gnews/")
+
     months = (
         [month_str]
         if month_str
-        else discover_month_partitions(BUCKET_RAW, "crypto_news", "gnews")
+        else discover_month_partitions(BUCKET_RAW, "crypto_news", "gnews", keys=raw_keys)
     )
     if not months:
         logger.info("[Transform] crypto_news: no raw partitions found")
@@ -82,12 +84,7 @@ def transform_news(
 
     for month in months:
         try:
-            key = f"crypto_news/gnews/{month}.parquet"
-            if not storage.object_exists(BUCKET_RAW, key):
-                logger.debug("[Transform] crypto_news/%s: no raw data", month)
-                continue
-
-            df = storage.download_parquet(BUCKET_RAW, key).to_pandas()
+            df = read_month_data(BUCKET_RAW, "crypto_news", "gnews", month, keys=raw_keys)
             if df.empty:
                 continue
 

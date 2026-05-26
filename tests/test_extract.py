@@ -155,15 +155,15 @@ class TestDownloadDataVision:
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, sample_klines_df):
-        """Setup chung: mock download_klines_month & append_to_partition_csv."""
+        """Setup chung: mock download_klines_month & write_delta."""
         self.sample_df = sample_klines_df
         self.mock_download = MagicMock(return_value=sample_klines_df)
-        self.mock_append = MagicMock()
+        self.mock_write = MagicMock()
         monkeypatch.setattr(
             "scripts.extract_modules.extract_klines.download_klines_month", self.mock_download,
         )
         monkeypatch.setattr(
-            "scripts.extract_modules.extract_klines.append_to_partition_csv", self.mock_append,
+            "scripts.extract_modules.extract_klines.write_delta", self.mock_write,
         )
 
     # --- Happy Path ---
@@ -175,7 +175,7 @@ class TestDownloadDataVision:
         assert result is not None
         assert result > 0
         assert self.mock_download.call_count == 3
-        assert self.mock_append.call_count == 3
+        assert self.mock_write.call_count == 3
 
     def test_months_processed_in_chronological_order(self):
         """Months phải được download đầy đủ theo thứ tự thời gian."""
@@ -210,7 +210,7 @@ class TestDownloadDataVision:
 
         assert result is not None
         assert result > 0
-        assert self.mock_append.call_count == 2  # chỉ 2 tháng OK
+        assert self.mock_write.call_count == 2  # chỉ 2 tháng OK
 
     def test_one_month_fails_others_succeed(self):
         """Một tháng raise exception → các tháng khác vẫn được xử lý."""
@@ -224,7 +224,7 @@ class TestDownloadDataVision:
 
         assert result == len(self.sample_df) * 2
         assert self.mock_download.call_count == 3
-        assert self.mock_append.call_count == 2
+        assert self.mock_write.call_count == 2
 
     def test_empty_months_list_returns_none(self):
         """Danh sách months rỗng → trả về None."""
@@ -323,7 +323,7 @@ class TestExtractRecentKlines:
             "scripts.extract_modules.extract_klines.fetch_klines_paginated", self.mock_fetch,
         )
         monkeypatch.setattr(
-            "scripts.extract_modules.extract_klines.append_to_partition_csv", self.mock_write,
+            "scripts.extract_modules.extract_klines.write_delta", self.mock_write,
         )
         monkeypatch.setattr(
             "scripts.extract_modules.extract_klines.extract_bulk", self.mock_bulk,
@@ -432,16 +432,16 @@ class TestExtractTicker24h:
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
-        """Setup chung: mock get_ticker_24h, append_to_partition."""
+        """Setup chung: mock get_ticker_24h, write_delta."""
         self.tmp_path = tmp_path
 
         self.mock_ticker = MagicMock(return_value=SAMPLE_TICKER_24H_RAW)
-        self.mock_append = MagicMock()
+        self.mock_write = MagicMock()
         monkeypatch.setattr(
             "scripts.extract_modules.extract_ticker.get_ticker_24h", self.mock_ticker,
         )
         monkeypatch.setattr(
-            "scripts.extract_modules.extract_ticker.append_to_partition", self.mock_append,
+            "scripts.extract_modules.extract_ticker.write_delta", self.mock_write,
         )
 
     # --- Happy Path ---
@@ -492,12 +492,12 @@ class TestExtractTicker24h:
             extract_ticker_24h(TEST_SYMBOLS)
 
     def test_per_symbol_partition_writes(self):
-        """append_to_partition called once per symbol (ticker_raw only)."""
+        """write_delta called once per symbol (ticker_raw only)."""
         extract_ticker_24h(TEST_SYMBOLS)
 
         # 2 symbols × 1 data type (ticker_raw) = 2 calls
-        assert self.mock_append.call_count == 2
-        prefixes = {call.args[1] for call in self.mock_append.call_args_list}
+        assert self.mock_write.call_count == 2
+        prefixes = {call.args[1] for call in self.mock_write.call_args_list}
         assert prefixes == {"ticker_raw"}
 
 
@@ -509,14 +509,14 @@ class TestExtractOrderBookSnapshot:
 
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, tmp_path):
-        """Setup chung: mock get_order_book, sleep, append_to_partition."""
+        """Setup chung: mock get_order_book, sleep, write_delta."""
         self.tmp_path = tmp_path
         monkeypatch.setattr(
             "scripts.extract_modules.extract_order_book.sleep_between_requests", lambda: None,
         )
-        self.mock_append = MagicMock()
+        self.mock_write = MagicMock()
         monkeypatch.setattr(
-            "scripts.extract_modules.extract_order_book.append_to_partition", self.mock_append,
+            "scripts.extract_modules.extract_order_book.write_delta", self.mock_write,
         )
 
         self.mock_ob = MagicMock(return_value=SAMPLE_ORDER_BOOK)
@@ -606,12 +606,12 @@ class TestExtractOrderBookSnapshot:
         assert row["bids"][0] == ["42290.00", "1.5"]
 
     def test_per_symbol_partition_writes(self):
-        """append_to_partition is called once per symbol (per-symbol Parquet)."""
+        """write_delta is called once per symbol (per-symbol Parquet)."""
         extract_order_book_snapshot(["BTCUSDT"])
 
-        # 1 symbol → 1 call to append_to_partition
-        assert self.mock_append.call_count == 1
-        args = self.mock_append.call_args[0]
+        # 1 symbol → 1 call to write_delta
+        assert self.mock_write.call_count == 1
+        args = self.mock_write.call_args[0]
         assert args[1] == "order_book"  # prefix
         assert args[2] == "BTCUSDT"     # symbol
 

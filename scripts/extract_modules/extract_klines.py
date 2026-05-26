@@ -12,7 +12,7 @@ from utils.binance_utils import download_klines_month, fetch_klines_paginated
 from utils.data_utils import get_target_end, get_target_months
 from utils.db_utils import get_last_timestamps
 from utils.logger import get_logger
-from utils.storage import append_to_partition_csv
+from utils.storage import write_delta
 
 logger = get_logger(__name__)
 BUCKET_RAW = MINIO_CONFIG["bucket_raw"]
@@ -52,7 +52,7 @@ def download_data_vision(
         try:
             df = download_klines_month(symbol, y, m)
             if df is not None and not df.empty:
-                append_to_partition_csv(BUCKET_RAW, "klines", symbol, df, dedup_col="open_time")
+                write_delta(BUCKET_RAW, "klines", symbol, df)
                 logger.info("[%s] %d-%02d: %s rows", symbol, y, m, f"{len(df):,}")
                 total += len(df)
         except Exception as exc:
@@ -145,7 +145,7 @@ def extract_recent_klines(
                 continue
 
             # Append to CSV partitions grouped by open_time month
-            append_to_partition_csv(BUCKET_RAW, "klines", symbol, new_df, dedup_col="open_time")
+            write_delta(BUCKET_RAW, "klines", symbol, new_df)
             results[symbol] = new_df
             logger.info(
                 "[%d/%d] %s: +%d rows",
