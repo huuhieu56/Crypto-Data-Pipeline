@@ -64,7 +64,7 @@ class TestHealthEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert "provider" in data
+        assert "base_url" in data
 
 
 # ============================================================================

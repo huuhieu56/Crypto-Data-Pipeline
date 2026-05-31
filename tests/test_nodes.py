@@ -39,41 +39,11 @@ class TestGetLlm:
         import services.chat_api.nodes as nodes_mod
         nodes_mod._llm_instance = None
 
-    @patch("services.chat_api.nodes.LLM_BASE_URL", "")
-    @patch("services.chat_api.nodes.LLM_PROVIDER", "gemini")
+    @patch("services.chat_api.nodes.LLM_BASE_URL", "https://api.example.com/v1")
     @patch("services.chat_api.nodes.LLM_API_KEY", "test-key")
-    @patch("services.chat_api.nodes.LLM_MODEL", "gemini-2.5-flash-lite")
-    def test_gemini_provider(self):
-        with patch("services.chat_api.nodes.ChatGoogleGenerativeAI", create=True) as MockGemini:
-            # Phải patch import trong module
-            import services.chat_api.nodes as nodes_mod
-            mock_cls = MagicMock()
-            with patch.dict("sys.modules", {"langchain_google_genai": MagicMock(ChatGoogleGenerativeAI=mock_cls)}):
-                nodes_mod._llm_instance = None
-                from services.chat_api.nodes import _get_llm
-                nodes_mod._llm_instance = None
-                llm = _get_llm()
-                assert llm is not None
-
-    @patch("services.chat_api.nodes.LLM_BASE_URL", "https://api.deepseek.com/v1")
-    @patch("services.chat_api.nodes.LLM_API_KEY", "sk-test")
-    @patch("services.chat_api.nodes.LLM_MODEL", "deepseek-chat")
-    def test_deepseek_url_uses_chat_deepseek(self):
-        """Khi LLM_BASE_URL chứa deepseek → dùng ChatDeepSeek."""
-        import services.chat_api.nodes as nodes_mod
-        mock_cls = MagicMock()
-        with patch.dict("sys.modules", {"langchain_deepseek": MagicMock(ChatDeepSeek=mock_cls)}):
-            nodes_mod._llm_instance = None
-            from services.chat_api.nodes import _get_llm
-            llm = _get_llm()
-            assert llm is not None
-            mock_cls.assert_called_once()
-
-    @patch("services.chat_api.nodes.LLM_BASE_URL", "https://api.groq.com/openai/v1")
-    @patch("services.chat_api.nodes.LLM_API_KEY", "gsk-test")
-    @patch("services.chat_api.nodes.LLM_MODEL", "llama-3.3-70b")
-    def test_non_deepseek_url_uses_openai_compatible(self):
-        """Khi LLM_BASE_URL không phải deepseek → dùng ChatOpenAI(base_url=...)."""
+    @patch("services.chat_api.nodes.LLM_MODEL", "test-model")
+    def test_creates_chatopenai_with_base_url(self):
+        """ChatOpenAI được tạo với base_url từ config."""
         import services.chat_api.nodes as nodes_mod
         mock_cls = MagicMock()
         with patch.dict("sys.modules", {"langchain_openai": MagicMock(ChatOpenAI=mock_cls)}):
@@ -83,24 +53,9 @@ class TestGetLlm:
             assert llm is not None
             mock_cls.assert_called_once()
             call_kwargs = mock_cls.call_args[1]
-            assert call_kwargs["base_url"] == "https://api.groq.com/openai/v1"
+            assert call_kwargs["base_url"] == "https://api.example.com/v1"
+            assert call_kwargs["model"] == "test-model"
 
-    @patch("services.chat_api.nodes.LLM_BASE_URL", "")
-    @patch("services.chat_api.nodes.LLM_PROVIDER", "openai")
-    @patch("services.chat_api.nodes.LLM_API_KEY", "sk-test")
-    @patch("services.chat_api.nodes.LLM_MODEL", "gpt-4o")
-    def test_default_falls_back_to_openai(self):
-        """Không có base_url + provider != gemini → ChatOpenAI default."""
-        import services.chat_api.nodes as nodes_mod
-        mock_cls = MagicMock()
-        with patch.dict("sys.modules", {"langchain_openai": MagicMock(ChatOpenAI=mock_cls)}):
-            nodes_mod._llm_instance = None
-            from services.chat_api.nodes import _get_llm
-            llm = _get_llm()
-            assert llm is not None
-            mock_cls.assert_called_once()
-
-    @patch("services.chat_api.nodes.LLM_PROVIDER", "gemini")
     def test_singleton_returns_same_instance(self):
         """Gọi _get_llm 2 lần → trả về cùng một instance."""
         from services.chat_api.nodes import _get_llm

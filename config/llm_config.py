@@ -12,11 +12,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 
-# Provider: gemini | openai (ignored when LLM_BASE_URL is set)
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
+# LLM API (OpenAI-compatible endpoint)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash-lite")
+LLM_MODEL = os.getenv("LLM_MODEL", "mimo-v2.5-pro")
 
 # Generation params
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))

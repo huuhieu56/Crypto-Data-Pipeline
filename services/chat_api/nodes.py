@@ -19,10 +19,7 @@ from config.llm_config import (
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MODEL,
-    LLM_PROVIDER,
-    MAX_RETRIES,
     MAX_TOKENS,
-    RETRY_DELAY,
     TEMPERATURE,
     TIMEFRAME_CONFIG,
 )
@@ -42,70 +39,21 @@ _llm_instance = None
 
 
 def _get_llm():
-    """Create the LangChain ChatModel based on configured provider.
-
-    Priority: LLM_BASE_URL (any OpenAI-compatible) > LLM_PROVIDER.
-    """
+    """Create the LangChain ChatModel (OpenAI-compatible API)."""
     global _llm_instance
     if _llm_instance is not None:
         return _llm_instance
 
-    if LLM_BASE_URL and "deepseek" in LLM_BASE_URL.lower():
-        # DeepSeek reasoning models — patched to preserve reasoning_content
-        # in multi-turn tool-calling loops (upstream strips it)
-        from langchain_deepseek import ChatDeepSeek as _BaseChatDeepSeek
+    from langchain_openai import ChatOpenAI
 
-        class _PatchedDeepSeek(_BaseChatDeepSeek):
-            def _get_request_payload(self, input_, *, stop=None, **kwargs):
-                payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-                # Re-inject reasoning_content stripped by ChatOpenAI serializer
-                input_msgs = self._convert_input(input_).to_messages()
-                for lc_msg, api_msg in zip(input_msgs, payload.get("messages", [])):
-                    if api_msg.get("role") == "assistant":
-                        rc = getattr(lc_msg, "additional_kwargs", {}).get("reasoning_content")
-                        if rc:
-                            api_msg["reasoning_content"] = rc
-                return payload
-
-        _llm_instance = _PatchedDeepSeek(
-            model=LLM_MODEL,
-            api_key=LLM_API_KEY,
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-        )
-    elif LLM_BASE_URL:
-        # Any other OpenAI-compatible provider (Groq, Mistral, etc.)
-        from langchain_openai import ChatOpenAI
-
-        _llm_instance = ChatOpenAI(
-            model=LLM_MODEL,
-            api_key=LLM_API_KEY,
-            base_url=LLM_BASE_URL,
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-        )
-    elif LLM_PROVIDER == "gemini":
-        from langchain_google_genai import ChatGoogleGenerativeAI
-
-        _llm_instance = ChatGoogleGenerativeAI(
-            model=LLM_MODEL,
-            google_api_key=LLM_API_KEY,
-            temperature=TEMPERATURE,
-            max_output_tokens=MAX_TOKENS,
-        )
-    else:
-        # Default: OpenAI native (no base_url needed)
-        from langchain_openai import ChatOpenAI
-
-        _llm_instance = ChatOpenAI(
-            model=LLM_MODEL,
-            api_key=LLM_API_KEY,
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-        )
-
-    provider = LLM_BASE_URL or LLM_PROVIDER
-    logger.info("LLM initialized: provider=%s, model=%s", provider, LLM_MODEL)
+    _llm_instance = ChatOpenAI(
+        model=LLM_MODEL,
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+        temperature=TEMPERATURE,
+        max_tokens=MAX_TOKENS,
+    )
+    logger.info("LLM initialized: model=%s, base_url=%s", LLM_MODEL, LLM_BASE_URL)
     return _llm_instance
 
 
