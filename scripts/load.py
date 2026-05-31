@@ -16,6 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import argparse
+from datetime import datetime, timezone
+
 import pandas as pd
 
 from config.config import MINIO_CONFIG
@@ -82,6 +84,7 @@ def load_table(
         if symbols is None:
             symbols = SYMBOLS
         wm_map = get_table_watermarks(table_name, ts_col, symbols)
+        current_month = datetime.now(timezone.utc).strftime("%Y-%m")
         logger.info("[Load] %s: %d symbols, partitions=%s", table_name, len(symbols), month_str or "auto-discover")
 
         for symbol in symbols:
@@ -96,6 +99,14 @@ def load_table(
 
             for month in months:
                 key = f"{table_name}/{symbol}/{month}.parquet"
+
+                # Skip historical months that already have data in ClickHouse.
+                # Transform only modifies the current month's processed file;
+                # older months are static — no point re-downloading them.
+                if month != current_month and wm_map.get(symbol) is not None:
+                    total_skipped += 1
+                    continue
+
                 try:
                     table = storage.download_parquet(bucket, key)
                     df = table.to_pandas()
