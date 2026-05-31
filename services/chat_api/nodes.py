@@ -19,10 +19,7 @@ from config.llm_config import (
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MODEL,
-    LLM_PROVIDER,
-    MAX_RETRIES,
     MAX_TOKENS,
-    RETRY_DELAY,
     TEMPERATURE,
     TIMEFRAME_CONFIG,
 )
@@ -42,70 +39,21 @@ _llm_instance = None
 
 
 def _get_llm():
-    """Create the LangChain ChatModel based on configured provider.
-
-    Priority: LLM_BASE_URL (any OpenAI-compatible) > LLM_PROVIDER.
-    """
+    """Create the LangChain ChatModel (OpenAI-compatible API)."""
     global _llm_instance
     if _llm_instance is not None:
         return _llm_instance
 
-    if LLM_BASE_URL and "deepseek" in LLM_BASE_URL.lower():
-        # DeepSeek reasoning models — patched to preserve reasoning_content
-        # in multi-turn tool-calling loops (upstream strips it)
-        from langchain_deepseek import ChatDeepSeek as _BaseChatDeepSeek
+    from langchain_openai import ChatOpenAI
 
-        class _PatchedDeepSeek(_BaseChatDeepSeek):
-            def _get_request_payload(self, input_, *, stop=None, **kwargs):
-                payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-                # Re-inject reasoning_content stripped by ChatOpenAI serializer
-                input_msgs = self._convert_input(input_).to_messages()
-                for lc_msg, api_msg in zip(input_msgs, payload.get("messages", [])):
-                    if api_msg.get("role") == "assistant":
-                        rc = getattr(lc_msg, "additional_kwargs", {}).get("reasoning_content")
-                        if rc:
-                            api_msg["reasoning_content"] = rc
-                return payload
-
-        _llm_instance = _PatchedDeepSeek(
-            model=LLM_MODEL,
-            api_key=LLM_API_KEY,
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-        )
-    elif LLM_BASE_URL:
-        # Any other OpenAI-compatible provider (Groq, Mistral, etc.)
-        from langchain_openai import ChatOpenAI
-
-        _llm_instance = ChatOpenAI(
-            model=LLM_MODEL,
-            api_key=LLM_API_KEY,
-            base_url=LLM_BASE_URL,
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-        )
-    elif LLM_PROVIDER == "gemini":
-        from langchain_google_genai import ChatGoogleGenerativeAI
-
-        _llm_instance = ChatGoogleGenerativeAI(
-            model=LLM_MODEL,
-            google_api_key=LLM_API_KEY,
-            temperature=TEMPERATURE,
-            max_output_tokens=MAX_TOKENS,
-        )
-    else:
-        # Default: OpenAI native (no base_url needed)
-        from langchain_openai import ChatOpenAI
-
-        _llm_instance = ChatOpenAI(
-            model=LLM_MODEL,
-            api_key=LLM_API_KEY,
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-        )
-
-    provider = LLM_BASE_URL or LLM_PROVIDER
-    logger.info("LLM initialized: provider=%s, model=%s", provider, LLM_MODEL)
+    _llm_instance = ChatOpenAI(
+        model=LLM_MODEL,
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+        temperature=TEMPERATURE,
+        max_tokens=MAX_TOKENS,
+    )
+    logger.info("LLM initialized: model=%s, base_url=%s", LLM_MODEL, LLM_BASE_URL)
     return _llm_instance
 
 
@@ -199,8 +147,24 @@ def get_orderbook_pressure(symbol: str, timeframe: str) -> str:
     return mq.format_orderbook(data)
 
 
+@tool
+def get_crypto_news(symbol: str, timeframe: str) -> str:
+    """Fetch recent crypto news articles mentioning a symbol.
+
+    Use this to assess market sentiment, identify catalysts (partnerships,
+    regulations, hacks, listings), and evaluate news-driven risk.
+
+    Args:
+        symbol: Crypto trading pair (e.g. BTCUSDT, ETHUSDT).
+        timeframe: One of 'short', 'medium', 'long', 'very_long'.
+    """
+    config = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["medium"])
+    df = mq.fetch_crypto_news(symbol, config)
+    return mq.format_news(df)
+
+
 # List used by the graph to bind tools to the LLM.
-TOOLS = [get_price_candles, get_volume_and_liquidity, get_orderbook_pressure]
+TOOLS = [get_price_candles, get_volume_and_liquidity, get_orderbook_pressure, get_crypto_news]
 
 
 # ---------------------------------------------------------------------------
@@ -227,11 +191,25 @@ SYSTEM_PROMPT = (
     "AVAILABLE TOOLS:\n"
     "- get_price_candles: OHLCV with RSI/MACD and computed signals\n"
     "- get_volume_and_liquidity: Volume trends, spread, trade count\n"
-    "- get_orderbook_pressure: Buy/sell pressure and imbalance\n\n"
-    "For comprehensive analysis, combine price action, volume/liquidity, and "
-    "order book pressure to assess market conditions.\n\n"
+    "- get_orderbook_pressure: Buy/sell pressure and imbalance\n"
+    "- get_crypto_news: Recent news articles for sentiment and catalysts\n\n"
+    "ANALYSIS FRAMEWORK:\n"
+    "For comprehensive analysis, combine ALL four data sources:\n"
+    "1. Price Action: trend direction, support/resistance, RSI/MACD signals\n"
+    "2. Volume & Liquidity: volume trends, spread, trade activity\n"
+    "3. Order Book: buy/sell pressure, wall levels, OBI\n"
+    "4. News Sentiment: recent catalysts, regulatory news, partnerships\n\n"
+    "RISK ASSESSMENT:\n"
+    "When the user asks about buying, selling, or risk, ALWAYS check news\n"
+    "first for catalysts or red flags, then combine with technical data.\n"
+    "Risk factors to consider:\n"
+    "- Volatility: RSI extremes, large price swings\n"
+    "- News risk: negative news, regulatory actions, hacks\n"
+    "- Liquidity risk: wide spreads, thin order book\n"
+    "- Momentum divergence: price vs volume vs order book disagreement\n\n"
     "RULES:\n"
     "- ALWAYS call at least one tool before answering market questions.\n"
+    "- For buy/sell/risk questions, call get_crypto_news AND get_price_candles.\n"
     "- Base analysis ONLY on data returned by your tools.\n"
     "- Be concise but thorough; cite specific numbers and dates.\n"
     "- When uncertain, say so clearly.\n"

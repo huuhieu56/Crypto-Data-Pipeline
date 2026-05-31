@@ -12,11 +12,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 
-# Provider: gemini | openai (ignored when LLM_BASE_URL is set)
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
+# LLM API (OpenAI-compatible endpoint)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash-lite")
+LLM_MODEL = os.getenv("LLM_MODEL", "mimo-v2.5-pro")
 
 # Generation params
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
@@ -52,6 +51,7 @@ TIMEFRAME_CONFIG = {
         "ob_group_by": "toStartOfHour(timestamp)",
         "ob_lookback_days": 3,
         "ob_mode": "trend",
+        "news_lookback_days": 3,
         "llm_guidance": (
             "Focus on hourly momentum, volume spikes, order book "
             "imbalance shifts, and intraday support/resistance levels."
@@ -68,6 +68,7 @@ TIMEFRAME_CONFIG = {
         "ob_group_by": "toDate(timestamp)",
         "ob_lookback_days": 30,
         "ob_mode": "trend",
+        "news_lookback_days": 14,
         "llm_guidance": (
             "Focus on daily trend direction, volume trend changes, "
             "MACD crossovers, and key price levels."
@@ -82,6 +83,7 @@ TIMEFRAME_CONFIG = {
         "ticker_group_by": "toStartOfWeek(snapshot_time)",
         "ticker_lookback_days": 730,
         "ob_mode": "summary_30d",
+        "news_lookback_days": 30,
         "llm_guidance": (
             "Focus on macro trend, long-term support/resistance, "
             "volume cycles, and structural market shifts."
@@ -96,6 +98,7 @@ TIMEFRAME_CONFIG = {
         "ticker_group_by": "toStartOfMonth(snapshot_time)",
         "ticker_lookback_days": 1095,
         "ob_mode": "latest_only",
+        "news_lookback_days": 90,
         "llm_guidance": (
             "Focus on multi-year cycles, halvings, macro adoption "
             "trends, and historical price ranges."
