@@ -52,6 +52,7 @@ TIMEFRAME_CONFIG = {
         "ob_group_by": "toStartOfHour(timestamp)",
         "ob_lookback_days": 3,
         "ob_mode": "trend",
+        "news_lookback_days": 3,
         "llm_guidance": (
             "Focus on hourly momentum, volume spikes, order book "
             "imbalance shifts, and intraday support/resistance levels."
@@ -68,6 +69,7 @@ TIMEFRAME_CONFIG = {
         "ob_group_by": "toDate(timestamp)",
         "ob_lookback_days": 30,
         "ob_mode": "trend",
+        "news_lookback_days": 14,
         "llm_guidance": (
             "Focus on daily trend direction, volume trend changes, "
             "MACD crossovers, and key price levels."
@@ -82,6 +84,7 @@ TIMEFRAME_CONFIG = {
         "ticker_group_by": "toStartOfWeek(snapshot_time)",
         "ticker_lookback_days": 730,
         "ob_mode": "summary_30d",
+        "news_lookback_days": 30,
         "llm_guidance": (
             "Focus on macro trend, long-term support/resistance, "
             "volume cycles, and structural market shifts."
@@ -96,6 +99,7 @@ TIMEFRAME_CONFIG = {
         "ticker_group_by": "toStartOfMonth(snapshot_time)",
         "ticker_lookback_days": 1095,
         "ob_mode": "latest_only",
+        "news_lookback_days": 90,
         "llm_guidance": (
             "Focus on multi-year cycles, halvings, macro adoption "
             "trends, and historical price ranges."

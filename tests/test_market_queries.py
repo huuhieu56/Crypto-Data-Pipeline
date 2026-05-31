@@ -25,9 +25,11 @@ from services.chat_api.market_queries import (
     _imbalance_tag,
     _safe_float,
     format_candles,
+    format_news,
     format_orderbook,
     format_ticker_trend,
     fetch_candles,
+    fetch_crypto_news,
     fetch_ticker_trend,
     fetch_latest_ticker,
     fetch_orderbook_data,
@@ -420,3 +422,99 @@ class TestFetchOrderbookData:
         fetch_orderbook_data("BTCUSDT", config)
 
         mock_trend.assert_called_once()
+
+
+# ============================================================================
+# 4.11 fetch_crypto_news()
+# ============================================================================
+class TestFetchCryptoNews:
+    """Tests cho fetch_crypto_news — mock ch_query_df_params."""
+
+    @patch("services.chat_api.market_queries.ch_query_df_params")
+    def test_query_uses_config_lookback(self, mock_query):
+        mock_query.return_value = pd.DataFrame()
+        config = {"news_lookback_days": 14}
+
+        fetch_crypto_news("BTCUSDT", config)
+
+        sql = mock_query.call_args[0][0]
+        params = mock_query.call_args[0][1]
+        assert "INTERVAL 14 DAY" in sql
+        assert params["symbol"] == "BTCUSDT"
+
+    @patch("services.chat_api.market_queries.ch_query_df_params")
+    def test_query_default_lookback(self, mock_query):
+        mock_query.return_value = pd.DataFrame()
+        config = {}
+
+        fetch_crypto_news("ETHUSDT", config)
+
+        sql = mock_query.call_args[0][0]
+        assert "INTERVAL 14 DAY" in sql
+
+    @patch("services.chat_api.market_queries.ch_query_df_params")
+    def test_limit_param(self, mock_query):
+        mock_query.return_value = pd.DataFrame()
+        config = {"news_lookback_days": 7}
+
+        fetch_crypto_news("SOLUSDT", config, limit=5)
+
+        sql = mock_query.call_args[0][0]
+        assert "LIMIT 5" in sql
+
+
+# ============================================================================
+# 4.12 format_news()
+# ============================================================================
+class TestFormatNews:
+    """Tests cho format_news formatter."""
+
+    def test_happy_path(self):
+        df = pd.DataFrame({
+            "title": ["BTC hits new high", "Ethereum upgrade live"],
+            "description": ["Bitcoin surged past 100k", "Dencun upgrade activated"],
+            "source_name": ["CoinDesk", "TheBlock"],
+            "published_at": pd.to_datetime(["2026-05-30 10:00", "2026-05-29 15:30"]),
+            "url": ["https://example.com/1", "https://example.com/2"],
+            "symbols": [["BTCUSDT"], ["ETHUSDT"]],
+        })
+
+        result = format_news(df)
+
+        assert "BTC hits new high" in result
+        assert "Ethereum upgrade live" in result
+        assert "2026-05-30" in result
+        assert "CoinDesk" in result
+        assert "Bitcoin surged past 100k" in result
+
+    def test_empty_dataframe(self):
+        result = format_news(pd.DataFrame())
+        assert "No recent news" in result
+
+    def test_long_title_truncated(self):
+        df = pd.DataFrame({
+            "title": ["A" * 200],
+            "description": ["B" * 300],
+            "source_name": ["Source"],
+            "published_at": pd.to_datetime(["2026-05-30"]),
+            "url": ["https://example.com"],
+            "symbols": [["BTCUSDT"]],
+        })
+
+        result = format_news(df)
+        # Title truncated to 120 chars
+        assert "A" * 120 in result
+        assert "A" * 121 not in result
+
+    def test_missing_source_skipped(self):
+        df = pd.DataFrame({
+            "title": ["Test article"],
+            "description": ["Some description"],
+            "source_name": [""],
+            "published_at": pd.to_datetime(["2026-05-30"]),
+            "url": ["https://example.com"],
+            "symbols": [["BTCUSDT"]],
+        })
+
+        result = format_news(df)
+        assert "Source:" not in result

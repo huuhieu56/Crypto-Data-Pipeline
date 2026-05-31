@@ -443,11 +443,39 @@ class TestToolDefinitions:
         assert result == "orderbook formatted"
         mock_mq.fetch_orderbook_data.assert_called_once()
 
-    def test_tools_list_has_three_entries(self):
+    @patch("services.chat_api.nodes.mq")
+    def test_get_crypto_news_happy_path(self, mock_mq):
+        from services.chat_api.nodes import get_crypto_news
+
+        news_df = pd.DataFrame({
+            "title": ["BTC hits new high"],
+            "published_at": pd.to_datetime(["2026-05-30"]),
+        })
+        mock_mq.fetch_crypto_news.return_value = news_df
+        mock_mq.format_news.return_value = "news formatted"
+
+        result = get_crypto_news.invoke({"symbol": "BTCUSDT", "timeframe": "medium"})
+
+        assert result == "news formatted"
+        mock_mq.fetch_crypto_news.assert_called_once()
+
+    @patch("services.chat_api.nodes.mq")
+    def test_get_crypto_news_empty(self, mock_mq):
+        from services.chat_api.nodes import get_crypto_news
+
+        mock_mq.fetch_crypto_news.return_value = pd.DataFrame()
+        mock_mq.format_news.return_value = "(No recent news articles found for this symbol)"
+
+        result = get_crypto_news.invoke({"symbol": "BTCUSDT", "timeframe": "short"})
+
+        assert "No recent news" in result
+
+    def test_tools_list_has_four_entries(self):
         from services.chat_api.nodes import TOOLS
 
-        assert len(TOOLS) == 3
+        assert len(TOOLS) == 4
         names = [t.name for t in TOOLS]
         assert "get_price_candles" in names
         assert "get_volume_and_liquidity" in names
         assert "get_orderbook_pressure" in names
+        assert "get_crypto_news" in names

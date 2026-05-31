@@ -197,6 +197,44 @@ def _fetch_ob_trend(symbol: str, config: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Crypto News
+# ---------------------------------------------------------------------------
+
+def fetch_crypto_news(symbol: str, config: dict, limit: int = 15) -> pd.DataFrame:
+    """Fetch recent crypto news articles mentioning a symbol."""
+    lookback = int(config.get("news_lookback_days", 14))
+
+    q = (
+        "SELECT title, description, source_name, published_at, url, symbols "
+        "FROM crypto_news FINAL "
+        "WHERE has(symbols, {symbol:String}) "
+        f"AND published_at >= now() - INTERVAL {lookback} DAY "
+        "ORDER BY published_at DESC "
+        f"LIMIT {limit}"
+    )
+    return ch_query_df_params(q, {"symbol": symbol})
+
+
+def format_news(df: pd.DataFrame) -> str:
+    """Format news DataFrame for the system prompt."""
+    if df.empty:
+        return "(No recent news articles found for this symbol)"
+
+    lines: list[str] = []
+    for _, row in df.iterrows():
+        ts = pd.Timestamp(row["published_at"]).strftime("%Y-%m-%d %H:%M")
+        title = str(row.get("title", ""))[:120]
+        desc = str(row.get("description", ""))[:200]
+        source = str(row.get("source_name", ""))
+        lines.append(f"[{ts}] {title}")
+        if desc:
+            lines.append(f"  {desc}")
+        if source:
+            lines.append(f"  Source: {source}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Signal computation — pre-interpreted signals from raw data
 # ---------------------------------------------------------------------------
 

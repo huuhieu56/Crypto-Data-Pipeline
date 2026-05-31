@@ -199,8 +199,24 @@ def get_orderbook_pressure(symbol: str, timeframe: str) -> str:
     return mq.format_orderbook(data)
 
 
+@tool
+def get_crypto_news(symbol: str, timeframe: str) -> str:
+    """Fetch recent crypto news articles mentioning a symbol.
+
+    Use this to assess market sentiment, identify catalysts (partnerships,
+    regulations, hacks, listings), and evaluate news-driven risk.
+
+    Args:
+        symbol: Crypto trading pair (e.g. BTCUSDT, ETHUSDT).
+        timeframe: One of 'short', 'medium', 'long', 'very_long'.
+    """
+    config = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["medium"])
+    df = mq.fetch_crypto_news(symbol, config)
+    return mq.format_news(df)
+
+
 # List used by the graph to bind tools to the LLM.
-TOOLS = [get_price_candles, get_volume_and_liquidity, get_orderbook_pressure]
+TOOLS = [get_price_candles, get_volume_and_liquidity, get_orderbook_pressure, get_crypto_news]
 
 
 # ---------------------------------------------------------------------------
@@ -227,11 +243,25 @@ SYSTEM_PROMPT = (
     "AVAILABLE TOOLS:\n"
     "- get_price_candles: OHLCV with RSI/MACD and computed signals\n"
     "- get_volume_and_liquidity: Volume trends, spread, trade count\n"
-    "- get_orderbook_pressure: Buy/sell pressure and imbalance\n\n"
-    "For comprehensive analysis, combine price action, volume/liquidity, and "
-    "order book pressure to assess market conditions.\n\n"
+    "- get_orderbook_pressure: Buy/sell pressure and imbalance\n"
+    "- get_crypto_news: Recent news articles for sentiment and catalysts\n\n"
+    "ANALYSIS FRAMEWORK:\n"
+    "For comprehensive analysis, combine ALL four data sources:\n"
+    "1. Price Action: trend direction, support/resistance, RSI/MACD signals\n"
+    "2. Volume & Liquidity: volume trends, spread, trade activity\n"
+    "3. Order Book: buy/sell pressure, wall levels, OBI\n"
+    "4. News Sentiment: recent catalysts, regulatory news, partnerships\n\n"
+    "RISK ASSESSMENT:\n"
+    "When the user asks about buying, selling, or risk, ALWAYS check news\n"
+    "first for catalysts or red flags, then combine with technical data.\n"
+    "Risk factors to consider:\n"
+    "- Volatility: RSI extremes, large price swings\n"
+    "- News risk: negative news, regulatory actions, hacks\n"
+    "- Liquidity risk: wide spreads, thin order book\n"
+    "- Momentum divergence: price vs volume vs order book disagreement\n\n"
     "RULES:\n"
     "- ALWAYS call at least one tool before answering market questions.\n"
+    "- For buy/sell/risk questions, call get_crypto_news AND get_price_candles.\n"
     "- Base analysis ONLY on data returned by your tools.\n"
     "- Be concise but thorough; cite specific numbers and dates.\n"
     "- When uncertain, say so clearly.\n"
