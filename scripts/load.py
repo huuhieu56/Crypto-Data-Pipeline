@@ -79,15 +79,18 @@ def load_table(
     total_inserted = 0
     total_skipped = 0
     errors = 0
+    is_backfill = month_str is not None
 
     if per_symbol:
         if symbols is None:
             symbols = SYMBOLS
         wm_map = get_table_watermarks(table_name, ts_col, symbols)
-        current_month = datetime.now(timezone.utc).strftime("%Y-%m")
         logger.info("[Load] %s: %d symbols, partitions=%s", table_name, len(symbols), month_str or "auto-discover")
 
         for symbol in symbols:
+            wm = wm_map.get(symbol)
+            wm_month = datetime.fromtimestamp(wm / 1000, tz=timezone.utc).strftime("%Y-%m") if wm else None
+
             months = (
                 [month_str]
                 if month_str
@@ -100,10 +103,8 @@ def load_table(
             for month in months:
                 key = f"{table_name}/{symbol}/{month}.parquet"
 
-                # Skip historical months that already have data in ClickHouse.
-                # Transform only modifies the current month's processed file;
-                # older months are static — no point re-downloading them.
-                if month != current_month and wm_map.get(symbol) is not None:
+                # Skip completed months (before watermark month)
+                if not is_backfill and wm_month and month < wm_month:
                     total_skipped += 1
                     continue
 

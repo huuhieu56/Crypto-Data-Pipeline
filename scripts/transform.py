@@ -31,6 +31,7 @@ from config.config import (
 )
 from config.symbols import SYMBOLS
 from utils.data_utils import validate_month_str
+from utils.db_utils import get_table_watermarks
 from utils.exceptions import TransformError
 from utils.logger import get_logger
 from utils.storage import append_to_partition, discover_month_partitions, read_month_data, storage
@@ -93,6 +94,7 @@ def _filter_month_rows(df: pd.DataFrame, month_str: str) -> pd.DataFrame:
 def transform_klines(
     symbols: list[str] | None = None,
     month_str: str | None = None,
+    wm_months: dict[str, str] | None = None,
 ) -> None:
     """ETL: compute RSI(14) + MACD(12,26,9) on raw klines CSV → Parquet.
 
@@ -113,12 +115,13 @@ def transform_klines(
     ]
     total_processed = 0
     errors = 0
-    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     is_backfill = month_str is not None
 
     logger.info("[Transform] klines: %d symbols, Python ETL compute", len(symbols))
 
     for symbol in symbols:
+        wm_month = wm_months.get(symbol) if wm_months else None
+
         # List objects once per symbol — reuse for discover + read
         raw_keys = storage.list_objects(BUCKET_RAW, prefix=f"klines/{symbol}/")
 
@@ -134,13 +137,14 @@ def transform_klines(
         for month in months:
             processed_key = f"klines/{symbol}/{month}.parquet"
 
-            # Skip historical months that already have a processed partition
+            # Skip completed months (before watermark month)
+            if not is_backfill and wm_month and month < wm_month:
+                continue
+
             processed_exists = (
                 not is_backfill
                 and storage.object_exists(BUCKET_PROCESSED, processed_key)
             )
-            if not is_backfill and month != current_month and processed_exists:
-                continue
 
             try:
                 # Incremental: if processed exists, only read new deltas
@@ -217,6 +221,7 @@ def transform_klines(
 def transform_ticker(
     symbols: list[str] | None = None,
     month_str: str | None = None,
+    wm_months: dict[str, str] | None = None,
 ) -> None:
     """ETL: rename columns, compute spread_pct → Parquet.
 
@@ -237,12 +242,13 @@ def transform_ticker(
     ]
     total_transformed = 0
     errors = 0
-    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     is_backfill = month_str is not None
 
     logger.info("[Transform] ticker_24h: %d symbols, ETL (MinIO → MinIO)", len(symbols))
 
     for symbol in symbols:
+        wm_month = wm_months.get(symbol) if wm_months else None
+
         raw_keys = storage.list_objects(BUCKET_RAW, prefix=f"ticker_raw/{symbol}/")
 
         months = (
@@ -257,13 +263,14 @@ def transform_ticker(
         for month in months:
             processed_key = f"ticker_24h/{symbol}/{month}.parquet"
 
-            # Skip historical months that already have a processed partition
+            # Skip completed months (before watermark month)
+            if not is_backfill and wm_month and month < wm_month:
+                continue
+
             processed_exists = (
                 not is_backfill
                 and storage.object_exists(BUCKET_PROCESSED, processed_key)
             )
-            if not is_backfill and month != current_month and processed_exists:
-                continue
 
             try:
                 # Incremental: if processed exists, compare row counts
@@ -329,6 +336,7 @@ def transform_ticker(
 def transform_order_book(
     symbols: list[str] | None = None,
     month_str: str | None = None,
+    wm_months: dict[str, str] | None = None,
 ) -> None:
     """ETL: compute OBI, spread, walls from raw bids/asks → Parquet.
 
@@ -350,12 +358,13 @@ def transform_order_book(
     ]
     total_transformed = 0
     errors = 0
-    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
     is_backfill = month_str is not None
 
     logger.info("[Transform] order_book_snapshot: %d symbols, ETL (MinIO → MinIO)", len(symbols))
 
     for symbol in symbols:
+        wm_month = wm_months.get(symbol) if wm_months else None
+
         raw_keys = storage.list_objects(BUCKET_RAW, prefix=f"order_book/{symbol}/")
 
         months = (
@@ -370,13 +379,14 @@ def transform_order_book(
         for month in months:
             processed_key = f"order_book_snapshot/{symbol}/{month}.parquet"
 
-            # Skip historical months that already have a processed partition
+            # Skip completed months (before watermark month)
+            if not is_backfill and wm_month and month < wm_month:
+                continue
+
             processed_exists = (
                 not is_backfill
                 and storage.object_exists(BUCKET_PROCESSED, processed_key)
             )
-            if not is_backfill and month != current_month and processed_exists:
-                continue
 
             try:
                 # Incremental: if processed exists, only read new deltas
@@ -527,26 +537,39 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _build_parser().parse_args()
     only = set(args.only) if args.only else None
+    symbols = args.symbols or None
+
+    # Compute watermark months once — all tables share same ETL schedule
+    wm_months: dict[str, str] | None = None
+    if args.month is None:
+        wm_map = get_table_watermarks("klines", "open_time", symbols or SYMBOLS)
+        wm_months = {
+            s: datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m")
+            for s, ts in wm_map.items()
+        }
 
     if only is None or "klines" in only:
         transform_klines(
-            symbols=args.symbols or None,
+            symbols=symbols,
             month_str=args.month,
+            wm_months=wm_months,
         )
     if only is None or "ticker" in only:
         transform_ticker(
-            symbols=args.symbols or None,
+            symbols=symbols,
             month_str=args.month,
+            wm_months=wm_months,
         )
     if only is None or "orderbook" in only:
         transform_order_book(
-            symbols=args.symbols or None,
+            symbols=symbols,
             month_str=args.month,
+            wm_months=wm_months,
         )
     if only is None or "news" in only:
         from scripts.transform_modules.transform_news import transform_news
         transform_news(
-            symbols=args.symbols or None,
+            symbols=symbols,
             month_str=args.month,
         )
 
