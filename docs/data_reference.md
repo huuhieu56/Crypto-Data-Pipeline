@@ -15,30 +15,30 @@ Base URL: `https://api.binance.com/api/v3`
 
 **Tham số:**
 
-| Tham số   | Giá trị                | Mô tả                        |
-|-----------|------------------------|-------------------------------|
-| symbol    | `BTCUSDT`, `ETHUSDT`…  | Cặp giao dịch                |
-| interval  | `1m`                   | Khung thời gian (1 phút)      |
-| limit     | `1–1000`               | Số nến trả về (mặc định 500)  |
-| startTime | epoch ms               | Bắt đầu từ thời điểm         |
-| endTime   | epoch ms               | Kết thúc tại thời điểm       |
+| Tham số   | Giá trị               | Mô tả                        |
+| --------- | --------------------- | ---------------------------- |
+| symbol    | `BTCUSDT`, `ETHUSDT`… | Cặp giao dịch                |
+| interval  | `1m`                  | Khung thời gian (1 phút)     |
+| limit     | `1–1000`              | Số nến trả về (mặc định 500) |
+| startTime | epoch ms              | Bắt đầu từ thời điểm         |
+| endTime   | epoch ms              | Kết thúc tại thời điểm       |
 
 **Response:** Mảng các mảng con (array of arrays), mỗi phần tử là 1 nến:
 
 ```json
 [
-  1779016320000,          // [0]  open_time      — epoch ms, thời điểm mở nến
-  "78429.62000000",       // [1]  open           — giá mở
-  "78429.64000000",       // [2]  high           — giá cao nhất
-  "78429.62000000",       // [3]  low            — giá thấp nhất
-  "78429.63000000",       // [4]  close          — giá đóng
-  "1.38579000",           // [5]  volume         — khối lượng (base asset)
-  1779016379999,          // [6]  close_time      — epoch ms, thời điểm đóng nến
-  "108687.00334580",      // [7]  quote_volume   — khối lượng (quote asset, USDT)
-  213,                    // [8]  trade_count    — số giao dịch trong nến
-  "0.64271000",           // [9]  taker_buy_base — khối lượng mua (base)
-  "50407.51389790",       // [10] taker_buy_quote— khối lượng mua (quote)
-  "0"                     // [11] ignore         — không sử dụng
+  1779016320000, // [0]  open_time      — epoch ms, thời điểm mở nến
+  "78429.62000000", // [1]  open           — giá mở
+  "78429.64000000", // [2]  high           — giá cao nhất
+  "78429.62000000", // [3]  low            — giá thấp nhất
+  "78429.63000000", // [4]  close          — giá đóng
+  "1.38579000", // [5]  volume         — khối lượng (base asset)
+  1779016379999, // [6]  close_time      — epoch ms, thời điểm đóng nến
+  "108687.00334580", // [7]  quote_volume   — khối lượng (quote asset, USDT)
+  213, // [8]  trade_count    — số giao dịch trong nến
+  "0.64271000", // [9]  taker_buy_base — khối lượng mua (base)
+  "50407.51389790", // [10] taker_buy_quote— khối lượng mua (quote)
+  "0" // [11] ignore         — không sử dụng
 ]
 ```
 
@@ -62,6 +62,7 @@ API index → CSV column       → ClickHouse column → Kiểu (DB)    → Ghi 
 ```
 
 **Lưu ý:**
+
 - API trả positional array, không có key. Tên cột do pipeline tự đặt theo config
   (`_KLINES_RAW_COLUMNS` trong `config/config.py`).
 - **Raw CSV giữ nguyên epoch ms** — không convert, không rename. Y nguyên như API trả về.
@@ -77,35 +78,35 @@ API index → CSV column       → ClickHouse column → Kiểu (DB)    → Ghi 
 
 **Tham số:**
 
-| Tham số | Giá trị       | Mô tả           |
-|---------|---------------|------------------|
-| symbol  | `BTCUSDT`…    | Cặp giao dịch    |
+| Tham số | Giá trị    | Mô tả         |
+| ------- | ---------- | ------------- |
+| symbol  | `BTCUSDT`… | Cặp giao dịch |
 
 **Response:** Object JSON (không phải array):
 
 ```json
 {
   "symbol": "BTCUSDT",
-  "priceChange": "273.56000000",       // Thay đổi giá 24h
-  "priceChangePercent": "0.350",       // % thay đổi giá
-  "weightedAvgPrice": "78123.326...",  // Giá trung bình (không dùng)
-  "prevClosePrice": "78084.01000000",  // Giá đóng trước đó (không dùng)
-  "lastPrice": "78357.57000000",       // Giá gần nhất (không dùng)
-  "lastQty": "0.00227000",             // Khối lượng gần nhất (không dùng)
-  "bidPrice": "78357.57000000",        // Giá mua tốt nhất
-  "bidQty": "2.76427000",              // Khối lượng mua (không dùng)
-  "askPrice": "78357.58000000",        // Giá bán tốt nhất
-  "askQty": "1.59759000",              // Khối lượng bán (không dùng)
-  "openPrice": "78084.01000000",       // Giá mở 24h (không dùng)
-  "highPrice": "78599.99000000",       // Giá cao nhất 24h
-  "lowPrice": "77721.19000000",        // Giá thấp nhất 24h
-  "volume": "8172.45405000",           // Khối lượng 24h (base)
-  "quoteVolume": "638459299.780...",   // Khối lượng 24h (USDT)
-  "openTime": 1778930089001,           // Thời điểm bắt đầu (không dùng)
-  "closeTime": 1779016489001,          // Thời điểm kết thúc (không dùng)
-  "firstId": 6300550515,               // Trade ID đầu tiên (không dùng)
-  "lastId": 6301744258,                // Trade ID cuối cùng (không dùng)
-  "count": 1193744                     // Tổng số giao dịch 24h
+  "priceChange": "273.56000000", // Thay đổi giá 24h
+  "priceChangePercent": "0.350", // % thay đổi giá
+  "weightedAvgPrice": "78123.326...", // Giá trung bình (không dùng)
+  "prevClosePrice": "78084.01000000", // Giá đóng trước đó (không dùng)
+  "lastPrice": "78357.57000000", // Giá gần nhất (không dùng)
+  "lastQty": "0.00227000", // Khối lượng gần nhất (không dùng)
+  "bidPrice": "78357.57000000", // Giá mua tốt nhất
+  "bidQty": "2.76427000", // Khối lượng mua (không dùng)
+  "askPrice": "78357.58000000", // Giá bán tốt nhất
+  "askQty": "1.59759000", // Khối lượng bán (không dùng)
+  "openPrice": "78084.01000000", // Giá mở 24h (không dùng)
+  "highPrice": "78599.99000000", // Giá cao nhất 24h
+  "lowPrice": "77721.19000000", // Giá thấp nhất 24h
+  "volume": "8172.45405000", // Khối lượng 24h (base)
+  "quoteVolume": "638459299.780...", // Khối lượng 24h (USDT)
+  "openTime": 1778930089001, // Thời điểm bắt đầu (không dùng)
+  "closeTime": 1779016489001, // Thời điểm kết thúc (không dùng)
+  "firstId": 6300550515, // Trade ID đầu tiên (không dùng)
+  "lastId": 6301744258, // Trade ID cuối cùng (không dùng)
+  "count": 1193744 // Tổng số giao dịch 24h
 }
 ```
 
@@ -129,6 +130,7 @@ askPrice           → ask_price          → Float64
 ```
 
 **Lưu ý:**
+
 - API trả camelCase keys. Transform rename sang snake_case qua `BINANCE_COLUMN_MAP`.
 - `snapshot_time` không có trong API — được gán = thời điểm pipeline chạy.
 - `spread_pct` được tính: `(ask_price - bid_price) / ask_price * 100`.
@@ -141,10 +143,10 @@ askPrice           → ask_price          → Float64
 
 **Tham số:**
 
-| Tham số | Giá trị    | Mô tả                              |
-|---------|------------|-------------------------------------|
-| symbol  | `BTCUSDT`  | Cặp giao dịch                       |
-| limit   | `5–100`    | Số mức giá mỗi bên (mặc định 100)   |
+| Tham số | Giá trị   | Mô tả                             |
+| ------- | --------- | --------------------------------- |
+| symbol  | `BTCUSDT` | Cặp giao dịch                     |
+| limit   | `5–100`   | Số mức giá mỗi bên (mặc định 100) |
 
 **Response:**
 
@@ -166,31 +168,32 @@ askPrice           → ask_price          → Float64
 
 **Transform (tính toán từ bids/asks):**
 
-```
-Trường             → DB column          → Kiểu      → Cách tính
-────────────────────────────────────────────────────────────────────
-symbol             → symbol             → String
-(generated)        → timestamp          → DateTime   = thời điểm pipeline chạy
-(sum of bid vol)   → total_bid_volume   → Float64    = Σ bid[i][1]
-(sum of ask vol)   → total_ask_volume   → Float64    = Σ ask[i][1]
-(computed)         → imbalance          → Float64    = bid_vol / (bid_vol + ask_vol)
-```
+- `timestamp`: thời điểm pipeline chạy (UTC)
+- `best_bid`/`best_ask`: giá tốt nhất ở mỗi bên
+- `mid_price`: (best_bid + best_ask) / 2
+- `spread_pct`: (best_ask - best_bid) / mid_price \* 100
+- `depth_bid_volume`/`depth_ask_volume`: tổng volume trong ±0.5% quanh mid price
+- `obi`: (depth_bid_volume - depth_ask_volume) / (depth_bid_volume + depth_ask_volume)
+- `bid_ask_ratio`: depth_bid_volume / depth_ask_volume
+- `nearest_bid_wall_*`/`nearest_ask_wall_*`: level có volume >= 3× trung bình trong depth range
 
 **Lưu ý:**
-- `bids` và `asks` là mảng `[price, volume]`. Chỉ `volume` được dùng để tính.
-- `imbalance` gần 1 = nhiều mua, gần 0 = nhiều bán, 0.5 = cân bằng.
-- Raw bids/asks được lưu vào MinIO nhưng không lưu vào ClickHouse.
+
+- `bids` và `asks` là mảng `[price, volume]`, lưu raw ở MinIO.
+- Raw bids/asks không lưu vào ClickHouse; chỉ lưu các metrics đã tính.
 
 ---
 
 ## 2. Data Vision (Historical Bootstrap)
 
 **URL pattern:**
+
 ```
 https://data.binance.vision/data/spot/monthly/klines/{SYMBOL}/1m/{SYMBOL}-1m-{YYYY}-{MM}.zip
 ```
 
 **Ví dụ:**
+
 ```
 https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01.zip
 ```
@@ -204,10 +207,10 @@ Dùng cho bootstrap lần đầu (3 năm lịch sử). Sau đó pipeline dùng R
 
 ### 3.1 Buckets
 
-| Bucket             | Mục đích                          |
-|--------------------|-----------------------------------|
-| `crypto-raw`       | Dữ liệu thô từ extract           |
-| `crypto-processed` | Dữ liệu đã transform             |
+| Bucket             | Mục đích               |
+| ------------------ | ---------------------- |
+| `crypto-raw`       | Dữ liệu thô từ extract |
+| `crypto-processed` | Dữ liệu đã transform   |
 
 ### 3.2 Cấu trúc key
 
@@ -226,6 +229,7 @@ crypto-processed/
 ### 3.3 Cột dữ liệu trong MinIO
 
 **Raw klines CSV** (`crypto-raw/klines/{S}/{M}.csv`):
+
 ```
 open_time (epoch ms), open, high, low, close, volume,
 close_time (epoch ms), quote_volume, trade_count,
@@ -233,6 +237,7 @@ taker_buy_base, taker_buy_quote
 ```
 
 **Processed klines Parquet** (`crypto-processed/klines/{S}/{M}.parquet`):
+
 ```
 symbol, open_time (DateTime), open, high, low, close, volume,
 close_time (DateTime), quote_volume, trade_count,
@@ -240,25 +245,32 @@ taker_buy_base, taker_buy_quote, rsi_14, macd, macd_signal
 ```
 
 **Raw ticker Parquet** (`crypto-raw/ticker_raw/{S}/{M}.parquet`):
+
 ```
 symbol, priceChange, priceChangePercent, highPrice, lowPrice, volume,
 quoteVolume, count, bidPrice, askPrice
 ```
 
 **Processed ticker Parquet** (`crypto-processed/ticker_24h/{S}/{M}.parquet`):
+
 ```
 symbol, snapshot_time, price_change, price_change_pct, high_24h, low_24h,
 volume_24h, quote_volume_24h, trade_count, bid_price, ask_price, spread_pct
 ```
 
 **Raw order book Parquet** (`crypto-raw/order_book/{S}/{M}.parquet`):
+
 ```
 symbol, timestamp, bids, asks
 ```
 
 **Processed order book Parquet** (`crypto-processed/order_book_snapshot/{S}/{M}.parquet`):
+
 ```
-symbol, timestamp, total_bid_volume, total_ask_volume, imbalance
+symbol, timestamp, best_bid, best_ask, mid_price, spread_pct,
+depth_bid_volume, depth_ask_volume, obi, bid_ask_ratio,
+nearest_bid_wall_price, nearest_bid_wall_volume,
+nearest_ask_wall_price, nearest_ask_wall_volume
 ```
 
 ---
@@ -305,6 +317,7 @@ ORDER BY (symbol, open_time);
 ```
 
 **Chỉ báo kỹ thuật:**
+
 - `rsi_14`: RSI(14) — SMA-based, EWM(span=14) trên gains/losses
 - `macd`: MACD line = EMA(12) − EMA(26)
 - `macd_signal`: Signal line = EMA(9) của MACD line
@@ -334,11 +347,20 @@ ORDER BY (symbol, snapshot_time);
 
 ```sql
 CREATE TABLE crypto_db.order_book_snapshot (
-    symbol            String,     -- "BTCUSDT"
-    timestamp         DateTime,   -- thời điểm pipeline chạy
-    total_bid_volume  Float64,    -- tổng khối lượng mua (top N levels)
-    total_ask_volume  Float64,    -- tổng khối lượng bán (top N levels)
-    imbalance         Float64     -- bid_vol / (bid_vol + ask_vol)
+  symbol            String,     -- "BTCUSDT"
+  timestamp         DateTime,   -- thời điểm pipeline chạy
+  best_bid          Float64,    -- giá bid tốt nhất
+  best_ask          Float64,    -- giá ask tốt nhất
+  mid_price         Float64,    -- (best_bid + best_ask) / 2
+  spread_pct        Float64,    -- (best_ask - best_bid) / mid_price * 100
+  depth_bid_volume  Float64,    -- tổng bid volume trong ±0.5% mid price
+  depth_ask_volume  Float64,    -- tổng ask volume trong ±0.5% mid price
+  obi               Float64,    -- (bid - ask) / (bid + ask)
+  bid_ask_ratio     Float64,    -- bid / ask
+  nearest_bid_wall_price Nullable(Float64),
+  nearest_bid_wall_volume Nullable(Float64),
+  nearest_ask_wall_price Nullable(Float64),
+  nearest_ask_wall_volume Nullable(Float64)
 ) ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (symbol, timestamp);
@@ -383,7 +405,7 @@ ORDER BY (session_id, timestamp);
 │                                                                     │
 │  klines:      CSV + context → RSI(14) + MACD(12,26,9) → Parquet    │
 │  ticker_raw:  Parquet       → rename + spread_pct      → Parquet   │
-│  order_book:  Parquet       → bid/ask volumes          → Parquet   │
+│  order_book:  Parquet       → OBI/spread/walls         → Parquet   │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -404,15 +426,15 @@ ORDER BY (session_id, timestamp);
 
 Chỉ một số cột từ ticker/24hr và depth API là không lưu:
 
-| Cột                | API      | Lý do không lưu                           |
-|--------------------|----------|-------------------------------------------|
-| `weightedAvgPrice` | ticker   | Không dùng trong phân tích                |
-| `prevClosePrice`   | ticker   | Không dùng trong phân tích                |
-| `lastPrice`        | ticker   | Không dùng (dùng close từ klines)         |
-| `openPrice`        | ticker   | Không dùng (dùng open từ klines)          |
-| `lastQty`          | ticker   | Chi tiết quá                              |
-| `bidQty`           | ticker   | Chi tiết quá                              |
-| `askQty`           | ticker   | Chi tiết quá                              |
-| `bids`, `asks`     | depth    | Chỉ dùng để tính volumes, không lưu raw   |
+| Cột                | API    | Lý do không lưu                         |
+| ------------------ | ------ | --------------------------------------- |
+| `weightedAvgPrice` | ticker | Không dùng trong phân tích              |
+| `prevClosePrice`   | ticker | Không dùng trong phân tích              |
+| `lastPrice`        | ticker | Không dùng (dùng close từ klines)       |
+| `openPrice`        | ticker | Không dùng (dùng open từ klines)        |
+| `lastQty`          | ticker | Chi tiết quá                            |
+| `bidQty`           | ticker | Chi tiết quá                            |
+| `askQty`           | ticker | Chi tiết quá                            |
+| `bids`, `asks`     | depth  | Chỉ dùng để tính volumes, không lưu raw |
 
 **Tất cả cột klines** (11/12, bỏ `ignore`) đều được lưu vào ClickHouse.

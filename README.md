@@ -3,10 +3,10 @@
 ## Mô tả dự án
 
 Hệ thống End-to-End Data Pipeline thu thập, xử lý và phân tích thị trường cryptocurrency
-sử dụng ClickHouse SQL, Apache Airflow, ClickHouse, MinIO, LLM (DeepSeek/Gemini/OpenAI) và Grafana.
+sử dụng ClickHouse, Apache Airflow, MinIO, LLM (DeepSeek/Gemini/OpenAI) và Grafana.
 
 - **Extract mỗi phút**: Gọi Binance REST API lấy nến 1-min, ticker 24h, order book cho 50 coins
-- **Transform**: ClickHouse SQL tính RSI(14), MACD(12/26/9) trên 1-min candles; Python tính OBI, spread, bid/ask walls từ order book snapshot
+- **Transform**: Python (pandas) tính RSI(14), MACD(12/26/9) trên 1-min candles; tính OBI, spread, bid/ask walls từ order book snapshot
 - **Load**: Ghi vào ClickHouse (clickhouse-connect)
 - **LLM Chat Assistant**: AI chatbot với LangGraph workflow, DeepSeek reasoning model, tool calling tự động (candles, volume, order book), timeframe-aware analysis
 - **Visualize**: Grafana dashboard real-time + embedded chatbox
@@ -30,7 +30,7 @@ Crypto-Data-Pipeline/
 ├── scripts/                            # ETL scripts (auto-bootstrap + incremental)
 │   ├── extract.py                      # Entry point/orchestrator cho extract
 │   ├── extract_modules/                # Logic extract theo klines, ticker, order book
-│   ├── transform.py                    # ClickHouse SQL (RSI, MACD) → MinIO processed
+│   ├── transform.py                    # Python (pandas) tính RSI/MACD + order book metrics → MinIO processed
 │   └── load.py                         # Ghi vào ClickHouse (clickhouse-connect + s3)
 │
 ├── services/                           # Microservices
@@ -49,7 +49,6 @@ Crypto-Data-Pipeline/
 │
 ├── sql/                                # Database schemas & queries
 │   ├── schema.sql                      # ClickHouse schema (Star Schema: 1 dim + 3 fact)
-│   ├── transform_klines.sql            # ClickHouse SQL transform (RSI + MACD)
 │   ├── queries.sql                     # Query mẫu cho Grafana
 │   └── init_db.sql                     # Tạo database thủ công (ngoài Docker)
 │
@@ -84,16 +83,16 @@ Crypto-Data-Pipeline/
 
 ## Công nghệ sử dụng
 
-| Layer | Công nghệ | Mục đích |
-|-------|-----------|----------|
-| **Extract** | Python + Binance API | Thu thập dữ liệu nến 1-min |
-| **Transform** | ClickHouse SQL | Tính RSI(14), MACD(12/26/9) (in-DB) |
-| **Load** | ClickHouse | Data Warehouse (columnar, fast analytics) |
-| **Store** | MinIO (S3-compatible) | Object Storage cho Data Lake |
-| **Orchestrate** | Apache Airflow | Tự động hóa ETL jobs |
-| **Chat** | LangGraph + DeepSeek/Gemini/OpenAI | AI Reasoning Chat Assistant |
-| **Visualize** | Grafana | Dashboard real-time + embedded chatbox |
-| **Testing** | pytest | Unit tests + LLM integration eval |
+| Layer           | Công nghệ                          | Mục đích                                         |
+| --------------- | ---------------------------------- | ------------------------------------------------ |
+| **Extract**     | Python + Binance API               | Thu thập dữ liệu nến 1-min                       |
+| **Transform**   | Python (pandas)                    | Tính RSI(14), MACD(12/26/9) + order book metrics |
+| **Load**        | ClickHouse                         | Data Warehouse (columnar, fast analytics)        |
+| **Store**       | MinIO (S3-compatible)              | Object Storage cho Data Lake                     |
+| **Orchestrate** | Apache Airflow                     | Tự động hóa ETL jobs                             |
+| **Chat**        | LangGraph + DeepSeek/Gemini/OpenAI | AI Reasoning Chat Assistant                      |
+| **Visualize**   | Grafana                            | Dashboard real-time + embedded chatbox           |
+| **Testing**     | pytest                             | Unit tests + LLM integration eval                |
 
 ## Khởi chạy
 
@@ -102,7 +101,7 @@ Crypto-Data-Pipeline/
 cp .env.example .env
 
 # 2. Khởi chạy toàn bộ hệ thống
-docker compose up -d 
+docker compose up -d
 
 # 3. Truy cập các services:
 #    Grafana (+ AI Chatbox):  http://localhost:3000
@@ -129,12 +128,12 @@ pytest tests/test_ai_eval.py -v
 pytest -v
 ```
 
-| Test Suite | File | Mô tả |
-|---|---|---|
-| Market Queries | `test_market_queries.py` | Format candles, ticker, orderbook, SQL queries |
-| LangGraph Nodes | `test_nodes.py` | LLM factory, router, load/save history, tools |
-| Chat API | `test_chat_api.py` | FastAPI endpoints (chat, history, health) |
-| AI Evaluation | `test_ai_eval.py` | LLM reasoning: tool calling, timeframe, language |
+| Test Suite      | File                     | Mô tả                                            |
+| --------------- | ------------------------ | ------------------------------------------------ |
+| Market Queries  | `test_market_queries.py` | Format candles, ticker, orderbook, SQL queries   |
+| LangGraph Nodes | `test_nodes.py`          | LLM factory, router, load/save history, tools    |
+| Chat API        | `test_chat_api.py`       | FastAPI endpoints (chat, history, health)        |
+| AI Evaluation   | `test_ai_eval.py`        | LLM reasoning: tool calling, timeframe, language |
 
 ## Tài liệu chi tiết
 
