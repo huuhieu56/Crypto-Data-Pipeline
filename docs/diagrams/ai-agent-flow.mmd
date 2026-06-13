@@ -1,0 +1,56 @@
+flowchart LR
+    User["👤 User"]
+    API["⚡ FastAPI<br/>POST /api/chat"]
+
+    subgraph LangGraph["🔗 LangGraph Multi-Agent"]
+        direction TB
+        Init["⏱️ init<br/>start_time"]
+        LH["📥 load_history<br/>ClickHouse → messages[]"]
+        Supervisor["🧭 supervisor<br/>Rule-based + LLM fallback"]
+        TechAgent["📊 technical_agent<br/>RSI / MACD / Volume / Orderbook"]
+        NewsAgent["📰 news_agent<br/>Tin tức / Sentiment / Catalyst"]
+        DeepAgent["🧠 deep_agent<br/>Cross-validate / Synthesis"]
+        TechTools["🔧 technical_tools<br/>(3 tools)"]
+        NewsTools["🔧 news_tools<br/>(1 tool)"]
+        SH["💾 save_history<br/>chat_history + agent_trace"]
+    end
+
+    subgraph Tools["📦 Tool Definitions"]
+        direction TB
+        T1["📊 get_price_candles<br/>OHLCV + RSI + MACD"]
+        T2["📈 get_volume_and_liquidity<br/>Volume + Spread + Trade"]
+        T3["📋 get_orderbook_pressure<br/>OBI + Bid/Ask"]
+        T4["📰 get_crypto_news<br/>News + Sources"]
+    end
+
+    DB["🗄️ ClickHouse"]
+
+    User -->|"message + symbol"| API
+    API -->|"invoke graph"| Init
+    Init --> LH
+    LH -->|"messages[]"| Supervisor
+    Supervisor -->|"['technical']"| TechAgent
+    Supervisor -->|"['news']"| NewsAgent
+    Supervisor -->|"['tech','news','deep']"| TechAgent
+    Supervisor -->|"[] (greeting)"| SH
+    TechAgent -->|"tool_calls"| TechTools
+    TechAgent -->|"done → next agent"| NewsAgent
+    TechAgent -->|"done → save"| SH
+    NewsAgent -->|"tool_calls"| NewsTools
+    NewsAgent -->|"done → deep"| DeepAgent
+    NewsAgent -->|"done → save"| SH
+    DeepAgent -->|"synthesis"| SH
+    TechTools -->|"results"| TechAgent
+    NewsTools -->|"results"| NewsAgent
+    TechTools --- T1
+    TechTools --- T2
+    TechTools --- T3
+    NewsTools --- T4
+    T1 -->|"klines"| DB
+    T2 -->|"ticker_24h"| DB
+    T3 -->|"order_book"| DB
+    T4 -->|"crypto_news"| DB
+    LH -->|"chat_history"| DB
+    SH -->|"chat_history + agent_trace"| DB
+    SH -->|"reply"| API
+    API -->|"JSON"| User

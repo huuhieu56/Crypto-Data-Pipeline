@@ -198,9 +198,6 @@ services:
     build:
       context: ./services/chat_api
     container_name: crypto_chat_api_container
-    depends_on:
-      clickhouse:
-        condition: service_healthy
     ports:
       - "${CHAT_API_PORT:-8501}:8501"
     environment:
@@ -217,13 +214,35 @@ services:
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
       - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-crypto-chatbot}
       - LANGCHAIN_CALLBACKS_BACKGROUND=true
+      - REDIS_URL=redis://redis:6379
       - TZ=Asia/Ho_Chi_Minh
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./:/opt/project
     networks:
       - crypto_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Redis (session memory) ---
+  redis:
+    image: redis:7-alpine
+    container_name: crypto_redis_container
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - crypto_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -259,6 +278,7 @@ volumes:
   minio_data:
   airflow_postgres_data:
   airflow_logs:
+  redis_data:
 
 
 networks:

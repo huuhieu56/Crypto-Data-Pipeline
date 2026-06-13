@@ -88,8 +88,7 @@ CREATE TABLE IF NOT EXISTS crypto_db.klines (
     taker_buy_base Float64,
     taker_buy_quote Float64,
     rsi_14 Nullable(Float64),
-    macd Nullable(Float64),
-    macd_signal Nullable(Float64)
+    macd Nullable(Float64)
 ) ENGINE = ReplacingMergeTree()
 PARTITION BY toYYYYMM(open_time)
 ORDER BY (symbol, open_time);
@@ -146,7 +145,21 @@ CREATE TABLE IF NOT EXISTS crypto_db.chat_history (
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (session_id, timestamp);
 
--- 6) Fact: Crypto news articles (GNews API)
+-- 6) Agent trace — logs supervisor routing decisions
+CREATE TABLE IF NOT EXISTS crypto_db.agent_trace (
+    session_id String,
+    message_id String,
+    timestamp DateTime DEFAULT now(),
+    supervisor_decision String,
+    agents_called Array(String),
+    tools_used Array(String),
+    reasoning String,
+    duration_ms UInt32
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (session_id, timestamp);
+
+-- 7) Fact: Crypto news articles (GNews API)
 CREATE TABLE IF NOT EXISTS crypto_db.crypto_news (
     article_id String,
     title String,

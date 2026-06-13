@@ -49,7 +49,6 @@ SAMPLE_CANDLE_DATA = {
     "volume": [100.5, 80.2],
     "rsi_14": [55.0, 48.3],
     "macd": [120.5, -50.2],
-    "macd_signal": [100.0, -30.0],
 }
 
 SAMPLE_TICKER_TREND_DATA = {

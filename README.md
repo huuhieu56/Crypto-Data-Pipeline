@@ -135,6 +135,10 @@ pytest -v
 | Chat API        | `test_chat_api.py`       | FastAPI endpoints (chat, history, health)        |
 | AI Evaluation   | `test_ai_eval.py`        | LLM reasoning: tool calling, timeframe, language |
 
+## Kiến trúc AI Chat Assistant
+
+![AI Agent Flow](docs/diagrams/ai-agent-flow.svg)
+
 ## Tài liệu chi tiết
 
 Xem [docs/ProjectOverview.md](docs/ProjectOverview.md)

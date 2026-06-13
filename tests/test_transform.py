@@ -66,7 +66,6 @@ def test_transform_klines_computes_indicators_and_writes_processed(monkeypatch):
     df = call_args[0][3]
     assert "rsi_14" in df.columns
     assert "macd" in df.columns
-    assert "macd_signal" in df.columns
     assert "open_time" in df.columns
     assert "trade_count" in df.columns
     assert len(df) == 20

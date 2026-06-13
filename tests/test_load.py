@@ -60,7 +60,6 @@ def test_load_klines_delegates_to_load_table_with_processed_bucket(monkeypatch):
         "trade_count": [50],
         "rsi_14": [65.0],
         "macd": [0.5],
-        "macd_signal": [0.3],
     })
     storage = MagicMock()
     storage.download_parquet.return_value = _mock_parquet_table(transformed_df)
@@ -85,7 +84,6 @@ def test_load_klines_delegates_to_load_table_with_processed_bucket(monkeypatch):
     df = call_args[0][1]
     assert "rsi_14" in df.columns
     assert "macd" in df.columns
-    assert "macd_signal" in df.columns
     assert "trade_count" in df.columns
 
 

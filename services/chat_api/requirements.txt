@@ -6,3 +6,4 @@ pandas==2.2.3
 langgraph>=0.3.0
 langchain-openai>=0.3.0
 langsmith>=0.3.0
+redis>=5.0.0

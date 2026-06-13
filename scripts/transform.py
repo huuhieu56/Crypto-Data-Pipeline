@@ -111,7 +111,7 @@ def transform_klines(
         "symbol", "open_time", "open", "high", "low", "close",
         "volume", "close_time", "quote_volume", "trade_count",
         "taker_buy_base", "taker_buy_quote",
-        "rsi_14", "macd", "macd_signal",
+        "rsi_14", "macd",
     ]
     total_processed = 0
     errors = 0
@@ -186,7 +186,6 @@ def transform_klines(
                 combined["rsi_14"] = _compute_rsi(combined["close"])
                 macd_line, signal_line, _ = _compute_macd(combined["close"])
                 combined["macd"] = macd_line
-                combined["macd_signal"] = signal_line
 
                 if watermark is not None:
                     out_df = combined[combined["open_time"] > watermark].copy()

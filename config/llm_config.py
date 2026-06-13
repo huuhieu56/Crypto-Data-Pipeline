@@ -28,6 +28,17 @@ LLM_DAILY_CANDLES = int(os.getenv("LLM_DAILY_CANDLES", "30"))
 # Chat settings
 CHAT_MAX_HISTORY = int(os.getenv("CHAT_MAX_HISTORY", "10"))
 
+# Agent-specific models (can use different models per agent)
+SUPERVISOR_MODEL = os.getenv("SUPERVISOR_MODEL", LLM_MODEL)
+TECHNICAL_MODEL = os.getenv("TECHNICAL_MODEL", LLM_MODEL)
+NEWS_MODEL = os.getenv("NEWS_MODEL", LLM_MODEL)
+DEEP_MODEL = os.getenv("DEEP_MODEL", LLM_MODEL)
+
+# Redis session memory
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+SESSION_TTL = int(os.getenv("SESSION_TTL", "86400"))        # 24h
+TOOL_CACHE_TTL = int(os.getenv("TOOL_CACHE_TTL", "300"))    # 5min
+
 # Retry
 MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 RETRY_DELAY = float(os.getenv("LLM_RETRY_DELAY", "2"))

@@ -32,8 +32,32 @@ def _esc(value: str) -> str:
 # Klines (OHLCV + indicators)
 # ---------------------------------------------------------------------------
 
+def _compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    """RSI(period) — EWM-based average of gains/losses."""
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(span=period, adjust=False).mean()
+    avg_loss = loss.ewm(span=period, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    return (100 - (100 / (1 + rs))).fillna(0.0)
+
+
+def _compute_macd(close: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """MACD(12,26,9) — returns (macd_line, signal_line, histogram)."""
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    return macd_line, signal_line, macd_line - signal_line
+
+
 def fetch_candles(symbol: str, config: dict) -> pd.DataFrame:
-    """Fetch aggregated candles from ClickHouse based on timeframe config."""
+    """Fetch aggregated candles from ClickHouse based on timeframe config.
+
+    RSI/MACD are computed on the aggregated candles (not from 1-min stored values)
+    so that RSI-14 on daily candles = 14-day RSI, not 14-minute RSI.
+    """
     group_by = config["candle_group_by"]
     lookback = int(config["candle_lookback_days"])
     limit = int(config["candle_limit"])
@@ -44,17 +68,21 @@ def fetch_candles(symbol: str, config: dict) -> pd.DataFrame:
         "max(high) AS high, "
         "min(low) AS low, "
         "argMax(close, open_time) AS close, "
-        "sum(volume) AS volume, "
-        "argMax(rsi_14, open_time) AS rsi_14, "
-        "argMax(macd, open_time) AS macd, "
-        "argMax(macd_signal, open_time) AS macd_signal "
+        "sum(volume) AS volume "
         "FROM klines FINAL "
         "WHERE symbol = {symbol:String} "
         f"AND open_time >= now() - INTERVAL {lookback} DAY "
         f"GROUP BY ts ORDER BY ts ASC "
         f"LIMIT {limit}"
     )
-    return ch_query_df_params(q, {"symbol": symbol})
+    df = ch_query_df_params(q, {"symbol": symbol})
+
+    if not df.empty:
+        df["rsi_14"] = _compute_rsi(df["close"])
+        macd_line, _, _ = _compute_macd(df["close"])
+        df["macd"] = macd_line
+
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +270,7 @@ def compute_signals(df: pd.DataFrame) -> dict[str, str]:
     """Compute actionable signals from candle data.
 
     Returns a dict of signal_name -> human-readable interpretation.
-    Requires columns: rsi_14, macd, macd_signal, high, low, volume.
+    Requires columns: rsi_14, macd, high, low, volume.
     """
     if df.empty or len(df) < 2:
         return {}
@@ -262,19 +290,17 @@ def compute_signals(df: pd.DataFrame) -> dict[str, str]:
     else:
         signals["rsi"] = f"NEUTRAL ({rsi:.1f}, {'rising' if rsi > rsi_prev else 'falling'})"
 
-    # MACD crossover
+    # MACD momentum
     macd = _safe_float(latest, "macd", 0.0)
-    signal_val = _safe_float(latest, "macd_signal", 0.0)
     macd_prev = _safe_float(prev, "macd", 0.0)
-    signal_prev = _safe_float(prev, "macd_signal", 0.0)
-    if macd > signal_val and macd_prev <= signal_prev:
-        signals["macd"] = "BULLISH CROSSOVER (just happened)"
-    elif macd < signal_val and macd_prev >= signal_prev:
-        signals["macd"] = "BEARISH CROSSOVER (just happened)"
-    elif macd > signal_val:
-        signals["macd"] = f"BULLISH (MACD above signal, gap: {macd - signal_val:.2f})"
+    if macd > 0 and macd > macd_prev:
+        signals["macd"] = f"BULLISH ({macd:.2f}, rising)"
+    elif macd > 0:
+        signals["macd"] = f"BULLISH ({macd:.2f}, falling)"
+    elif macd < 0 and macd < macd_prev:
+        signals["macd"] = f"BEARISH ({macd:.2f}, falling)"
     else:
-        signals["macd"] = f"BEARISH (MACD below signal, gap: {signal_val - macd:.2f})"
+        signals["macd"] = f"BEARISH ({macd:.2f}, rising)"
 
     # Volume trend
     vol_avg = df["volume"].mean()
